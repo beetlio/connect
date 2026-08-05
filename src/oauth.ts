@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
 
@@ -24,14 +23,6 @@ export interface AuthorizeOAuthOptions extends OAuthRequestOptions {
   redirectUri: string;
   onAuthorizationUrl(url: string): void | Promise<void>;
   onAuthorizationCallback?(): string | Promise<string>;
-}
-
-export interface AuthorizeOAuthDeviceOptions extends OAuthRequestOptions {
-  redirectUri?: string;
-  onVerification(value: {
-    verificationUri: string;
-    userCode: string;
-  }): void | Promise<void>;
 }
 
 export async function authorizeOAuth(
@@ -108,62 +99,6 @@ export async function authorizeOAuth(
   });
   addClientSecret(body, options.auth, options.integrationCredentials);
   return exchangeToken(options, body, {});
-}
-
-export async function authorizeOAuthDevice(
-  options: AuthorizeOAuthDeviceOptions,
-): Promise<Readonly<Record<string, string>>> {
-  const body = new URLSearchParams({
-    response_type: "device_code",
-    client_id: credential(options.integrationCredentials, options.auth.clientId),
-    scope: options.auth.scopes.join(" "),
-  });
-  if (options.redirectUri !== undefined) {
-    body.set("redirect_uri", options.redirectUri);
-  }
-
-  const authorizationResponse = await requestToken(options, body);
-  const authorizationText = await authorizationResponse.text();
-  if (!authorizationResponse.ok) {
-    throw new Error(
-      `OAuth device authorization returned ${authorizationResponse.status}: ${authorizationText}`,
-    );
-  }
-  const authorization = parseOAuthResponse(authorizationText);
-  const deviceCode = responseCredential(authorization, "device_code");
-  const userCode = responseCredential(authorization, "user_code");
-  const verificationUri = responseCredential(authorization, "verification_uri");
-  let intervalSeconds = nonnegativeNumber(authorization.interval) ?? 5;
-  const expiresInSeconds = nonnegativeNumber(authorization.expires_in) ?? 10 * 60;
-
-  await options.onVerification({ verificationUri, userCode });
-  const deadline = Date.now() + expiresInSeconds * 1_000;
-  while (Date.now() < deadline) {
-    await delay(intervalSeconds * 1_000, undefined, {
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-    });
-
-    const response = await requestToken(options, new URLSearchParams({
-      grant_type: "device",
-      client_id: credential(options.integrationCredentials, options.auth.clientId),
-      code: deviceCode,
-    }));
-    const text = await response.text();
-    if (response.ok) {
-      return tokenCredentials(options, text, {});
-    }
-
-    const error = oauthError(text);
-    if (error === "authorization_pending") {
-      continue;
-    }
-    if (error === "slow_down") {
-      intervalSeconds += 5;
-      continue;
-    }
-    throw new Error(`OAuth token endpoint returned ${response.status}: ${text}`);
-  }
-  throw new Error("OAuth device authorization timed out");
 }
 
 export async function refreshOAuthCredentials(
@@ -259,24 +194,6 @@ function parseOAuthResponse(text: string): Record<string, unknown> {
     throw new Error("OAuth token endpoint returned an invalid response");
   }
   return value as Record<string, unknown>;
-}
-
-function oauthError(text: string): string | undefined {
-  try {
-    const value = JSON.parse(text) as unknown;
-    return typeof value === "object" && value !== null && "error" in value &&
-        typeof value.error === "string"
-      ? value.error
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function nonnegativeNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : undefined;
 }
 
 function waitForAuthorizationCode(

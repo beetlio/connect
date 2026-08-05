@@ -14,14 +14,13 @@ import type {
 } from "./index.ts";
 import { runSync, validateIntegration, verifyConnection } from "./host.ts";
 import { LocalHost } from "./local-host.ts";
-import { authorizeOAuth, authorizeOAuthDevice } from "./oauth.ts";
+import { authorizeOAuth } from "./oauth.ts";
 
 interface CliOptions {
   integrationPath: string;
   outputPath?: string;
   statePath?: string;
   baseUrl?: string;
-  oauthFlow: "authorization-code" | "device-code";
   connectionConfig: unknown;
   syncConfig: unknown;
 }
@@ -57,40 +56,27 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     const abort = () => controller.abort(new Error("Interrupted"));
     process.once("SIGINT", abort);
     try {
-      let credentials = options.oauthFlow === "device-code"
-        ? await authorizeOAuthDevice({
-          auth: oauth,
-          integrationCredentials,
-          credentialSchema,
-          ...(process.env.BEETL_CONNECT_REDIRECT_URI === undefined
-            ? {}
-            : { redirectUri: process.env.BEETL_CONNECT_REDIRECT_URI }),
-          signal: controller.signal,
-          onVerification({ verificationUri, userCode }) {
-            console.log(`Open ${verificationUri} and enter code ${userCode}`);
-          },
-        })
-        : await authorizeOAuth({
-          auth: oauth,
-          integrationCredentials,
-          credentialSchema,
-          redirectUri: process.env.BEETL_CONNECT_REDIRECT_URI ??
-            "http://127.0.0.1:53682/oauth/callback",
-          signal: controller.signal,
-          onAuthorizationUrl(url) {
-            console.log(`Open this URL in your browser:\n${url}`);
-          },
-          async onAuthorizationCallback() {
-            const lines = createInterface({ input: process.stdin, output: process.stdout });
-            try {
-              return await lines.question("Paste the final callback URL: ", {
-                signal: controller.signal,
-              });
-            } finally {
-              lines.close();
-            }
-          },
-        });
+      let credentials = await authorizeOAuth({
+        auth: oauth,
+        integrationCredentials,
+        credentialSchema,
+        redirectUri: process.env.BEETL_CONNECT_REDIRECT_URI ??
+          "http://127.0.0.1:53682/oauth/callback",
+        signal: controller.signal,
+        onAuthorizationUrl(url) {
+          console.log(`Open this URL in your browser:\n${url}`);
+        },
+        async onAuthorizationCallback() {
+          const lines = createInterface({ input: process.stdin, output: process.stdout });
+          try {
+            return await lines.question("Paste the final callback URL: ", {
+              signal: controller.signal,
+            });
+          } finally {
+            lines.close();
+          }
+        },
+      });
       const host = new LocalHost({
         baseUrl: options.baseUrl ?? process.env.BEETL_CONNECT_BASE_URL ??
           integration.connection.baseUrl,
@@ -358,7 +344,6 @@ function parseOptions(args: readonly string[]): CliOptions {
     "--output",
     "--state",
     "--base-url",
-    "--oauth-flow",
     "--connection-config",
     "--sync-config",
   ]);
@@ -368,17 +353,11 @@ function parseOptions(args: readonly string[]): CliOptions {
     }
   }
 
-  const oauthFlow = values.get("--oauth-flow") ?? "authorization-code";
-  if (oauthFlow !== "authorization-code" && oauthFlow !== "device-code") {
-    throw new Error(`Invalid OAuth flow ${JSON.stringify(oauthFlow)}`);
-  }
-
   return {
     integrationPath: values.get("--integration") ?? "integration.ts",
     ...(values.has("--output") ? { outputPath: values.get("--output")! } : {}),
     ...(values.has("--state") ? { statePath: values.get("--state")! } : {}),
     ...(values.has("--base-url") ? { baseUrl: values.get("--base-url")! } : {}),
-    oauthFlow,
     connectionConfig: parseJson(values.get("--connection-config") ?? "{}", "connection config"),
     syncConfig: parseJson(values.get("--sync-config") ?? "{}", "sync config"),
   };
@@ -396,8 +375,7 @@ function usage(): string {
   return [
     "Usage:",
     "  beetl-connect check [--integration path]",
-    "  beetl-connect connect [--integration path] [--oauth-flow authorization-code|device-code]",
-    "                        [--connection-config json]",
+    "  beetl-connect connect [--integration path] [--connection-config json]",
     "  beetl-connect verify [--integration path] [--base-url url] [--connection-config json]",
     "  beetl-connect sync <sync> [--integration path] [--output path] [--state path]",
     "                       [--base-url url] [--connection-config json] [--sync-config json]",

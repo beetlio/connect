@@ -5,7 +5,7 @@ body:
     id: problem
     attributes:
       label: Use case
-      description: What integration or host requirement is currently blocked?
+      description: What integration or host use case would this feature support?
     validations:
       required: true
   - type: textarea
@@ -15,7 +15,3 @@ body:
       description: Describe the smallest behavior that would solve the use case.
     validations:
       required: true
-  - type: textarea
-    id: alternatives
-    attributes:
-      label: Alternatives considered

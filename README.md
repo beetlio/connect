@@ -28,7 +28,7 @@ credentials directly.
 
 - Strict TypeScript authoring with Zod validation at runtime boundaries
 - Bearer, basic, API-key, custom, and OAuth 2.0 authentication
-- Authorization Code with PKCE and Salesforce device-code connection flows
+- Authorization Code with PKCE for OAuth 2.0 connections
 - Connection verification and automatic OAuth refresh after a `401`
 - Cursor and offset pagination helpers
 - Durable checkpoints for incremental syncs and atomic snapshot replacement
