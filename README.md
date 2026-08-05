@@ -5,8 +5,7 @@
 # @beetlio/connect
 
 Connect is a Beetl project for building host-neutral data integrations. Its SDK
-runs inside compatible host applications without depending on Beetl services or
-infrastructure, while a companion CLI supports local development and testing.
+runs inside compatible host applications, while a companion CLI supports local development and testing.
 
 [Documentation](https://beetlio.github.io/connect/) · [Examples](examples/) · [Contributing](CONTRIBUTING.md)
 
@@ -29,7 +28,7 @@ credentials directly.
 - Strict TypeScript authoring with Zod validation at runtime boundaries
 - Bearer, basic, API-key, custom, and OAuth 2.0 authentication
 - Authorization Code with PKCE for OAuth 2.0 connections
-- Connection verification and automatic OAuth refresh after a `401`
+- Connection verification and automatic OAuth refresh
 - Cursor and offset pagination helpers
 - Durable checkpoints for incremental syncs and atomic snapshot replacement
 - Managed retries with `Retry-After` support
@@ -41,14 +40,14 @@ Requires Node.js 24 or newer.
 
 Install the SDK and a project-local CLI:
 
-```fish
+```sh
 npm install @beetlio/connect
 ```
 
 Run the project-local command with `npx beetl-connect`. To make
 `beetl-connect` available system-wide, install the same package globally:
 
-```fish
+```sh
 npm install --global @beetlio/connect
 ```
 
@@ -134,12 +133,12 @@ executes the Wikidata integration without using the CLI.
 Credential fields map from camel case to upper-snake-case environment
 variables. For example, `apiKey` maps to `API_KEY` and `token` maps to `TOKEN`.
 
-```fish
-set -gx TOKEN "<token>"
+```sh
+export TOKEN="<token>"
 npx beetl-connect check
 npx beetl-connect verify
 npx beetl-connect sync items
-set -e TOKEN
+unset TOKEN
 ```
 
 Incremental state is stored under `.beetl/state`. OAuth connections are stored
@@ -172,7 +171,7 @@ when adapting the public example.
 
 Run the Wikidata example from this repository without authentication:
 
-```fish
+```sh
 npm run cli -- sync entities \
   --integration examples/wikidata/integration.ts \
   --connection-config '{"userAgent":"my-wikidata-sync/1.0 (me@example.com)"}' \
@@ -184,7 +183,7 @@ timestamped NDJSON snapshot to the current directory.
 
 ## Development
 
-```fish
+```sh
 npm install
 npm run check
 npm test
