@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { runSync, verifyConnection } from "@beetlio/connect/host";
-import basic from "../examples/basic/beetl.integration.ts";
+import basic from "../examples/basic/integration.ts";
 import { LocalHost } from "../src/local-host.ts";
 
 test("basic dummy integration verifies and emits a snapshot", async () => {

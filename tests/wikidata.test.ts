@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { runSync, verifyConnection } from "@beetlio/connect/host";
-import wikidata from "../examples/wikidata/beetl.integration.ts";
+import wikidata from "../examples/wikidata/integration.ts";
 import { LocalHost } from "../src/local-host.ts";
 
 test("Wikidata entity search identifies the client and follows continuation", async () => {

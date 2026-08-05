@@ -374,7 +374,7 @@ function parseOptions(args: readonly string[]): CliOptions {
   }
 
   return {
-    integrationPath: values.get("--integration") ?? "beetl.integration.ts",
+    integrationPath: values.get("--integration") ?? "integration.ts",
     ...(values.has("--output") ? { outputPath: values.get("--output")! } : {}),
     ...(values.has("--state") ? { statePath: values.get("--state")! } : {}),
     ...(values.has("--base-url") ? { baseUrl: values.get("--base-url")! } : {}),

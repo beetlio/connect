@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { runSync, verifyConnection } from "@beetlio/connect/host";
-import integration from "../examples/all-features/beetl.integration.ts";
+import integration from "../examples/all-features/integration.ts";
 import { LocalHost } from "../src/local-host.ts";
 
 const contacts = [

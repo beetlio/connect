@@ -1,14 +1,23 @@
 {
   "name": "@beetlio/connect",
   "version": "0.0.0",
+  "description": "TypeScript SDK and CLI for authoring host-neutral data integrations",
   "license": "Apache-2.0",
-  "private": true,
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/beetlio/connect.git"
+  },
+  "homepage": "https://beetlio.github.io/connect/",
+  "bugs": "https://github.com/beetlio/connect/issues",
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist"
   ],
   "bin": {
-    "beetl-connect": "./dist/cli.js"
+    "beetl-connect": "dist/cli.js"
   },
   "exports": {
     ".": {

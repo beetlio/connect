@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Documentation for @beetlio/connect, a host-neutral data integration SDK from Beetl.">
+    <meta name="theme-color" content="#ffffff">
+    <meta property="og:title" content="@beetlio/connect documentation">
+    <meta property="og:description" content="Build host-neutral data integrations with Beetl's standalone Connect SDK.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://beetlio.github.io/connect/">
+    <link rel="canonical" href="https://beetlio.github.io/connect/">
+    <link rel="stylesheet" href="./styles.css">
+    <title>@beetlio/connect documentation</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to content</a>
+
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="project-name" href="#overview"><img src="./beetl-logo.svg" alt="">@beetlio/connect</a>
+        <span class="docs-label">Documentation</span>
+        <span class="version">v0.0.0</span>
+        <nav aria-label="Project links">
+          <a href="https://github.com/beetlio/connect">GitHub</a>
+          <a href="https://github.com/beetlio/connect/blob/main/CONTRIBUTING.md">Contributing</a>
+        </nav>
+      </div>
+    </header>
+
+    <details class="mobile-nav">
+      <summary>Documentation sections</summary>
+      <nav aria-label="Mobile documentation navigation">
+        <a href="#overview">Overview</a>
+        <a href="#installation">Installation</a>
+        <a href="#authoring">Authoring an integration</a>
+        <a href="#hosting">Host applications</a>
+        <a href="#authentication">Authentication</a>
+        <a href="#syncs">Sync behavior</a>
+        <a href="#cli">CLI reference</a>
+        <a href="#examples">Examples</a>
+        <a href="#wikidata">Wikidata</a>
+        <a href="#scope">Current scope</a>
+      </nav>
+    </details>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <nav aria-label="Documentation navigation">
+          <p>Getting started</p>
+          <a href="#overview">Overview</a>
+          <a href="#installation">Installation</a>
+          <a href="#authoring">Authoring an integration</a>
+
+          <p>Reference</p>
+          <a href="#hosting">Host applications</a>
+          <a href="#authentication">Authentication</a>
+          <a href="#syncs">Sync behavior</a>
+          <a href="#cli">CLI reference</a>
+
+          <p>Examples</p>
+          <a href="#examples">Included examples</a>
+          <a href="#wikidata">Wikidata sync</a>
+
+          <p>Project</p>
+          <a href="#scope">Current scope</a>
+        </nav>
+      </aside>
+
+      <main id="content">
+        <section id="overview" class="document-header">
+          <p class="breadcrumb">Getting started</p>
+          <h1>Introduction</h1>
+          <p class="lead"><code>@beetlio/connect</code> is a Beetl project for defining host-neutral data integrations. Its SDK runs inside compatible host applications without depending on Beetl services or infrastructure; a companion CLI supports local development and testing.</p>
+
+          <div class="notice warning">
+            <strong>Experimental</strong>
+            <p>The project is currently version 0.0.0. Public APIs and local storage formats may change.</p>
+          </div>
+
+          <dl class="facts">
+            <div><dt>Runtime</dt><dd>Node.js 24 or newer</dd></div>
+            <div><dt>Record output</dt><dd>NDJSON</dd></div>
+            <div><dt>Validation</dt><dd>Zod</dd></div>
+            <div><dt>License</dt><dd>Apache 2.0</dd></div>
+          </dl>
+
+          <h2>Responsibility boundaries</h2>
+          <p>An integration defines provider-specific behavior. A host supplies execution services and keeps credentials outside the sync context.</p>
+          <div class="responsibility-table" role="group" aria-label="Integration and host responsibilities">
+            <div>
+              <h3>Integration</h3>
+              <ul>
+                <li>Credential and configuration schemas</li>
+                <li>Connection verification</li>
+                <li>Record schemas and primary keys</li>
+                <li>Provider requests and pagination strategy</li>
+                <li>Checkpoint shape and update logic</li>
+              </ul>
+            </div>
+            <div>
+              <h3>Host</h3>
+              <ul>
+                <li>Credential storage and request authentication</li>
+                <li>Retries and cancellation</li>
+                <li>Record and checkpoint persistence</li>
+                <li>Snapshot commit or rollback</li>
+                <li>Logging</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section id="installation">
+          <h2>Installation</h2>
+          <p>Node.js 24 or newer is required. The package has one runtime dependency, Zod.</p>
+
+          <h3>Project-local SDK and CLI</h3>
+          <p>Install the SDK and a project-local CLI in your integration project:</p>
+          <pre><code>npm install @beetlio/connect</code></pre>
+          <p>Run the local command with <code>npx beetl-connect</code>.</p>
+
+          <h3>Global CLI</h3>
+          <p>To make <code>beetl-connect</code> available system-wide, install the same package globally:</p>
+          <pre><code>npm install --global @beetlio/connect</code></pre>
+        </section>
+
+        <section id="authoring">
+          <h2>Authoring an integration</h2>
+          <p>An integration default-exports the result of <code>defineIntegration()</code>. The following example defines an unauthenticated connection and one snapshot sync.</p>
+
+          <pre><code><span class="syntax-keyword">import</span> { auth, defineIntegration, z } <span class="syntax-keyword">from</span> <span class="syntax-string">"@beetlio/connect"</span>;
+
+<span class="syntax-keyword">const</span> Item = z.object({
+  id: z.string(),
+  name: z.string(),
+});
+
+<span class="syntax-keyword">export default</span> defineIntegration({
+  key: <span class="syntax-string">"example"</span>,
+  displayName: <span class="syntax-string">"Example"</span>,
+  connection: {
+    baseUrl: <span class="syntax-string">"https://api.example.com"</span>,
+    auth: auth.none(),
+    <span class="syntax-keyword">async</span> verify(ctx) {
+      <span class="syntax-keyword">const</span> response = <span class="syntax-keyword">await</span> ctx.fetch(<span class="syntax-string">"/health"</span>);
+      <span class="syntax-keyword">if</span> (!response.ok) <span class="syntax-keyword">throw new</span> Error(<span class="syntax-string">"Verification failed"</span>);
+    },
+  },
+  syncs: (defineSync) =&gt; [
+    defineSync({
+      key: <span class="syntax-string">"items"</span>,
+      displayName: <span class="syntax-string">"Items"</span>,
+      mode: <span class="syntax-string">"snapshot"</span>,
+      records: Item,
+      primaryKey: [<span class="syntax-string">"id"</span>],
+      <span class="syntax-keyword">async</span> run(ctx) {
+        <span class="syntax-keyword">const</span> response = <span class="syntax-keyword">await</span> ctx.fetch(<span class="syntax-string">"/items"</span>);
+        <span class="syntax-keyword">const</span> records = z.array(Item).parse(<span class="syntax-keyword">await</span> response.json());
+        <span class="syntax-keyword">await</span> ctx.emit({ records });
+      },
+    }),
+  ],
+});</code></pre>
+
+          <h3>Provider request boundary</h3>
+          <p>Paths passed to <code>ctx.fetch()</code> must be relative to the configured origin and begin with <code>/</code>. Absolute and scheme-relative URLs are rejected.</p>
+
+          <h3>Runtime validation</h3>
+          <p>Connection configuration, sync configuration, credentials, records, and checkpoints are parsed with their declared Zod schemas before crossing host boundaries.</p>
+        </section>
+
+        <section id="hosting">
+          <h2>Embedding Connect in a host application</h2>
+          <p>Applications execute integrations through the runtime exported from <code>@beetlio/connect/host</code>. The CLI uses the same host contract and is not required at runtime.</p>
+
+          <pre><code><span class="syntax-keyword">import</span> { runSync, verifyConnection, <span class="syntax-keyword">type</span> SyncHost } <span class="syntax-keyword">from</span> <span class="syntax-string">"@beetlio/connect/host"</span>;
+<span class="syntax-keyword">import</span> integration <span class="syntax-keyword">from</span> <span class="syntax-string">"./integration.ts"</span>;
+
+<span class="syntax-keyword">const</span> host: SyncHost = applicationHost;
+<span class="syntax-keyword">await</span> verifyConnection(integration, { connectionConfig }, host);
+<span class="syntax-keyword">const</span> result = <span class="syntax-keyword">await</span> runSync(
+  integration,
+  <span class="syntax-string">"items"</span>,
+  { connectionConfig, syncConfig, checkpoint },
+  host,
+);</code></pre>
+
+          <p>A host implements provider requests, authentication, record and checkpoint persistence, and logging. Snapshot syncs additionally require <code>beginSnapshot</code>, <code>commitSnapshot</code>, and <code>abortSnapshot</code>. Persist the checkpoint returned by <code>runSync()</code> and provide it to the next incremental run.</p>
+          <p>The <a href="https://github.com/beetlio/connect/blob/main/examples/custom-host/host.ts">custom host example</a> implements the complete interface and executes the Wikidata integration without the CLI.</p>
+        </section>
+
+        <section id="authentication">
+          <h2>Authentication</h2>
+          <p>Authentication is declared on the connection. The host reads the referenced credential fields and modifies provider requests.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Type</th><th>Declaration</th><th>Request behavior</th></tr></thead>
+              <tbody>
+                <tr><td>None</td><td><code>auth.none()</code></td><td>No credentials added</td></tr>
+                <tr><td>Bearer</td><td><code>auth.bearer()</code></td><td>Adds an Authorization bearer token</td></tr>
+                <tr><td>Basic</td><td><code>auth.basic()</code></td><td>Adds HTTP Basic authentication</td></tr>
+                <tr><td>API key</td><td><code>auth.apiKey(...)</code></td><td>Adds a header or query parameter</td></tr>
+                <tr><td>Custom</td><td><code>auth.custom(...)</code></td><td>Maps multiple credential fields to headers or query parameters</td></tr>
+                <tr><td>OAuth 2.0</td><td><code>auth.oauth2AuthorizationCode(...)</code></td><td>Uses an access token and can refresh after a 401</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="notice info">
+            <strong>Transport requirement</strong>
+            <p>Authenticated requests require HTTPS. Loopback HTTP is allowed for local tests and fixtures.</p>
+          </div>
+
+          <h3>Credential environment variables</h3>
+          <p>The CLI maps camel-case credential fields to upper-snake-case environment variables. For example, <code>apiKey</code> maps to <code>API_KEY</code>.</p>
+          <pre><code>set -gx API_KEY "&lt;api-key&gt;"
+npx beetl-connect verify
+set -e API_KEY</code></pre>
+        </section>
+
+        <section id="syncs">
+          <h2>Sync behavior</h2>
+
+          <h3>Append syncs</h3>
+          <p>Append is the default mode. Each emitted batch is appended to the output file. If the sync declares a checkpoint schema, the latest emitted checkpoint is persisted and can be supplied to the next run.</p>
+
+          <h3>Snapshot syncs</h3>
+          <p>A sync with <code>mode: "snapshot"</code> writes to a temporary file. The host replaces the previous output only after the run and all pending host operations succeed. Snapshot syncs cannot declare checkpoints.</p>
+
+          <h3>Pagination</h3>
+          <p><code>ctx.paginate()</code> supports cursor and offset pagination. It validates page records before yielding them. Integrations can use <code>ctx.fetch()</code> directly when a provider requires a different strategy.</p>
+
+          <h3>Retries</h3>
+          <p>The local host retries safe methods for common transient HTTP statuses and transport failures. A connection can override or disable the policy.</p>
+          <pre><code>retry: {
+  maxAttempts: 5,
+  statuses: [429, 502, 503, 504],
+  methods: ["GET"],
+  initialDelayMs: 500,
+  maxDelayMs: 30_000,
+}</code></pre>
+        </section>
+
+        <section id="cli">
+          <h2>CLI reference</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Command</th><th>Description</th></tr></thead>
+              <tbody>
+                <tr><td><code>check</code></td><td>Validate an integration and list its sync keys.</td></tr>
+                <tr><td><code>connect</code></td><td>Complete OAuth, verify the connection, and save credentials locally.</td></tr>
+                <tr><td><code>verify</code></td><td>Run the integration's connection verification function.</td></tr>
+                <tr><td><code>sync &lt;key&gt;</code></td><td>Run one sync and write NDJSON records.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Common options</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Option</th><th>Purpose</th></tr></thead>
+              <tbody>
+                <tr><td><code>--integration path</code></td><td>Integration module to load</td></tr>
+                <tr><td><code>--base-url url</code></td><td>Override the provider base URL</td></tr>
+                <tr><td><code>--connection-config json</code></td><td>Connection configuration object</td></tr>
+                <tr><td><code>--sync-config json</code></td><td>Sync configuration object</td></tr>
+                <tr><td><code>--output path</code></td><td>Override the NDJSON output path</td></tr>
+                <tr><td><code>--state path</code></td><td>Override the checkpoint state path</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p>OAuth credentials are stored under <code>.beetl/connections</code> with owner-only permissions. They are not encrypted. Sync checkpoints are stored under <code>.beetl/state</code>.</p>
+        </section>
+
+        <section id="examples">
+          <h2>Included examples</h2>
+          <div class="example-list">
+            <article>
+              <div><h3>Basic dummy API</h3><span>Minimal</span></div>
+              <p>Shows definition, record validation, connection verification, direct fetch, and snapshot output.</p>
+              <a href="https://github.com/beetlio/connect/blob/main/examples/basic/integration.ts">View source</a>
+            </article>
+            <article>
+              <div><h3>All-features dummy API</h3><span>Reference</span></div>
+              <p>Shows OAuth declarations, connection and sync configuration, retries, custom headers, cursor and offset pagination, checkpoints, and logging.</p>
+              <a href="https://github.com/beetlio/connect/blob/main/examples/all-features/integration.ts">View source</a>
+            </article>
+            <article>
+              <div><h3>Wikidata</h3><span>Public API</span></div>
+              <p>Shows an unauthenticated public API, required client identification, bounded results, and cursor pagination.</p>
+              <a href="https://github.com/beetlio/connect/blob/main/examples/wikidata/integration.ts">View source</a>
+            </article>
+          </div>
+          <p>The dummy integrations use the reserved <code>api.example.com</code> domain. Their tests use local HTTP fixture servers.</p>
+        </section>
+
+        <section id="wikidata">
+          <h2>Running the Wikidata sync</h2>
+          <p>The <code>entities</code> sync calls Wikidata's <code>wbsearchentities</code> API. It returns search-result metadata rather than complete claims or relationships.</p>
+          <pre><code>npm run cli -- sync entities \
+  --integration examples/wikidata/integration.ts \
+  --connection-config '{"userAgent":"my-wikidata-sync/1.0 (me@example.com)"}' \
+  --sync-config '{"search":"open source","language":"en","maxResults":25}'</code></pre>
+
+          <h3>Output record</h3>
+          <pre><code>{
+  "id": "Q39162",
+  "label": "open source",
+  "description": "philosophy about free redistribution and access to a product",
+  "aliases": [],
+  "url": "https://www.wikidata.org/wiki/Q39162"
+}</code></pre>
+          <p><code>maxResults</code> defaults to 100 and accepts values from 1 through 500. <code>pageSize</code> defaults to 25 and accepts values from 1 through 50.</p>
+          <p>Wikidata structured data is available under <a href="https://www.wikidata.org/wiki/Wikidata:Licensing">CC0</a>. Automated clients must follow Wikimedia's <a href="https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_API_Usage_Guidelines">API usage guidelines</a>.</p>
+        </section>
+
+        <section id="scope">
+          <h2>Current scope</h2>
+          <p>The local host currently supports one OAuth connection per integration. The following capabilities are not implemented:</p>
+          <ul>
+            <li>Hosted sync execution</li>
+            <li>Multiple named connection profiles</li>
+            <li>Encrypted local credential storage</li>
+            <li>Integration deployment or compatibility manifests</li>
+          </ul>
+
+          <h2>Development commands</h2>
+          <pre><code>npm run build
+npm run check
+npm test</code></pre>
+          <p>See <a href="https://github.com/beetlio/connect/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> for contribution requirements.</p>
+        </section>
+      </main>
+
+      <aside class="page-toc">
+        <nav aria-label="On this page">
+          <p>On this page</p>
+          <a href="#overview">Overview</a>
+          <a href="#installation">Installation</a>
+          <a href="#authoring">Authoring</a>
+          <a href="#hosting">Host applications</a>
+          <a href="#authentication">Authentication</a>
+          <a href="#syncs">Sync behavior</a>
+          <a href="#cli">CLI reference</a>
+          <a href="#examples">Examples</a>
+          <a href="#wikidata">Wikidata</a>
+          <a href="#scope">Current scope</a>
+        </nav>
+      </aside>
+    </div>
+
+    <footer>
+      <div><strong>@beetlio/connect</strong><span>A Beetl project · Apache License 2.0</span></div>
+      <p>Documentation for the experimental 0.0.0 release.</p>
+    </footer>
+  </body>
+</html>

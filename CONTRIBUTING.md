@@ -35,6 +35,9 @@ npm test
 Tests must not contact real providers or contain real credentials. Use local
 fixture servers and temporary directories.
 
+The static documentation site lives in `docs/` and is published to GitHub Pages
+from `main`. Keep it dependency-free and update it when public APIs change.
+
 ## Pull requests
 
 Keep pull requests focused. Include:
