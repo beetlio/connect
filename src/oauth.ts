@@ -1,22 +1,23 @@
-import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { z } from "zod";
+import * as oauth from "oauth4webapi";
 
-import type { AuthDefinition, CredentialSchema } from "./index.ts";
+import type { AuthDefinition } from "./index.ts";
 
-type OAuthDefinition = Extract<
-  AuthDefinition,
-  { type: "oauth2_authorization_code" }
->;
+type OAuthDefinition = Extract<AuthDefinition, { type: "oauth2_authorization_code" }>;
 
 interface OAuthRequestOptions {
   auth: OAuthDefinition;
-  integrationCredentials: Readonly<Record<string, string>>;
-  credentialSchema: CredentialSchema;
+  authenticationInput: Readonly<Record<string, string>>;
   fetch?: typeof globalThis.fetch;
   signal?: AbortSignal;
+}
+
+export interface OAuthAuthorizationState {
+  readonly accessToken: string;
+  readonly refreshToken?: string;
+  readonly tokenFields: Readonly<Record<string, string>>;
 }
 
 export interface AuthorizeOAuthOptions extends OAuthRequestOptions {
@@ -27,189 +28,137 @@ export interface AuthorizeOAuthOptions extends OAuthRequestOptions {
 
 export async function authorizeOAuth(
   options: AuthorizeOAuthOptions,
-): Promise<Readonly<Record<string, string>>> {
+): Promise<OAuthAuthorizationState> {
   const redirect = new URL(options.redirectUri);
-  const usesLocalCallback = redirect.protocol === "http:" &&
-    isLoopback(redirect.hostname) && Boolean(redirect.port);
+  const usesLocalCallback =
+    redirect.protocol === "http:" && isLoopback(redirect.hostname) && Boolean(redirect.port);
   if (!usesLocalCallback && redirect.protocol !== "https:") {
     throw new Error("OAuth redirect URIs must use HTTPS or loopback HTTP");
   }
 
-  const state = randomBytes(32).toString("base64url");
-  const verifier = randomBytes(32).toString("base64url");
-  const challenge = createHash("sha256").update(verifier).digest("base64url");
-  const authorizationUrl = new URL(options.auth.authorizationUrl);
-  if (
-    authorizationUrl.protocol !== "https:" &&
-    !isLoopback(authorizationUrl.hostname)
-  ) {
-    throw new Error("OAuth authorization requests require HTTPS");
-  }
+  const { server, client, clientAuth, requestOptions } = oauthContext(options);
+  const state = oauth.generateRandomState();
+  const verifier = oauth.generateRandomCodeVerifier();
+  const challenge = await oauth.calculatePKCECodeChallenge(verifier);
+  const authorizationUrl = new URL(server.authorization_endpoint);
   authorizationUrl.searchParams.set("response_type", "code");
-  authorizationUrl.searchParams.set(
-    "client_id",
-    credential(options.integrationCredentials, options.auth.clientId),
-  );
+  authorizationUrl.searchParams.set("client_id", client.client_id);
   authorizationUrl.searchParams.set("redirect_uri", redirect.href);
   authorizationUrl.searchParams.set("scope", options.auth.scopes.join(" "));
   authorizationUrl.searchParams.set("state", state);
   authorizationUrl.searchParams.set("code_challenge", challenge);
   authorizationUrl.searchParams.set("code_challenge_method", "S256");
 
-  let code: string;
+  const validateCallback = (value: string | URL) => {
+    const url = new URL(value);
+    if (url.origin !== redirect.origin || url.pathname !== redirect.pathname) {
+      throw new Error("OAuth callback URL does not match the configured redirect URI");
+    }
+    return oauth.validateAuthResponse(server, client, url, state);
+  };
+
+  let callbackParameters: URLSearchParams;
   if (usesLocalCallback) {
-    const server = createServer();
+    const callbackServer = createServer();
     await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(Number(redirect.port), redirect.hostname, () => {
-        server.removeListener("error", reject);
+      callbackServer.once("error", reject);
+      callbackServer.listen(Number(redirect.port), redirect.hostname, () => {
+        callbackServer.removeListener("error", reject);
         resolve();
       });
     });
     try {
-      const codePromise = waitForAuthorizationCode(
-        server,
+      const callbackPromise = waitForAuthorizationCallback(
+        callbackServer,
         redirect,
-        state,
+        validateCallback,
         options.signal,
       );
       await options.onAuthorizationUrl(authorizationUrl.href);
-      code = await codePromise;
+      callbackParameters = await callbackPromise;
     } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => callbackServer.close(() => resolve()));
     }
   } else {
     await options.onAuthorizationUrl(authorizationUrl.href);
     if (options.onAuthorizationCallback === undefined) {
       throw new Error("This OAuth redirect requires the callback URL to be supplied");
     }
-    code = parseAuthorizationCallback(
-      await options.onAuthorizationCallback(),
-      redirect,
-      state,
-    );
+    callbackParameters = validateCallback(await options.onAuthorizationCallback());
   }
 
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code,
-    client_id: credential(options.integrationCredentials, options.auth.clientId),
-    redirect_uri: redirect.href,
-    code_verifier: verifier,
-  });
-  addClientSecret(body, options.auth, options.integrationCredentials);
-  return exchangeToken(options, body, {});
+  const response = await oauth.authorizationCodeGrantRequest(
+    server,
+    client,
+    clientAuth,
+    callbackParameters,
+    redirect.href,
+    verifier,
+    requestOptions,
+  );
+  return authorizationState(
+    options,
+    await oauth.processAuthorizationCodeResponse(server, client, response),
+    undefined,
+  );
 }
 
-export async function refreshOAuthCredentials(
+export async function refreshOAuthAuthorization(
   options: OAuthRequestOptions & {
-    credentials: Readonly<Record<string, string>>;
+    authorizationState: OAuthAuthorizationState;
   },
-): Promise<Readonly<Record<string, string>>> {
-  if (options.auth.refreshToken === undefined) {
+): Promise<OAuthAuthorizationState> {
+  if (options.authorizationState.refreshToken === undefined) {
     throw new Error("OAuth refresh is not configured");
   }
-  const body = new URLSearchParams({
-    grant_type: "refresh_token",
-    refresh_token: credential(options.credentials, options.auth.refreshToken),
-    client_id: credential(options.integrationCredentials, options.auth.clientId),
-  });
-  addClientSecret(body, options.auth, options.integrationCredentials);
-  return exchangeToken(options, body, options.credentials);
-}
-
-async function exchangeToken(
-  options: OAuthRequestOptions,
-  body: URLSearchParams,
-  previous: Readonly<Record<string, string>>,
-): Promise<Readonly<Record<string, string>>> {
-  const response = await requestToken(options, body);
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`OAuth token endpoint returned ${response.status}: ${text}`);
-  }
-  return tokenCredentials(options, text, previous);
-}
-
-async function requestToken(
-  options: OAuthRequestOptions,
-  body: URLSearchParams,
-): Promise<Response> {
-  const tokenUrl = new URL(options.auth.tokenUrl);
-  if (tokenUrl.protocol !== "https:" && !isLoopback(tokenUrl.hostname)) {
-    throw new Error("OAuth token requests require HTTPS");
-  }
-  return await (options.fetch ?? globalThis.fetch)(tokenUrl, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body,
-    redirect: "manual",
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  });
-}
-
-function tokenCredentials(
-  options: OAuthRequestOptions,
-  text: string,
-  previous: Readonly<Record<string, string>>,
-): Readonly<Record<string, string>> {
-  const responseFields = parseOAuthResponse(text);
-  const credentials: Record<string, string> = { ...previous };
-  credentials[options.auth.accessToken] = responseCredential(
-    responseFields,
-    "access_token",
+  const { server, client, clientAuth, requestOptions } = oauthContext(options);
+  const response = await oauth.refreshTokenGrantRequest(
+    server,
+    client,
+    clientAuth,
+    options.authorizationState.refreshToken,
+    requestOptions,
   );
-  if (options.auth.refreshToken !== undefined) {
-    const refreshToken = responseFields.refresh_token;
-    if (typeof refreshToken === "string" && refreshToken) {
-      credentials[options.auth.refreshToken] = refreshToken;
-    }
-  }
+  return authorizationState(
+    options,
+    await oauth.processRefreshTokenResponse(server, client, response),
+    options.authorizationState,
+  );
+}
+
+function authorizationState(
+  options: OAuthRequestOptions,
+  responseFields: oauth.TokenEndpointResponse,
+  previous: OAuthAuthorizationState | undefined,
+): OAuthAuthorizationState {
+  const tokenFields: Record<string, string> = { ...previous?.tokenFields };
   for (const [field, responseField] of Object.entries(options.auth.tokenFields)) {
     const value = responseFields[responseField];
     if (typeof value === "string" && value) {
-      credentials[field] = value;
+      tokenFields[field] = value;
     }
   }
-
-  const result = options.credentialSchema.safeParse(credentials);
-  if (!result.success) {
-    throw new Error(`Invalid OAuth credentials: ${z.prettifyError(result.error)}`);
-  }
-  return Object.fromEntries(
-    Object.entries(result.data).filter((entry): entry is [string, string] =>
-      typeof entry[1] === "string"
-    ),
-  );
+  const refreshToken = responseFields.refresh_token ?? previous?.refreshToken;
+  return {
+    accessToken: responseFields.access_token,
+    ...(typeof refreshToken === "string" && refreshToken ? { refreshToken } : {}),
+    tokenFields,
+  };
 }
 
-function parseOAuthResponse(text: string): Record<string, unknown> {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new Error("OAuth token endpoint returned invalid JSON");
-  }
-  if (typeof value !== "object" || value === null) {
-    throw new Error("OAuth token endpoint returned an invalid response");
-  }
-  return value as Record<string, unknown>;
-}
-
-function waitForAuthorizationCode(
+function waitForAuthorizationCallback(
   server: ReturnType<typeof createServer>,
   redirect: URL,
-  state: string,
+  validate: (url: URL) => URLSearchParams,
   signal: AbortSignal | undefined,
-): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
+): Promise<URLSearchParams> {
+  return new Promise<URLSearchParams>((resolve, reject) => {
     const timeout = setTimeout(
       () => settle(() => reject(new Error("OAuth authorization timed out"))),
       5 * 60_000,
     );
-    const abort = () => settle(() =>
-      reject(signal?.reason ?? new Error("OAuth authorization aborted"))
-    );
+    const abort = () =>
+      settle(() => reject(signal?.reason ?? new Error("OAuth authorization aborted")));
     signal?.addEventListener("abort", abort, { once: true });
 
     const settle = (action: () => void) => {
@@ -225,94 +174,62 @@ function waitForAuthorizationCode(
         response.end("Not found");
         return;
       }
-      if (url.searchParams.get("state") !== state) {
-        response.statusCode = 400;
-        response.end("Invalid OAuth state");
-        return;
-      }
-      const error = url.searchParams.get("error");
-      if (error !== null) {
-        const description = url.searchParams.get("error_description");
+      try {
+        const parameters = validate(url);
+        response.setHeader("content-type", "text/plain; charset=utf-8");
+        response.end("Connected. You can close this browser tab.");
+        settle(() => resolve(parameters));
+      } catch (error) {
         response.statusCode = 400;
         response.end("OAuth authorization failed. Return to the terminal.");
-        settle(() => reject(new Error(
-          `OAuth authorization failed: ${description ?? error}`,
-        )));
-        return;
+        settle(() => reject(error));
       }
-      const code = url.searchParams.get("code");
-      if (!code) {
-        response.statusCode = 400;
-        response.end("Missing authorization code");
-        return;
-      }
-      response.setHeader("content-type", "text/plain; charset=utf-8");
-      response.end("Connected. You can close this browser tab.");
-      settle(() => resolve(code));
     };
     server.on("request", request);
   });
 }
 
-function parseAuthorizationCallback(
-  value: string,
-  redirect: URL,
-  state: string,
-): string {
-  const url = new URL(value);
-  if (url.origin !== redirect.origin || url.pathname !== redirect.pathname) {
-    throw new Error("OAuth callback URL does not match the configured redirect URI");
+function oauthContext(options: OAuthRequestOptions) {
+  const issuer = new URL(options.auth.issuer);
+  if (issuer.protocol !== "https:" && !isLoopback(issuer.hostname)) {
+    throw new Error("OAuth issuers require HTTPS");
   }
-  if (url.searchParams.get("state") !== state) {
-    throw new Error("Invalid OAuth state");
+  const authorizationUrl = new URL(options.auth.authorizationUrl);
+  if (authorizationUrl.protocol !== "https:" && !isLoopback(authorizationUrl.hostname)) {
+    throw new Error("OAuth authorization requests require HTTPS");
   }
-  const error = url.searchParams.get("error");
-  if (error !== null) {
-    throw new Error(
-      `OAuth authorization failed: ${url.searchParams.get("error_description") ?? error}`,
-    );
+  const tokenUrl = new URL(options.auth.tokenUrl);
+  const insecureTokenUrl = tokenUrl.protocol === "http:" && isLoopback(tokenUrl.hostname);
+  if (tokenUrl.protocol !== "https:" && !insecureTokenUrl) {
+    throw new Error("OAuth token requests require HTTPS");
   }
-  const code = url.searchParams.get("code");
-  if (!code) {
-    throw new Error("OAuth callback is missing the authorization code");
-  }
-  return code;
+  const server = {
+    issuer: options.auth.issuer,
+    authorization_endpoint: authorizationUrl.href,
+    token_endpoint: tokenUrl.href,
+  } satisfies oauth.AuthorizationServer;
+  const client: oauth.Client = {
+    client_id: authenticationInput(options.authenticationInput, "clientId"),
+  };
+  const clientAuth = !options.auth.usesClientSecret
+    ? oauth.None()
+    : oauth.ClientSecretPost(authenticationInput(options.authenticationInput, "clientSecret"));
+  const requestOptions: oauth.TokenEndpointRequestOptions = {
+    ...(options.fetch === undefined ? {} : { [oauth.customFetch]: options.fetch }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(insecureTokenUrl ? { [oauth.allowInsecureRequests]: true } : {}),
+  };
+  return { server, client, clientAuth, requestOptions };
 }
 
-function addClientSecret(
-  body: URLSearchParams,
-  auth: OAuthDefinition,
-  integrationCredentials: Readonly<Record<string, string>>,
-): void {
-  if (auth.clientSecret !== undefined) {
-    body.set("client_secret", credential(integrationCredentials, auth.clientSecret));
-  }
-}
-
-function credential(
-  credentials: Readonly<Record<string, string>>,
-  field: string,
-): string {
-  const value = credentials[field];
+function authenticationInput(input: Readonly<Record<string, string>>, field: string): string {
+  const value = input[field];
   if (value === undefined) {
-    throw new Error(`Missing credential ${JSON.stringify(field)}`);
-  }
-  return value;
-}
-
-function responseCredential(
-  response: Readonly<Record<string, unknown>>,
-  field: string,
-): string {
-  const value = response[field];
-  if (typeof value !== "string" || !value) {
-    throw new Error(`OAuth token response is missing ${JSON.stringify(field)}`);
+    throw new Error(`Missing authentication input ${JSON.stringify(field)}`);
   }
   return value;
 }
 
 function isLoopback(hostname: string): boolean {
-  return hostname === "localhost" ||
-    hostname === "[::1]" ||
-    /^127(?:\.\d{1,3}){3}$/.test(hostname);
+  return hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
 }

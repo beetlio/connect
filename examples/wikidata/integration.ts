@@ -1,4 +1,4 @@
-import { auth, defineIntegration, z } from "@beetlio/connect";
+import { auth, defineIntegration, input, z } from "@beetlio/connect";
 
 const SearchHit = z.object({
   id: z.string(),
@@ -21,8 +21,12 @@ export default defineIntegration({
   connection: {
     baseUrl: "https://www.wikidata.org",
     auth: auth.none(),
-    config: z.object({
-      userAgent: z.string().min(1),
+    inputs: input.object({
+      userAgent: input.string({
+        label: "User agent",
+        description: "Identify your application and include a contact address.",
+        minLength: 1,
+      }),
     }),
     pagination: {
       type: "cursor",
@@ -48,23 +52,30 @@ export default defineIntegration({
       mode: "snapshot",
       records: Entity,
       primaryKey: ["id"],
-      config: z.object({
-        search: z.string().min(1),
-        language: z.string().min(1).default("en"),
-        pageSize: z.number().int().min(1).max(50).default(25),
-        maxResults: z.number().int().min(1).max(500).default(100),
+      inputs: input.object({
+        search: input.string({ label: "Search", minLength: 1 }),
+        language: input.string({ label: "Language", minLength: 1, default: "en" }),
+        pageSize: input.integer({ label: "Page size", min: 1, max: 50, default: 25 }),
+        maxResults: input.integer({
+          label: "Maximum results",
+          min: 1,
+          max: 500,
+          default: 100,
+        }),
       }),
       async run(ctx) {
         const { search, language, pageSize, maxResults } = ctx.config.sync;
-        const path = "/w/api.php?" + new URLSearchParams({
-          action: "wbsearchentities",
-          format: "json",
-          maxlag: "5",
-          search,
-          language,
-          uselang: language,
-          type: "item",
-        });
+        const path =
+          "/w/api.php?" +
+          new URLSearchParams({
+            action: "wbsearchentities",
+            format: "json",
+            maxlag: "30",
+            search,
+            language,
+            uselang: language,
+            type: "item",
+          });
         let remaining = maxResults;
 
         for await (const page of ctx.paginate({

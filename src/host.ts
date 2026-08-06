@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import { z } from "zod";
 
 import type {
@@ -44,10 +42,7 @@ export interface LogEntry {
 }
 
 export interface SyncHost {
-  request(
-    request: ProviderRequest,
-    signal?: AbortSignal,
-  ): Promise<ProviderResponse>;
+  request(request: ProviderRequest, signal?: AbortSignal): Promise<ProviderResponse>;
   emit(batch: EmittedBatch): Promise<void>;
   log(entry: LogEntry): Promise<void>;
   beginSnapshot?(): Promise<void>;
@@ -88,26 +83,20 @@ export async function runSync(
     throw new Error(`Unknown sync ${JSON.stringify(syncKey)}`);
   }
   const snapshot = sync.mode === "snapshot";
-  if (
-    snapshot &&
-    (!host.beginSnapshot || !host.commitSnapshot || !host.abortSnapshot)
-  ) {
+  if (snapshot && (!host.beginSnapshot || !host.commitSnapshot || !host.abortSnapshot)) {
     throw new Error("Snapshot syncs require host snapshot support");
   }
 
   const connectionConfig = parse(
-    integration.connection.config ?? EmptyConfig,
+    integration.connection.inputs ?? EmptyConfig,
     input.connectionConfig ?? {},
     "connection config",
   );
-  const syncConfig = parse(
-    sync.config ?? EmptyConfig,
-    input.syncConfig ?? {},
-    "sync config",
-  );
-  const initialCheckpoint = snapshot || input.checkpoint === undefined
-    ? undefined
-    : parseCheckpoint(sync, input.checkpoint);
+  const syncConfig = parse(sync.inputs ?? EmptyConfig, input.syncConfig ?? {}, "sync config");
+  const initialCheckpoint =
+    snapshot || input.checkpoint === undefined
+      ? undefined
+      : parseCheckpoint(sync, input.checkpoint);
   const signal = input.signal ?? new AbortController().signal;
 
   let sequence = 0;
@@ -123,10 +112,7 @@ export async function runSync(
     return rejected;
   };
 
-  const emit = (value: {
-    records: readonly unknown[];
-    checkpoint?: unknown;
-  }): Promise<void> => {
+  const emit = (value: { records: readonly unknown[]; checkpoint?: unknown }): Promise<void> => {
     if (!contextOpen) {
       return rejectClosed();
     }
@@ -135,11 +121,10 @@ export async function runSync(
     let checkpoint: JsonValue | undefined;
     try {
       parsedRecords = value.records.map((record, index) =>
-        parse(sync.records, record, `record ${index}`)
+        parse(sync.records, record, `record ${index}`),
       );
-      checkpoint = value.checkpoint === undefined
-        ? undefined
-        : parseCheckpoint(sync, value.checkpoint);
+      checkpoint =
+        value.checkpoint === undefined ? undefined : parseCheckpoint(sync, value.checkpoint);
     } catch (error) {
       const failed = emitQueue.then(() => {
         throw error;
@@ -152,7 +137,7 @@ export async function runSync(
     const queued = emitQueue.then(async () => {
       signal.throwIfAborted();
       const batch: EmittedBatch = {
-        batchId: randomUUID(),
+        batchId: crypto.randomUUID(),
         sequence,
         records: parsedRecords,
         ...(checkpoint === undefined ? {} : { checkpoint }),
@@ -174,33 +159,22 @@ export async function runSync(
     level: LogEntry["level"],
     message: string,
     fields: JsonObject = {},
-  ): Promise<void> => contextOpen
-    ? operations.track(host.log({ level, message, fields }))
-    : rejectClosed();
+  ): Promise<void> =>
+    contextOpen ? operations.track(host.log({ level, message, fields })) : rejectClosed();
 
   const fetch = (path: string, init?: SyncFetchInit): Promise<Response> => {
     if (!contextOpen) {
       return rejectClosed<Response>();
     }
     signal.throwIfAborted();
-    return operations.track(hostFetch(
-      host,
-      path,
-      init,
-      signal,
-      integration.connection.retry,
-    ));
+    return operations.track(hostFetch(host, path, init, signal, integration.connection.retry));
   };
 
   const logger = {
-    debug: (message: string, fields: JsonObject = {}) =>
-      log("debug", message, fields),
-    info: (message: string, fields: JsonObject = {}) =>
-      log("info", message, fields),
-    warn: (message: string, fields: JsonObject = {}) =>
-      log("warn", message, fields),
-    error: (message: string, fields: JsonObject = {}) =>
-      log("error", message, fields),
+    debug: (message: string, fields: JsonObject = {}) => log("debug", message, fields),
+    info: (message: string, fields: JsonObject = {}) => log("info", message, fields),
+    warn: (message: string, fields: JsonObject = {}) => log("warn", message, fields),
+    error: (message: string, fields: JsonObject = {}) => log("error", message, fields),
   };
 
   const context = {
@@ -211,13 +185,8 @@ export async function runSync(
     checkpoint: initialCheckpoint,
     signal,
     fetch,
-    paginate: <const Records extends z.ZodType>(
-      options: PaginateOptions<Records>,
-    ) => paginateRequests(
-      fetch,
-      integration.connection.pagination,
-      options,
-    ),
+    paginate: <const Records extends z.ZodType>(options: PaginateOptions<Records>) =>
+      paginateRequests(fetch, integration.connection.pagination, options),
     emit,
     log: logger,
   };
@@ -260,9 +229,7 @@ export async function runSync(
     return {
       batches: sequence,
       records,
-      ...(latestCheckpoint === undefined
-        ? {}
-        : { checkpoint: latestCheckpoint }),
+      ...(latestCheckpoint === undefined ? {} : { checkpoint: latestCheckpoint }),
     };
   } catch (error) {
     if (snapshot) {
@@ -287,11 +254,13 @@ export async function verifyConnection(
   validateIntegration(integration);
   const verify = integration.connection.verify;
   if (!verify) {
-    throw new Error(`Integration ${JSON.stringify(integration.key)} does not define connection verification`);
+    throw new Error(
+      `Integration ${JSON.stringify(integration.key)} does not define connection verification`,
+    );
   }
 
   const config = parse(
-    integration.connection.config ?? EmptyConfig,
+    integration.connection.inputs ?? EmptyConfig,
     input.connectionConfig ?? {},
     "connection config",
   );
@@ -309,21 +278,14 @@ export async function verifyConnection(
       return rejectClosed<Response>();
     }
     signal.throwIfAborted();
-    return operations.track(hostFetch(
-      host,
-      path,
-      init,
-      signal,
-      integration.connection.retry,
-    ));
+    return operations.track(hostFetch(host, path, init, signal, integration.connection.retry));
   };
   const log = (
     level: LogEntry["level"],
     message: string,
     fields: JsonObject = {},
-  ): Promise<void> => contextOpen
-    ? operations.track(host.log({ level, message, fields }))
-    : rejectClosed();
+  ): Promise<void> =>
+    contextOpen ? operations.track(host.log({ level, message, fields })) : rejectClosed();
 
   signal.throwIfAborted();
   let verifyError: unknown;
@@ -378,45 +340,41 @@ function createOperationTracker() {
       { readonly ok: true } | { readonly ok: false; readonly reason: unknown }
     > {
       await Promise.allSettled([...pending]);
-      return failure === undefined
-        ? { ok: true }
-        : { ok: false, reason: failure.reason };
+      return failure === undefined ? { ok: true } : { ok: false, reason: failure.reason };
     },
   };
 }
 
 export function validateIntegration(integration: IntegrationDefinition): void {
-  if (!integration.key.trim()) {
-    throw new Error("Integration key cannot be empty");
-  }
+  validateKey(integration.key, "Integration");
   if (!integration.displayName.trim()) {
     throw new Error("Integration display name cannot be empty");
   }
-
+  if (integration.description !== undefined && !integration.description.trim()) {
+    throw new Error("Integration description cannot be empty");
+  }
+  if (
+    integration.icon !== undefined &&
+    integration.icon !== "icon.png" &&
+    integration.icon !== "icon.webp"
+  ) {
+    throw new Error("Integration icon must be icon.png or icon.webp");
+  }
   if (typeof integration.connection.baseUrl === "string") {
     const baseUrl = new URL(integration.connection.baseUrl);
     if (baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:") {
       throw new Error("Connection base URL must use HTTP or HTTPS");
     }
+    if (baseUrl.username || baseUrl.password) {
+      throw new Error("Connection base URL cannot contain credentials");
+    }
   }
 
-  const auth = integration.connection.auth ?? { type: "none" as const };
-  if (
-    auth.type !== "none" ||
-    typeof integration.connection.baseUrl !== "string"
-  ) {
-    const credentials = integration.connection.credentials;
-    if (!credentials) {
-      throw new Error("This connection must declare a credential schema");
-    }
-    const credentialKeys = new Set(Object.keys(credentials.shape));
-    for (const field of connectionCredentialReferences(
-      auth,
-      integration.connection.baseUrl,
-    )) {
-      if (!credentialKeys.has(field)) {
-        throw new Error(`Connection references unknown credential ${JSON.stringify(field)}`);
-      }
+  const auth = integration.connection.auth ?? { type: "none" as const, inputs: z.object({}) };
+  const authenticationInputKeys = new Set(Object.keys(auth.inputs.shape));
+  for (const field of authenticationInputReferences(auth)) {
+    if (!authenticationInputKeys.has(field)) {
+      throw new Error(`Authentication references unknown input ${JSON.stringify(field)}`);
     }
   }
   if (
@@ -427,34 +385,33 @@ export function validateIntegration(integration: IntegrationDefinition): void {
     throw new Error("Custom authentication must inject at least one header or query parameter");
   }
   if (auth.type === "oauth2_authorization_code") {
-    for (const value of [auth.authorizationUrl, auth.tokenUrl]) {
+    for (const value of [auth.issuer, auth.authorizationUrl, auth.tokenUrl]) {
       const url = new URL(value);
       if (url.protocol !== "https:") {
         throw new Error("OAuth URLs must use HTTPS");
       }
-    }
-    const integrationCredentials = integration.connection.integrationCredentials;
-    if (!integrationCredentials) {
-      throw new Error("OAuth connections must declare integration credentials");
-    }
-    const credentialKeys = new Set(Object.keys(integrationCredentials.shape));
-    for (const field of [auth.clientId, auth.clientSecret]) {
-      if (field !== undefined && !credentialKeys.has(field)) {
-        throw new Error(
-          `OAuth references unknown integration credential ${JSON.stringify(field)}`,
-        );
+      if (url.username || url.password) {
+        throw new Error("OAuth URLs cannot contain credentials");
       }
     }
     if (auth.scopes.length === 0 || auth.scopes.some((scope) => !scope.trim())) {
       throw new Error("OAuth scopes must contain non-empty values");
     }
     if (
-      Object.entries(auth.tokenFields).some(([field, responseField]) =>
-        !field.trim() || !responseField.trim()
+      Object.entries(auth.tokenFields).some(
+        ([field, responseField]) => !field.trim() || !responseField.trim(),
       )
     ) {
       throw new Error("OAuth token field mappings cannot be empty");
     }
+    if (
+      typeof integration.connection.baseUrl !== "string" &&
+      auth.tokenFields[integration.connection.baseUrl.oauthTokenField] === undefined
+    ) {
+      throw new Error("Connection base URL references an unknown OAuth token field");
+    }
+  } else if (typeof integration.connection.baseUrl !== "string") {
+    throw new Error("Dynamic connection base URLs require OAuth authentication");
   }
 
   validateRetry(integration.connection.retry);
@@ -464,19 +421,38 @@ export function validateIntegration(integration: IntegrationDefinition): void {
 
   const keys = new Set<string>();
   for (const sync of integration.syncs) {
-    if (!sync.key.trim()) {
-      throw new Error("Sync key cannot be empty");
-    }
+    validateKey(sync.key, "Sync");
     if (keys.has(sync.key)) {
       throw new Error(`Duplicate sync key ${JSON.stringify(sync.key)}`);
     }
     keys.add(sync.key);
+    if (!sync.displayName.trim()) {
+      throw new Error("Sync display name cannot be empty");
+    }
     if (sync.mode !== undefined && sync.mode !== "append" && sync.mode !== "snapshot") {
       throw new Error(`Invalid sync mode ${JSON.stringify(sync.mode)}`);
     }
     if (sync.mode === "snapshot" && sync.checkpoint !== undefined) {
       throw new Error("Snapshot syncs cannot declare checkpoints");
     }
+    const primaryKeys = new Set<string>();
+    for (const path of sync.primaryKey ?? []) {
+      if (!path.trim() || path.split(".").some((segment) => !segment)) {
+        throw new Error(`Invalid primary key path ${JSON.stringify(path)}`);
+      }
+      if (primaryKeys.has(path)) {
+        throw new Error(`Duplicate primary key path ${JSON.stringify(path)}`);
+      }
+      primaryKeys.add(path);
+    }
+  }
+}
+
+function validateKey(key: string, label: string): void {
+  if (!/^[a-z][a-z0-9-]{0,62}$/.test(key)) {
+    throw new Error(
+      `${label} key must start with a letter and contain only lowercase letters, numbers, and hyphens`,
+    );
   }
 }
 
@@ -487,13 +463,11 @@ async function hostFetch(
   runSignal: AbortSignal,
   retry?: RetryDefinition,
 ): Promise<Response> {
-  if (!path.startsWith("/") || path.startsWith("//")) {
+  if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\")) {
     throw new Error("ctx.fetch requires a relative-origin path beginning with /");
   }
 
-  const signal = init.signal
-    ? AbortSignal.any([runSignal, init.signal])
-    : runSignal;
+  const signal = init.signal ? AbortSignal.any([runSignal, init.signal]) : runSignal;
   signal.throwIfAborted();
   if (init.body instanceof ReadableStream) {
     throw new Error("Streaming request bodies are not supported");
@@ -503,17 +477,18 @@ async function hostFetch(
     ...(init.headers === undefined ? {} : { headers: init.headers }),
     ...(init.body === undefined || init.body === null ? {} : { body: init.body }),
   });
-  const body = request.body === null
-    ? undefined
-    : new Uint8Array(await request.arrayBuffer());
+  const body = request.body === null ? undefined : new Uint8Array(await request.arrayBuffer());
   signal.throwIfAborted();
-  const response = await host.request({
-    method: request.method,
-    path,
-    headers: [...request.headers.entries()],
-    ...(body === undefined ? {} : { body }),
-    ...(retry === undefined ? {} : { retry }),
-  }, signal);
+  const response = await host.request(
+    {
+      method: request.method,
+      path,
+      headers: [...request.headers.entries()],
+      ...(body === undefined ? {} : { body }),
+      ...(retry === undefined ? {} : { retry }),
+    },
+    signal,
+  );
   signal.throwIfAborted();
 
   const responseBody = responseCanHaveBody(response.status)
@@ -521,9 +496,7 @@ async function hostFetch(
     : null;
   return new Response(responseBody, {
     status: response.status,
-    headers: response.headers.map(
-      ([name, value]): [string, string] => [name, value],
-    ),
+    headers: response.headers.map(([name, value]): [string, string] => [name, value]),
   });
 }
 
@@ -537,17 +510,18 @@ async function* paginateRequests<Records extends z.ZodType>(
   if (pagination.type === "cursor") {
     let cursor = pagination.initialCursor;
     while (true) {
-      const response = await fetch(withQuery(options.path, {
-        ...(cursor === undefined
-          ? {}
-          : { [pagination.cursorParameter]: String(cursor) }),
-        ...(pagination.limit === undefined
-          ? {}
-          : { [pagination.limitParameter]: String(pagination.limit) }),
-      }), {
-        ...(options.headers === undefined ? {} : { headers: options.headers }),
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-      });
+      const response = await fetch(
+        withQuery(options.path, {
+          ...(cursor === undefined ? {} : { [pagination.cursorParameter]: String(cursor) }),
+          ...(pagination.limit === undefined
+            ? {}
+            : { [pagination.limitParameter]: String(pagination.limit) }),
+        }),
+        {
+          ...(options.headers === undefined ? {} : { headers: options.headers }),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        },
+      );
       const body = await parsePageResponse(response);
       const records = parsePageRecords(options.records, body, pagination.responsePath);
       if (records.length === 0) {
@@ -555,13 +529,13 @@ async function* paginateRequests<Records extends z.ZodType>(
       }
 
       const candidate = valueAtPath(body, pagination.cursorPath);
-      const nextPageParam = typeof candidate === "number" && Number.isFinite(candidate)
-        ? candidate
-        : typeof candidate === "string" && candidate.trim()
-        ? candidate
-        : undefined;
-      const hasNext = nextPageParam !== undefined &&
-        String(nextPageParam) !== String(cursor);
+      const nextPageParam =
+        typeof candidate === "number" && Number.isFinite(candidate)
+          ? candidate
+          : typeof candidate === "string" && candidate.trim()
+            ? candidate
+            : undefined;
+      const hasNext = nextPageParam !== undefined && String(nextPageParam) !== String(cursor);
       yield {
         records,
         ...(hasNext ? { nextPageParam } : {}),
@@ -575,24 +549,25 @@ async function* paginateRequests<Records extends z.ZodType>(
 
   let offset = pagination.initialOffset ?? 0;
   while (true) {
-    const response = await fetch(withQuery(options.path, {
-      [pagination.offsetParameter]: String(offset),
-      ...(pagination.limit === undefined
-        ? {}
-        : { [pagination.limitParameter]: String(pagination.limit) }),
-    }), {
-      ...(options.headers === undefined ? {} : { headers: options.headers }),
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-    });
+    const response = await fetch(
+      withQuery(options.path, {
+        [pagination.offsetParameter]: String(offset),
+        ...(pagination.limit === undefined
+          ? {}
+          : { [pagination.limitParameter]: String(pagination.limit) }),
+      }),
+      {
+        ...(options.headers === undefined ? {} : { headers: options.headers }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      },
+    );
     const body = await parsePageResponse(response);
     const records = parsePageRecords(options.records, body, pagination.responsePath);
     if (records.length === 0) {
       return;
     }
 
-    const nextPageParam = pagination.increment === "page"
-      ? offset + 1
-      : offset + records.length;
+    const nextPageParam = pagination.increment === "page" ? offset + 1 : offset + records.length;
     const hasNext = pagination.limit === undefined || records.length >= pagination.limit;
     yield {
       records,
@@ -624,7 +599,7 @@ async function parsePageResponse(response: Response): Promise<unknown> {
   if (!response.ok) {
     throw new Error(`Provider returned ${response.status} while paginating`);
   }
-  return await response.json() as unknown;
+  return (await response.json()) as unknown;
 }
 
 function parsePageRecords<Records extends z.ZodType>(
@@ -632,9 +607,9 @@ function parsePageRecords<Records extends z.ZodType>(
   body: unknown,
   responsePath: string | undefined,
 ): z.output<Records>[] {
-  const result = z.array(schema).safeParse(
-    responsePath === undefined ? body : valueAtPath(body, responsePath),
-  );
+  const result = z
+    .array(schema)
+    .safeParse(responsePath === undefined ? body : valueAtPath(body, responsePath));
   if (!result.success) {
     throw new Error(`Invalid paginated records: ${z.prettifyError(result.error)}`);
   }
@@ -653,7 +628,7 @@ function valueAtPath(value: unknown, path: string): unknown {
 }
 
 function withQuery(path: string, values: Readonly<Record<string, string>>): string {
-  if (!path.startsWith("/") || path.startsWith("//")) {
+  if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\")) {
     throw new Error("ctx.paginate requires a relative-origin path beginning with /");
   }
   const url = new URL(path, "https://provider.invalid");
@@ -667,35 +642,15 @@ function responseCanHaveBody(status: number): boolean {
   return status !== 101 && status !== 204 && status !== 205 && status !== 304;
 }
 
-function connectionCredentialReferences(
-  auth: AuthDefinition,
-  baseUrl: IntegrationDefinition["connection"]["baseUrl"],
-): readonly string[] {
-  const baseUrlCredentials = typeof baseUrl === "string"
-    ? []
-    : [baseUrl.credential];
-  if (auth.type === "none") {
-    return baseUrlCredentials;
-  }
-  if (auth.type === "bearer" || auth.type === "api_key") {
-    return [auth.credential, ...baseUrlCredentials];
-  }
-  if (auth.type === "basic") {
-    return [auth.username, auth.password, ...baseUrlCredentials];
-  }
+function authenticationInputReferences(auth: AuthDefinition): readonly string[] {
+  if (auth.type === "none") return [];
+  if (auth.type === "bearer") return ["token"];
+  if (auth.type === "basic") return ["username", "password"];
+  if (auth.type === "api_key") return ["apiKey"];
   if (auth.type === "oauth2_authorization_code") {
-    return [
-      auth.accessToken,
-      ...(auth.refreshToken === undefined ? [] : [auth.refreshToken]),
-      ...Object.keys(auth.tokenFields),
-      ...baseUrlCredentials,
-    ];
+    return ["clientId", ...(auth.usesClientSecret ? ["clientSecret"] : [])];
   }
-  return [
-    ...Object.values(auth.headers),
-    ...Object.values(auth.query),
-    ...baseUrlCredentials,
-  ];
+  return [...Object.values(auth.headers), ...Object.values(auth.query)];
 }
 
 function validateRetry(retry: RetryDefinition | undefined): void {
@@ -710,9 +665,8 @@ function validateRetry(retry: RetryDefinition | undefined): void {
   }
   if (
     retry.statuses !== undefined &&
-    (retry.statuses.length === 0 || retry.statuses.some((status) =>
-      !Number.isInteger(status) || status < 100 || status > 599
-    ))
+    (retry.statuses.length === 0 ||
+      retry.statuses.some((status) => !Number.isInteger(status) || status < 100 || status > 599))
   ) {
     throw new Error("Retry statuses must contain valid HTTP status codes");
   }
@@ -740,13 +694,10 @@ function validateRetry(retry: RetryDefinition | undefined): void {
 }
 
 function validatePagination(pagination: PaginationDefinition): void {
-  const required = pagination.type === "cursor"
-    ? [
-      pagination.cursorParameter,
-      pagination.cursorPath,
-      pagination.limitParameter,
-    ]
-    : [pagination.offsetParameter, pagination.limitParameter];
+  const required =
+    pagination.type === "cursor"
+      ? [pagination.cursorParameter, pagination.cursorPath, pagination.limitParameter]
+      : [pagination.offsetParameter, pagination.limitParameter];
   if (required.some((value) => !value?.trim())) {
     throw new Error(`Invalid ${pagination.type} pagination configuration`);
   }
@@ -784,11 +735,7 @@ function validatePagination(pagination: PaginationDefinition): void {
   }
 }
 
-function parse<T>(
-  schema: z.ZodType<T>,
-  value: unknown,
-  label: string,
-): T & JsonValue {
+function parse<T>(schema: z.ZodType<T>, value: unknown, label: string): T & JsonValue {
   const result = schema.safeParse(value);
   if (!result.success) {
     throw new Error(`Invalid ${label}: ${z.prettifyError(result.error)}`);
@@ -815,15 +762,8 @@ function parseCheckpoint(sync: SyncDefinition, value: unknown): JsonValue {
   return parse(sync.checkpoint, value, "checkpoint");
 }
 
-function isJsonValue(
-  value: unknown,
-  ancestors = new Set<object>(),
-): value is JsonValue {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
+function isJsonValue(value: unknown, ancestors = new Set<object>()): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
     return true;
   }
   if (typeof value === "number") {
@@ -843,10 +783,7 @@ function isJsonValue(
     }
     if (Array.isArray(value)) {
       const keys = Object.keys(value);
-      if (
-        keys.length !== value.length ||
-        keys.some((key, index) => key !== String(index))
-      ) {
+      if (keys.length !== value.length || keys.some((key, index) => key !== String(index))) {
         return false;
       }
       return value.every((item) => isJsonValue(item, ancestors));

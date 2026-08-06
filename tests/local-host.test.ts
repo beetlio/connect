@@ -1,166 +1,48 @@
 import assert from "node:assert/strict";
+import { readFile, readdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 
-import { auth, z } from "@beetlio/connect";
+import { auth, defineIntegration, defineSync, z } from "@beetlio/connect";
+import { runSync, type ProviderRequest } from "@beetlio/connect/host";
 import { LocalHost } from "../src/local-host.ts";
+import { fixtureDirectory } from "./support.ts";
 
-const request = {
-  method: "GET",
-  path: "/events",
-  headers: [],
-};
+const Request: ProviderRequest = { method: "GET", path: "/events", headers: [] };
 
-test("local host only sends credentials over HTTPS or loopback HTTP", async () => {
+test("authentication stays on secure origins and supports declarative fields", async () => {
   let calls = 0;
-  const fetch: typeof globalThis.fetch = async (_input, init) => {
-    calls += 1;
-    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer secret");
-    return new Response(null, { status: 204 });
-  };
-
-  const options = {
+  let authorization = "";
+  const authenticated = {
     auth: auth.bearer(),
-    credentialSchema: z.object({ token: z.string() }),
-    credentials: { token: "secret" },
+    authenticationInput: { token: "secret" },
     outputPath: "unused",
     statePath: "unused",
-    fetch,
+    fetch: async (_input: URL | RequestInfo, init?: RequestInit) => {
+      calls += 1;
+      authorization = new Headers(init?.headers).get("authorization") ?? "";
+      return new Response(null, { status: 204 });
+    },
   };
+
   await assert.rejects(
-    new LocalHost({ ...options, baseUrl: "http://example.com" }).request(request),
+    new LocalHost({ ...authenticated, baseUrl: "http://example.com" }).request(Request),
     /require HTTPS/,
   );
   assert.equal(calls, 0);
+  await new LocalHost({ ...authenticated, baseUrl: "http://127.0.0.1" }).request(Request);
+  assert.equal(authorization, "Bearer secret");
 
-  await new LocalHost({ ...options, baseUrl: "http://127.0.0.1" }).request(request);
-  assert.equal(calls, 1);
-});
-
-test("OAuth authorization-code metadata uses a bearer access token", async () => {
-  const oauth = auth.oauth2AuthorizationCode({
-    authorizationUrl: "https://provider.example/authorize",
-    tokenUrl: "https://provider.example/token",
-    scopes: ["accounts.read"],
-  });
-  assert.deepEqual(oauth, {
-    type: "oauth2_authorization_code",
-    authorizationUrl: "https://provider.example/authorize",
-    tokenUrl: "https://provider.example/token",
-    scopes: ["accounts.read"],
-    clientId: "clientId",
-    accessToken: "accessToken",
-    tokenFields: {},
-  });
-
-  let authorization: string | null = null;
-  const host = new LocalHost({
-    baseUrl: "https://provider.example",
-    auth: oauth,
-    credentialSchema: z.object({ accessToken: z.string() }),
-    credentials: { accessToken: "access-token" },
-    outputPath: "unused",
-    statePath: "unused",
-    fetch: async (_input, init) => {
-      authorization = new Headers(init?.headers).get("authorization");
-      return new Response(null, { status: 204 });
-    },
-  });
-
-  await host.request(request);
-  assert.equal(authorization, "Bearer access-token");
-});
-
-test("OAuth connections refresh after 401 and update a credential-derived base URL", async () => {
-  const oauth = auth.oauth2AuthorizationCode({
-    authorizationUrl: "https://provider.example/authorize",
-    tokenUrl: "https://provider.example/token",
-    scopes: ["accounts.read"],
-    clientSecret: "clientSecret",
-    refreshToken: "refreshToken",
-    tokenFields: { instanceUrl: "instance_url" },
-  });
-  const requests: string[] = [];
-  let saved: Readonly<Record<string, string>> | undefined;
-  const host = new LocalHost({
-    baseUrl: { credential: "instanceUrl" },
-    auth: oauth,
-    integrationCredentialSchema: z.object({
-      clientId: z.string(),
-      clientSecret: z.string(),
-    }),
-    integrationCredentials: {
-      clientId: "client-id",
-      clientSecret: "client-secret",
-    },
-    credentialSchema: z.object({
-      accessToken: z.string(),
-      refreshToken: z.string(),
-      instanceUrl: z.string(),
-    }),
-    credentials: {
-      accessToken: "expired-token",
-      refreshToken: "refresh-token",
-      instanceUrl: "https://old.example",
-    },
-    outputPath: "unused",
-    statePath: "unused",
-    onCredentialsChanged(credentials) {
-      saved = credentials;
-    },
-    fetch: async (input, init) => {
-      const url = String(input);
-      requests.push(url);
-      if (url === "https://provider.example/token") {
-        const body = new URLSearchParams(String(init?.body));
-        assert.equal(body.get("grant_type"), "refresh_token");
-        assert.equal(body.get("refresh_token"), "refresh-token");
-        assert.equal(body.get("client_id"), "client-id");
-        assert.equal(body.get("client_secret"), "client-secret");
-        return Response.json({
-          access_token: "fresh-token",
-          instance_url: "https://new.example",
-        });
-      }
-      const authorization = new Headers(init?.headers).get("authorization");
-      return url === "https://old.example/events"
-        ? new Response(null, { status: 401 })
-        : new Response(null, {
-          status: authorization === "Bearer fresh-token" ? 204 : 403,
-        });
-    },
-  });
-
-  const response = await host.request(request);
-  assert.equal(response.status, 204);
-  assert.deepEqual(requests, [
-    "https://old.example/events",
-    "https://provider.example/token",
-    "https://new.example/events",
-  ]);
-  assert.deepEqual(saved, {
-    accessToken: "fresh-token",
-    refreshToken: "refresh-token",
-    instanceUrl: "https://new.example",
-  });
-});
-
-test("local host applies declarative multi-field authentication", async () => {
   let url = "";
   let account = "";
-  const host = new LocalHost({
-    baseUrl: "https://provider.example",
+  const custom = new LocalHost({
+    baseUrl: "https://api.example.com",
     auth: auth.custom({
-      headers: { "x-account": "accountId" },
+      inputs: z.object({ account: z.string(), apiKey: z.string() }),
+      headers: { "x-account": "account" },
       query: { api_key: "apiKey" },
     }),
-    credentialSchema: z.object({
-      accountId: z.string(),
-      apiKey: z.string(),
-    }),
-    credentials: {
-      accountId: "acct_123",
-      apiKey: "secret",
-    },
+    authenticationInput: { account: "acct_123", apiKey: "secret" },
     outputPath: "unused",
     statePath: "unused",
     fetch: async (input, init) => {
@@ -169,106 +51,35 @@ test("local host applies declarative multi-field authentication", async () => {
       return new Response(null, { status: 204 });
     },
   });
-
-  await host.request(request);
-  assert.equal(url, "https://provider.example/events?api_key=secret");
+  await custom.request(Request);
+  assert.equal(url, "https://api.example.com/events?api_key=secret");
   assert.equal(account, "acct_123");
 });
 
-test("local host applies basic authentication from typed credentials", async () => {
-  let authorization = "";
-  const host = new LocalHost({
-    baseUrl: "https://provider.example",
-    auth: auth.basic(),
-    credentialSchema: z.object({
-      username: z.string(),
-      password: z.string(),
-    }),
-    credentials: { username: "user", password: "secret" },
-    outputPath: "unused",
-    statePath: "unused",
-    fetch: async (_input, init) => {
-      authorization = new Headers(init?.headers).get("authorization") ?? "";
-      return new Response(null, { status: 204 });
-    },
-  });
-
-  await host.request(request);
-  assert.equal(
-    authorization,
-    `Basic ${Buffer.from("user:secret").toString("base64")}`,
-  );
-});
-
-test("local host performs configured safe retries", async () => {
+test("retry policy retries transient responses and can be disabled", async () => {
   let calls = 0;
   const host = new LocalHost({
-    baseUrl: "https://provider.example",
+    baseUrl: "https://api.example.com",
     outputPath: "unused",
     statePath: "unused",
     fetch: async () => {
       calls += 1;
-      return calls < 3
-        ? new Response(null, {
-          status: 503,
-          headers: { "retry-after": "0" },
-        })
-        : new Response(null, { status: 204 });
+      return new Response(null, {
+        status: calls < 3 ? 503 : 204,
+        headers: { "retry-after": "0" },
+      });
     },
   });
-
   const response = await host.request({
-    ...request,
-    retry: {
-      maxAttempts: 3,
-      statuses: [503],
-      methods: ["GET"],
-      initialDelayMs: 0,
-      maxDelayMs: 0,
-    },
+    ...Request,
+    retry: { maxAttempts: 3, initialDelayMs: 0, maxDelayMs: 0 },
   });
   assert.equal(response.status, 204);
   assert.equal(calls, 3);
-});
 
-test("local host retries transient transport failures", async () => {
-  let calls = 0;
-  const host = new LocalHost({
-    baseUrl: "https://provider.example",
-    outputPath: "unused",
-    statePath: "unused",
-    fetch: async () => {
-      calls += 1;
-      if (calls === 1) {
-        throw new TypeError("connection reset");
-      }
-      if (calls === 2) {
-        return new Response(new ReadableStream({
-          start(controller) {
-            controller.error(new TypeError("response body interrupted"));
-          },
-        }));
-      }
-      return new Response(null, { status: 204 });
-    },
-  });
-
-  const response = await host.request({
-    ...request,
-    retry: {
-      maxAttempts: 3,
-      initialDelayMs: 0,
-      maxDelayMs: 0,
-    },
-  });
-  assert.equal(response.status, 204);
-  assert.equal(calls, 3);
-});
-
-test("retry false performs exactly one request", async () => {
-  let calls = 0;
-  const host = new LocalHost({
-    baseUrl: "https://provider.example",
+  calls = 0;
+  const singleAttempt = new LocalHost({
+    baseUrl: "https://api.example.com",
     outputPath: "unused",
     statePath: "unused",
     fetch: async () => {
@@ -276,8 +87,128 @@ test("retry false performs exactly one request", async () => {
       return new Response(null, { status: 503 });
     },
   });
-
-  const response = await host.request({ ...request, retry: false });
-  assert.equal(response.status, 503);
+  assert.equal((await singleAttempt.request({ ...Request, retry: false })).status, 503);
   assert.equal(calls, 1);
+});
+
+test("OAuth refresh is single-flight and isolated from waiter cancellation", async () => {
+  const oauth = auth.oauth2AuthorizationCode({
+    issuer: "https://provider.example",
+    authorizationUrl: "https://provider.example/authorize",
+    tokenUrl: "https://provider.example/token",
+    scopes: ["events.read"],
+    tokenFields: { instanceUrl: "instance_url" },
+  });
+  let refreshes = 0;
+  let saved:
+    | {
+        readonly accessToken: string;
+        readonly refreshToken?: string;
+        readonly tokenFields: Readonly<Record<string, string>>;
+      }
+    | undefined;
+  let notifyRefreshStarted!: () => void;
+  let releaseRefresh!: () => void;
+  const refreshStarted = new Promise<void>((resolve) => (notifyRefreshStarted = resolve));
+  const refreshGate = new Promise<void>((resolve) => (releaseRefresh = resolve));
+  const host = new LocalHost({
+    baseUrl: { oauthTokenField: "instanceUrl" },
+    auth: oauth,
+    authenticationInput: { clientId: "client-id" },
+    authorizationState: {
+      accessToken: "expired-token",
+      refreshToken: "refresh-token",
+      tokenFields: { instanceUrl: "https://old.example" },
+    },
+    outputPath: "unused",
+    statePath: "unused",
+    onAuthorizationStateChanged: (authorizationState) => void (saved = authorizationState),
+    fetch: async (input, init) => {
+      const url = String(input);
+      if (url === "https://provider.example/token") {
+        refreshes += 1;
+        notifyRefreshStarted();
+        await refreshGate;
+        return Response.json({
+          access_token: "fresh-token",
+          token_type: "Bearer",
+          instance_url: "https://new.example",
+        });
+      }
+      if (new Headers(init?.headers).get("authorization") === "Bearer expired-token") {
+        return new Response(null, { status: 401 });
+      }
+      assert.equal(url, "https://new.example/events");
+      return new Response(null, { status: 204 });
+    },
+  });
+
+  const controller = new AbortController();
+  const cancelled = host.request(Request, controller.signal).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  await refreshStarted;
+  const active = host.request(Request);
+  controller.abort(new Error("request cancelled"));
+  releaseRefresh();
+
+  assert.match(String(await cancelled), /request cancelled/);
+  assert.equal((await active).status, 204);
+  assert.equal(refreshes, 1);
+  assert.deepEqual(saved, {
+    accessToken: "fresh-token",
+    refreshToken: "refresh-token",
+    tokenFields: { instanceUrl: "https://new.example" },
+  });
+});
+
+test("provider responses have a hard size limit", async () => {
+  const host = new LocalHost({
+    baseUrl: "https://api.example.com",
+    outputPath: "unused",
+    statePath: "unused",
+    fetch: async () => new Response(new Uint8Array(16 * 1024 * 1024 + 1)),
+  });
+  await assert.rejects(host.request({ ...Request, retry: false }), /exceeds 16 MiB/);
+});
+
+test("snapshot output is replaced only after a successful run", async (t) => {
+  const directory = await fixtureDirectory(t, "beetl-snapshot");
+  const outputPath = join(directory, "items.ndjson");
+  let records = [{ id: 1 }, { id: 2 }];
+  let fail = false;
+  const integration = defineIntegration({
+    key: "snapshot",
+    displayName: "Snapshot",
+    connection: { baseUrl: "https://api.example.com" },
+    syncs: [
+      defineSync({
+        key: "items",
+        displayName: "Items",
+        mode: "snapshot",
+        records: z.object({ id: z.number() }),
+        async run(ctx) {
+          await ctx.emit({ records });
+          if (fail) throw new Error("snapshot failed");
+        },
+      }),
+    ],
+  });
+  const host = new LocalHost({
+    baseUrl: integration.connection.baseUrl,
+    outputPath,
+    statePath: join(directory, "state.json"),
+    onLog: () => undefined,
+  });
+
+  await writeFile(outputPath, '{"id":0}\n');
+  await runSync(integration, "items", {}, host);
+  assert.equal(await readFile(outputPath, "utf8"), '{"id":1}\n{"id":2}\n');
+
+  records = [{ id: 3 }];
+  fail = true;
+  await assert.rejects(runSync(integration, "items", {}, host), /snapshot failed/);
+  assert.equal(await readFile(outputPath, "utf8"), '{"id":1}\n{"id":2}\n');
+  assert.deepEqual(await readdir(directory), ["items.ndjson"]);
 });

@@ -1,4 +1,4 @@
-import { auth, defineIntegration, z } from "@beetlio/connect";
+import { auth, defineIntegration, input, z } from "@beetlio/connect";
 
 const Contact = z.object({
   id: z.string(),
@@ -12,8 +12,8 @@ const Event = z.object({
   createdAt: z.string(),
 });
 
-const PageConfig = z.object({
-  pageSize: z.number().int().min(1).max(100).default(50),
+const PageConfig = input.object({
+  pageSize: input.integer({ label: "Page size", min: 1, max: 100, default: 50 }),
 });
 
 export default defineIntegration({
@@ -21,21 +21,16 @@ export default defineIntegration({
   displayName: "All features dummy API",
   connection: {
     baseUrl: "https://api.example.com",
-    config: z.object({ workspace: z.string().min(1) }),
-    integrationCredentials: z.object({
-      clientId: z.string(),
-      clientSecret: z.string(),
-    }),
-    credentials: z.object({
-      accessToken: z.string(),
-      refreshToken: z.string(),
+    inputs: input.object({
+      workspace: input.string({ label: "Workspace", minLength: 1 }),
     }),
     auth: auth.oauth2AuthorizationCode({
+      clientId: input.string({ label: "OAuth client ID" }),
+      clientSecret: input.secret({ label: "OAuth client secret" }),
+      issuer: "https://auth.example.com",
       authorizationUrl: "https://auth.example.com/oauth/authorize",
       tokenUrl: "https://auth.example.com/oauth/token",
       scopes: ["contacts:read", "events:read"],
-      clientSecret: "clientSecret",
-      refreshToken: "refreshToken",
     }),
     retry: {
       maxAttempts: 2,
@@ -45,7 +40,9 @@ export default defineIntegration({
       maxDelayMs: 0,
     },
     async verify(ctx) {
-      const response = await ctx.fetch(`/v1/me?workspace=${encodeURIComponent(ctx.config.workspace)}`);
+      const response = await ctx.fetch(
+        `/v1/me?workspace=${encodeURIComponent(ctx.config.workspace)}`,
+      );
       if (!response.ok) throw new Error(`Verification failed with ${response.status}`);
       await ctx.log.info("Connection verified");
     },
@@ -59,7 +56,7 @@ export default defineIntegration({
       checkpoint: z.object({
         pagination: z.object({ offset: z.number().int().nonnegative() }),
       }),
-      config: PageConfig,
+      inputs: PageConfig,
       async run(ctx) {
         let offset = ctx.checkpoint?.pagination.offset ?? 0;
         for await (const page of ctx.paginate({
@@ -92,13 +89,11 @@ export default defineIntegration({
       checkpoint: z.object({
         watermark: z.object({ lastSeenId: z.string() }),
       }),
-      config: PageConfig,
+      inputs: PageConfig,
       async run(ctx) {
         const params = new URLSearchParams({
           workspace: ctx.config.connection.workspace,
-          ...(ctx.checkpoint === undefined
-            ? {}
-            : { since: ctx.checkpoint.watermark.lastSeenId }),
+          ...(ctx.checkpoint === undefined ? {} : { since: ctx.checkpoint.watermark.lastSeenId }),
         });
         for await (const page of ctx.paginate({
           path: `/v1/events?${params}`,

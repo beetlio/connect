@@ -13,10 +13,7 @@ import integration from "../wikidata/integration.ts";
 class ConsoleHost implements SyncHost {
   #snapshot: EmittedBatch["records"][number][] | undefined;
 
-  async request(
-    request: ProviderRequest,
-    signal?: AbortSignal,
-  ): Promise<ProviderResponse> {
+  async request(request: ProviderRequest, signal?: AbortSignal): Promise<ProviderResponse> {
     const baseUrl = new URL("https://www.wikidata.org");
     const url = new URL(request.path, baseUrl);
     if (url.origin !== baseUrl.origin) {
@@ -25,13 +22,9 @@ class ConsoleHost implements SyncHost {
 
     const response = await fetch(url, {
       method: request.method,
-      headers: request.headers.map(
-        ([name, value]): [string, string] => [name, value],
-      ),
+      headers: request.headers.map(([name, value]): [string, string] => [name, value]),
       redirect: "manual",
-      ...(request.body === undefined
-        ? {}
-        : { body: Uint8Array.from(request.body).buffer }),
+      ...(request.body === undefined ? {} : { body: Uint8Array.from(request.body).buffer }),
       ...(signal === undefined ? {} : { signal }),
     });
     return {

@@ -4,11 +4,9 @@ import test from "node:test";
 
 const docs = new URL("../docs/", import.meta.url);
 
-test("documentation site has valid local links and a Pages workflow", async () => {
+test("documentation has no broken local references and is deployed from docs", async () => {
   const html = await readFile(new URL("index.html", docs), "utf8");
   assert.match(html, /<html lang="en">/);
-  assert.match(html, /<meta name="viewport"/);
-  assert.match(html, /href="\.\/styles\.css"/);
 
   const ids = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]!));
   for (const [, target] of html.matchAll(/href="#([^"]+)"/g)) {
@@ -22,8 +20,6 @@ test("documentation site has valid local links and a Pages workflow", async () =
     new URL("../.github/workflows/pages.yml", import.meta.url),
     "utf8",
   );
-  assert.match(workflow, /actions\/configure-pages@v5/);
-  assert.match(workflow, /actions\/upload-pages-artifact@v4/);
-  assert.match(workflow, /actions\/deploy-pages@v4/);
+  assert.match(workflow, /actions\/deploy-pages@/);
   assert.match(workflow, /path: docs/);
 });

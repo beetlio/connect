@@ -1,7 +1,7 @@
 {
   "name": "@beetlio/connect",
   "version": "0.0.0",
-  "description": "TypeScript SDK and CLI for authoring host-neutral data integrations",
+  "description": "CLI for building and running TypeScript API integrations",
   "license": "Apache-2.0",
   "type": "module",
   "repository": {
@@ -34,16 +34,24 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "npm run build --silent && tsc --noEmit",
+    "check": "npm run format:check && npm run build --silent && tsc --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "test": "npm run build --silent && node --test tests/*.test.ts",
-    "cli": "npm run build --silent && node dist/cli.js",
     "prepack": "npm run build"
   },
   "dependencies": {
+    "@inquirer/password": "^5.1.1",
+    "@optique/core": "^1.2.0",
+    "@optique/run": "^1.2.0",
+    "esbuild": "^0.28.1",
+    "fflate": "^0.8.3",
+    "oauth4webapi": "^3.8.6",
+    "typescript": "^5.9.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
-    "typescript": "^5.9.3"
+    "prettier": "^3.9.6"
   }
 }

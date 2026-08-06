@@ -1,26 +1,16 @@
-import {
-  mkdir,
-  open,
-  readFile,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { z } from "zod";
-
 import type {
   AuthDefinition,
   BaseUrlDefinition,
-  CredentialSchema,
   JsonValue,
   RetryDefinition,
   RetryPolicy,
 } from "./index.ts";
-import { refreshOAuthCredentials } from "./oauth.ts";
+import { refreshOAuthAuthorization, type OAuthAuthorizationState } from "./oauth.ts";
 import type {
   EmittedBatch,
   LogEntry,
@@ -29,81 +19,66 @@ import type {
   SyncHost,
 } from "./host.ts";
 
+const MaxProviderResponseBytes = 16 * 1024 * 1024;
+
 export interface LocalHostOptions {
   baseUrl: BaseUrlDefinition;
   auth?: AuthDefinition;
-  integrationCredentialSchema?: CredentialSchema;
-  integrationCredentials?: unknown;
-  credentialSchema?: CredentialSchema;
-  credentials?: unknown;
+  authenticationInput?: Readonly<Record<string, string>>;
+  authorizationState?: OAuthAuthorizationState;
   outputPath: string;
   statePath: string;
   fetch?: typeof globalThis.fetch;
   signal?: AbortSignal;
   onLog?: (entry: LogEntry) => void;
-  onCredentialsChanged?: (
-    credentials: Readonly<Record<string, string>>,
-  ) => void | Promise<void>;
+  onAuthorizationStateChanged?: (state: OAuthAuthorizationState) => void | Promise<void>;
 }
 
 export class LocalHost implements SyncHost {
   #baseUrl: URL;
   readonly #baseUrlDefinition: BaseUrlDefinition;
-  readonly #auth: AuthDefinition;
-  readonly #integrationCredentials: Readonly<Record<string, string>>;
-  readonly #credentialSchema: CredentialSchema | undefined;
-  #credentials: Readonly<Record<string, string>>;
+  readonly #auth: AuthDefinition | { readonly type: "none" };
+  readonly #authenticationInput: Readonly<Record<string, string>>;
+  #authorizationState: OAuthAuthorizationState | undefined;
+  #authorizationVersion = 0;
+  #refreshing: Promise<boolean> | undefined;
   readonly #outputPath: string;
   readonly #statePath: string;
   #snapshotPath: string | undefined;
   readonly #fetch: typeof globalThis.fetch;
   readonly #signal: AbortSignal | undefined;
   readonly #onLog: (entry: LogEntry) => void;
-  readonly #onCredentialsChanged: (
-    credentials: Readonly<Record<string, string>>,
-  ) => void | Promise<void>;
+  readonly #onAuthorizationStateChanged: (state: OAuthAuthorizationState) => void | Promise<void>;
 
   constructor(options: LocalHostOptions) {
     this.#baseUrlDefinition = options.baseUrl;
     this.#auth = options.auth ?? { type: "none" };
-    this.#integrationCredentials = parseCredentials(
-      options.integrationCredentialSchema,
-      options.integrationCredentials,
-    );
-    this.#credentialSchema = options.credentialSchema;
-    this.#credentials = parseCredentials(
-      options.credentialSchema,
-      options.credentials,
-    );
+    this.#authenticationInput = options.authenticationInput ?? {};
+    this.#authorizationState = options.authorizationState;
     this.#baseUrl = this.#resolveBaseUrl();
     this.#outputPath = options.outputPath;
     this.#statePath = options.statePath;
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#signal = options.signal;
     this.#onLog = options.onLog ?? ((entry) => console.error(JSON.stringify(entry)));
-    this.#onCredentialsChanged = options.onCredentialsChanged ?? (() => undefined);
+    this.#onAuthorizationStateChanged = options.onAuthorizationStateChanged ?? (() => undefined);
   }
 
-  async request(
-    request: ProviderRequest,
-    signal?: AbortSignal,
-  ): Promise<ProviderResponse> {
-    const requestSignal = this.#signal && signal
-      ? AbortSignal.any([this.#signal, signal])
-      : this.#signal ?? signal;
+  async request(request: ProviderRequest, signal?: AbortSignal): Promise<ProviderResponse> {
+    const requestSignal =
+      this.#signal && signal ? AbortSignal.any([this.#signal, signal]) : (this.#signal ?? signal);
     const retry = resolveRetry(request.retry);
     let refreshed = false;
 
     for (let attempt = 1; ; attempt += 1) {
       requestSignal?.throwIfAborted();
+      const authorizationVersion = this.#authorizationVersion;
       const url = new URL(request.path, this.#baseUrl);
       if (url.origin !== this.#baseUrl.origin) {
         throw new Error("Provider request escaped the configured origin");
       }
       const headers = new Headers(
-        request.headers.map(
-          ([name, value]): [string, string] => [name, value],
-        ),
+        request.headers.map(([name, value]): [string, string] => [name, value]),
       );
       this.#applyAuthentication(url, headers);
       let response: Response;
@@ -114,13 +89,12 @@ export class LocalHost implements SyncHost {
           headers,
           redirect: "manual",
           ...(requestSignal === undefined ? {} : { signal: requestSignal }),
-          ...(request.body === undefined
-            ? {}
-            : { body: Uint8Array.from(request.body).buffer }),
+          ...(request.body === undefined ? {} : { body: Uint8Array.from(request.body).buffer }),
         });
-        responseBody = new Uint8Array(await response.arrayBuffer());
+        responseBody = await readResponseBody(response);
       } catch (error) {
         if (
+          error instanceof ResponseTooLargeError ||
           requestSignal?.aborted ||
           !canRetry(request.method, attempt, retry)
         ) {
@@ -134,7 +108,8 @@ export class LocalHost implements SyncHost {
       if (
         response.status === 401 &&
         !refreshed &&
-        await this.#refreshOAuth(requestSignal)
+        (authorizationVersion !== this.#authorizationVersion ||
+          (await this.#refreshOAuth(requestSignal)))
       ) {
         refreshed = true;
         attempt -= 1;
@@ -183,11 +158,7 @@ export class LocalHost implements SyncHost {
     try {
       await mkdir(dirname(path), { recursive: true });
       const file = await open(path, "wx", 0o600);
-      try {
-        await file.sync();
-      } finally {
-        await file.close();
-      }
+      await file.close();
     } catch (error) {
       this.#snapshotPath = undefined;
       await rm(path, { force: true });
@@ -235,73 +206,113 @@ export class LocalHost implements SyncHost {
       throw new Error("Authenticated provider requests require HTTPS");
     }
     if (this.#auth.type === "bearer") {
-      headers.set("authorization", `Bearer ${this.#credential(this.#auth.credential)}`);
+      headers.set("authorization", `Bearer ${this.#authenticationValue("token")}`);
       return;
     }
     if (this.#auth.type === "oauth2_authorization_code") {
-      headers.set("authorization", `Bearer ${this.#credential(this.#auth.accessToken)}`);
+      const accessToken = this.#authorizationState?.accessToken;
+      if (accessToken === undefined) throw new Error("OAuth connection is not authorized");
+      headers.set("authorization", `Bearer ${accessToken}`);
       return;
     }
     if (this.#auth.type === "basic") {
       const value = Buffer.from(
-        `${this.#credential(this.#auth.username)}:${this.#credential(this.#auth.password)}`,
+        `${this.#authenticationValue("username")}:${this.#authenticationValue("password")}`,
       ).toString("base64");
       headers.set("authorization", `Basic ${value}`);
       return;
     }
     if (this.#auth.type === "api_key") {
-      const credential = this.#credential(this.#auth.credential);
+      const apiKey = this.#authenticationValue("apiKey");
       if (this.#auth.in === "header") {
-        headers.set(this.#auth.name, credential);
+        headers.set(this.#auth.name, apiKey);
         return;
       }
-      url.searchParams.set(this.#auth.name, credential);
+      url.searchParams.set(this.#auth.name, apiKey);
       return;
     }
     for (const [name, field] of Object.entries(this.#auth.headers)) {
-      headers.set(name, this.#credential(field));
+      headers.set(name, this.#authenticationValue(field));
     }
     for (const [name, field] of Object.entries(this.#auth.query)) {
-      url.searchParams.set(name, this.#credential(field));
+      url.searchParams.set(name, this.#authenticationValue(field));
     }
   }
 
-  #credential(name: string): string {
-    const value = this.#credentials[name];
+  #authenticationValue(name: string): string {
+    const value = this.#authenticationInput[name];
     if (value === undefined) {
-      throw new Error(`Missing credential ${JSON.stringify(name)}`);
+      throw new Error(`Missing authentication input ${JSON.stringify(name)}`);
     }
     return value;
   }
 
-  async #refreshOAuth(signal: AbortSignal | undefined): Promise<boolean> {
+  async #refreshOAuth(waiterSignal: AbortSignal | undefined): Promise<boolean> {
     if (
       this.#auth.type !== "oauth2_authorization_code" ||
-      this.#auth.refreshToken === undefined ||
-      this.#credentialSchema === undefined
+      this.#authorizationState?.refreshToken === undefined
     ) {
       return false;
     }
-    this.#credentials = await refreshOAuthCredentials({
+    waiterSignal?.throwIfAborted();
+    const refreshing = (this.#refreshing ??= this.#performOAuthRefresh(this.#signal).finally(() => {
+      this.#refreshing = undefined;
+    }));
+    if (waiterSignal === undefined) return refreshing;
+    return new Promise<boolean>((resolve, reject) => {
+      const settle = (action: () => void) => {
+        waiterSignal.removeEventListener("abort", abort);
+        action();
+      };
+      const abort = () => settle(() => reject(waiterSignal.reason));
+      waiterSignal.addEventListener("abort", abort, { once: true });
+      if (waiterSignal.aborted) abort();
+      void refreshing.then(
+        (refreshed) => settle(() => resolve(refreshed)),
+        (error: unknown) => settle(() => reject(error)),
+      );
+    });
+  }
+
+  async #performOAuthRefresh(signal: AbortSignal | undefined): Promise<boolean> {
+    if (this.#auth.type !== "oauth2_authorization_code" || !this.#authorizationState) {
+      return false;
+    }
+    const authorizationState = await refreshOAuthAuthorization({
       auth: this.#auth,
-      integrationCredentials: this.#integrationCredentials,
-      credentialSchema: this.#credentialSchema,
-      credentials: this.#credentials,
+      authenticationInput: this.#authenticationInput,
+      authorizationState: this.#authorizationState,
       fetch: this.#fetch,
       ...(signal === undefined ? {} : { signal }),
     });
-    this.#baseUrl = this.#resolveBaseUrl();
-    await this.#onCredentialsChanged(this.#credentials);
+    const baseUrl = this.#resolveBaseUrl(authorizationState);
+    await this.#onAuthorizationStateChanged(authorizationState);
+    this.#authorizationState = authorizationState;
+    this.#baseUrl = baseUrl;
+    this.#authorizationVersion += 1;
     return true;
   }
 
-  #resolveBaseUrl(): URL {
-    const value = typeof this.#baseUrlDefinition === "string"
-      ? this.#baseUrlDefinition
-      : this.#credential(this.#baseUrlDefinition.credential);
+  #resolveBaseUrl(authorizationState = this.#authorizationState): URL {
+    const definition = this.#baseUrlDefinition;
+    let value: string;
+    if (typeof definition === "string") {
+      value = definition;
+    } else {
+      const tokenField = authorizationState?.tokenFields[definition.oauthTokenField];
+      if (tokenField === undefined) {
+        throw new Error(
+          `OAuth authorization is missing token field ${JSON.stringify(definition.oauthTokenField)}`,
+        );
+      }
+      value = tokenField;
+    }
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") {
       throw new Error("Connection base URL must use HTTP or HTTPS");
+    }
+    if (url.username || url.password) {
+      throw new Error("Connection base URL cannot contain credentials");
     }
     return url;
   }
@@ -327,14 +338,39 @@ export class LocalHost implements SyncHost {
   }
 }
 
+class ResponseTooLargeError extends Error {}
+
+async function readResponseBody(response: Response): Promise<Uint8Array> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MaxProviderResponseBytes) {
+    throw new ResponseTooLargeError("Provider response exceeds 16 MiB");
+  }
+  if (response.body === null) return new Uint8Array();
+
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  for await (const chunk of response.body) {
+    length += chunk.byteLength;
+    if (length > MaxProviderResponseBytes) {
+      throw new ResponseTooLargeError("Provider response exceeds 16 MiB");
+    }
+    chunks.push(chunk);
+  }
+  const body = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
 function isMissingFile(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 function isLoopback(hostname: string): boolean {
-  return hostname === "localhost" ||
-    hostname === "[::1]" ||
-    /^127(?:\.\d{1,3}){3}$/.test(hostname);
+  return hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
 }
 
 type ResolvedRetry = Required<RetryPolicy>;
@@ -372,24 +408,17 @@ function shouldRetry(
   attempt: number,
   retry: ResolvedRetry,
 ): boolean {
-  return canRetry(method, attempt, retry) &&
-    retry.statuses.includes(status);
+  return canRetry(method, attempt, retry) && retry.statuses.includes(status);
 }
 
-function canRetry(
-  method: string,
-  attempt: number,
-  retry: ResolvedRetry,
-): boolean {
-  return attempt < retry.maxAttempts &&
-    retry.methods.some((candidate) => candidate.toUpperCase() === method.toUpperCase());
+function canRetry(method: string, attempt: number, retry: ResolvedRetry): boolean {
+  return (
+    attempt < retry.maxAttempts &&
+    retry.methods.some((candidate) => candidate.toUpperCase() === method.toUpperCase())
+  );
 }
 
-function retryDelay(
-  headers: Headers,
-  attempt: number,
-  retry: ResolvedRetry,
-): number {
+function retryDelay(headers: Headers, attempt: number, retry: ResolvedRetry): number {
   const retryAfter = headers.get("retry-after");
   if (retryAfter !== null) {
     const seconds = Number(retryAfter);
@@ -405,32 +434,5 @@ function retryDelay(
 }
 
 function retryBackoff(attempt: number, retry: ResolvedRetry): number {
-  return Math.min(
-    retry.initialDelayMs * (2 ** Math.max(0, attempt - 1)),
-    retry.maxDelayMs,
-  );
-}
-
-function parseCredentials(
-  schema: CredentialSchema | undefined,
-  value: unknown,
-): Readonly<Record<string, string>> {
-  if (!schema) {
-    return {};
-  }
-  const result = schema.safeParse(value ?? {});
-  if (!result.success) {
-    throw new Error(`Invalid credentials: ${z.prettifyError(result.error)}`);
-  }
-  const credentials: Record<string, string> = {};
-  for (const [name, credential] of Object.entries(result.data)) {
-    if (credential === undefined) {
-      continue;
-    }
-    if (typeof credential !== "string") {
-      throw new Error(`Credential ${JSON.stringify(name)} must be a string`);
-    }
-    credentials[name] = credential;
-  }
-  return credentials;
+  return Math.min(retry.initialDelayMs * 2 ** Math.max(0, attempt - 1), retry.maxDelayMs);
 }
