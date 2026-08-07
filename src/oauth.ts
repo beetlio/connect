@@ -9,7 +9,7 @@ type OAuthDefinition = Extract<AuthDefinition, { type: "oauth2_authorization_cod
 
 interface OAuthRequestOptions {
   auth: OAuthDefinition;
-  authenticationInput: Readonly<Record<string, string>>;
+  credentials: Readonly<Record<string, string>>;
   fetch?: typeof globalThis.fetch;
   signal?: AbortSignal;
 }
@@ -214,11 +214,11 @@ function oauthContext(options: OAuthRequestOptions) {
     token_endpoint: tokenUrl.href,
   } satisfies oauth.AuthorizationServer;
   const client: oauth.Client = {
-    client_id: authenticationInput(options.authenticationInput, "clientId"),
+    client_id: credential(options.credentials, "clientId"),
   };
   const clientAuth = !options.auth.usesClientSecret
     ? oauth.None()
-    : oauth.ClientSecretPost(authenticationInput(options.authenticationInput, "clientSecret"));
+    : oauth.ClientSecretPost(credential(options.credentials, "clientSecret"));
   const requestOptions: oauth.TokenEndpointRequestOptions = {
     ...(options.fetch === undefined ? {} : { [oauth.customFetch]: options.fetch }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -227,10 +227,10 @@ function oauthContext(options: OAuthRequestOptions) {
   return { server, client, clientAuth, requestOptions };
 }
 
-function authenticationInput(input: Readonly<Record<string, string>>, field: string): string {
-  const value = input[field];
+function credential(credentials: Readonly<Record<string, string>>, field: string): string {
+  const value = credentials[field];
   if (value === undefined) {
-    throw new Error(`Missing authentication input ${JSON.stringify(field)}`);
+    throw new Error(`Missing credential ${JSON.stringify(field)}`);
   }
   return value;
 }

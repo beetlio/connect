@@ -160,7 +160,7 @@ const Repository = z.object({
 export default defineIntegration({
   key: "github",
   displayName: "GitHub repositories",
-  connection: { baseUrl: "https://api.github.com" },
+  connection: { origin: "https://api.github.com" },
   syncs: (defineSync) =&gt; [
     defineSync({
       key: "repositories",
@@ -191,10 +191,10 @@ export default defineIntegration({
 
           <h3>Runtime validation</h3>
           <p>
-            Connection and sync configuration uses <code>input.object()</code> and the finite
-            <code>input.*</code> field helpers. That schema drives TypeScript types, the manifest,
-            and interactive prompts. Records and checkpoints use ordinary Zod schemas. Connect
-            parses every value before it crosses its declared boundary.
+            Connection and sync configuration uses <code>input.object()</code> and the non-secret
+            <code>input.*</code> field helpers. Authentication uses separate
+            <code>credential.*</code> descriptors. Each descriptor directly owns its parser and
+            manifest representation. Records and checkpoints use ordinary Zod schemas.
           </p>
         </section>
 
@@ -217,9 +217,9 @@ head -n 1 repositories.ndjson</code></pre>
         <section id="authentication">
           <h2>Authentication</h2>
           <p>
-            Authentication is declared on the connection. The CLI collects its authentication inputs
-            and adds authentication to provider requests. Integration code never receives
-            authentication inputs or provider-issued OAuth state directly.
+            Authentication is declared on the connection. The CLI collects its credentials and adds
+            authentication to provider requests. Integration code never receives credentials or
+            provider-issued OAuth state directly.
           </p>
 
           <div class="table-wrap">
@@ -255,7 +255,7 @@ head -n 1 repositories.ndjson</code></pre>
                 <tr>
                   <td>Custom</td>
                   <td><code>auth.custom(...)</code></td>
-                  <td>Maps multiple authentication inputs to headers or query parameters</td>
+                  <td>Maps multiple credentials to headers or query parameters</td>
                 </tr>
                 <tr>
                   <td>OAuth 2.0</td>
@@ -276,10 +276,9 @@ head -n 1 repositories.ndjson</code></pre>
 
           <h3>Named connections</h3>
           <p>
-            <code>connect</code> prompts for the connection inputs and authentication inputs
-            declared by the integration. For OAuth, the provider callback produces separate
-            authorization state containing access and refresh tokens. Integration code sees none of
-            these secrets.
+            <code>connect</code> prompts for the connection inputs and credentials declared by the
+            integration. For OAuth, the provider callback produces separate authorization state
+            containing access and refresh tokens. Integration code sees none of these secrets.
           </p>
           <pre><code>beetl-connect connect . --connection default
 beetl-connect verify . --connection default</code></pre>
@@ -340,7 +339,7 @@ beetl-connect verify . --connection default</code></pre>
               <tbody>
                 <tr>
                   <td><code>pack &lt;integration&gt;</code></td>
-                  <td>Build a deterministic Node 24 <code>.beetl.zip</code> artifact.</td>
+                  <td>Build a self-contained, Deno-compatible <code>.beetl.zip</code> artifact.</td>
                 </tr>
                 <tr>
                   <td><code>check &lt;integration&gt;</code></td>
@@ -356,7 +355,12 @@ beetl-connect verify . --connection default</code></pre>
                   <td>Configure sync inputs and select a named connection.</td>
                 </tr>
                 <tr>
-                  <td><code>connect &lt;integration&gt; [--connection &lt;name&gt;]</code></td>
+                  <td>
+                    <code
+                      >connect &lt;integration&gt; [--connection &lt;name&gt;] [--origin
+                      &lt;url&gt;]</code
+                    >
+                  </td>
                   <td>Create or reauthorize a named connection.</td>
                 </tr>
                 <tr>
@@ -393,6 +397,10 @@ beetl-connect verify . --connection default</code></pre>
                   <td>Use a named profile instead of <code>default</code></td>
                 </tr>
                 <tr>
+                  <td><code>--origin url</code></td>
+                  <td>Override the provider origin for <code>connect</code></td>
+                </tr>
+                <tr>
                   <td><code>--output path</code></td>
                   <td>Override the NDJSON output path</td>
                 </tr>
@@ -414,26 +422,31 @@ beetl-connect verify . --connection default</code></pre>
           <p>
             <code>pack</code> accepts an entry file or directory containing
             <code>integration.ts</code>. It type-checks source with the bundled TypeScript compiler
-            and bundles local imports and installed npm dependencies for Node 24. Dependencies must
-            be declared and pinned by a current <code>package-lock.json</code>. Connect never
+            and bundles local imports and installed npm dependencies into neutral ESM. Dependencies
+            must be declared and pinned by an npm v3 <code>package-lock.json</code>. Connect never
             installs packages or runs dependency lifecycle scripts. Other commands also accept a
-            packed <code>.beetl.zip</code>. An artifact contains the Node bundle, manifest, runtime
+            packed <code>.beetl.zip</code>. An artifact contains the bundle, manifest, Deno runtime
             declaration, license notices, integrity metadata, and inline source maps without source
-            contents. Node built-ins are provided by the runtime; other external imports are
-            rejected. Provider traffic must use <code>ctx.fetch()</code>; the CLI removes global
-            <code>fetch</code> before loading integration code. These checks improve compatibility
-            but are not a sandbox.
+            contents. Neutral bundling rejects Node built-ins and other unresolved imports. Provider
+            traffic must use <code>ctx.fetch()</code>. These checks improve compatibility but are
+            not a sandbox.
+          </p>
+          <p>
+            Artifact hashes detect corruption, not provenance. A hosted platform must accept source
+            workspaces, install their committed npm graph with lifecycle scripts disabled in an
+            untrusted build sandbox, and record the artifact digest it produced. It must not trust
+            an uploaded artifact merely because its self-declared hashes match.
           </p>
           <p>
             Profiles and named connections are stored with owner-only permissions in the operating
             system's user configuration directory: <code>$XDG_CONFIG_HOME/beetl-connect</code> on
             Linux, <code>~/Library/Preferences/beetl-connect</code> on macOS, and
-            <code>%APPDATA%\beetl-connect\Config</code> on Windows. Connections contain
-            authentication inputs and OAuth authorization state where applicable. Saved secrets are
-            bound to the provider origin and authentication definition. Connections are not
-            encrypted. Profiles and connections carry revisions; changed inputs and explicit
-            reauthorization create new revisions, while automatic OAuth refresh preserves them. Sync
-            checkpoints remain under <code>.beetl/state</code> and are isolated by those revisions.
+            <code>%APPDATA%\beetl-connect\Config</code> on Windows. Connections contain credentials
+            and OAuth authorization state where applicable. Saved secrets are bound to the provider
+            origin and authentication definition. Connections are not encrypted. Profiles and
+            connections carry revisions; changed inputs and explicit reauthorization create new
+            revisions, while automatic OAuth refresh preserves them. Sync checkpoints remain under
+            <code>.beetl/state</code> and are isolated by those revisions.
           </p>
         </section>
 
@@ -512,7 +525,7 @@ beetl-connect verify . --connection default</code></pre>
     "authentication": { "type": "none" }
   },
   "inputs": { "userAgent": "my-wikidata-sync/1.0 (me@example.com)" },
-  "authenticationInput": {}
+  "credentials": {}
 }</code></pre>
           <p>
             The profile at <code>profiles/wikidata/default.json</code> in the same directory then
@@ -563,9 +576,9 @@ beetl-connect verify . --connection default</code></pre>
 
           <h2>Advanced: custom hosts</h2>
           <p>
-            The CLI is the primary interface. Applications that need to execute Node 24 artifacts
-            with their own authentication, request, and persistence services can implement the
-            optional
+            The CLI is the primary interface. Applications that need to execute Deno-compatible
+            artifacts with their own authentication, request, and persistence services can implement
+            the optional
             <code>SyncHost</code> interface from <code>@beetlio/connect/host</code>. See the
             runnable
             <a href="https://github.com/beetlio/connect/blob/main/examples/custom-host/host.ts"

@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { builtinModules, createRequire, setSourceMapsSupport } from "node:module";
+import { createRequire, setSourceMapsSupport } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
-import { build, formatMessages, transform, type Metafile } from "esbuild";
+import { build, formatMessages, type Metafile } from "esbuild";
 import { unzipSync, zipSync, type Zippable } from "fflate";
 import ts from "typescript";
 import { z } from "zod";
@@ -35,17 +35,6 @@ const Limits = {
   licenses: 4 * 1024 * 1024,
   icon: 512 * 1024,
 } as const;
-const LockfileManagers = {
-  "pnpm-lock.yaml": "pnpm",
-  "yarn.lock": "yarn",
-  "bun.lock": "bun",
-  "bun.lockb": "bun",
-  "package-lock.json": "npm",
-} as const;
-const RuntimeGlobalPrefix = "__beetl_unsupported_runtime_global_";
-const RuntimeGlobalDefines = { fetch: `${RuntimeGlobalPrefix}fetch` };
-const NodeBuiltins = new Set(builtinModules.flatMap((name) => [name, `node:${name}`]));
-
 setSourceMapsSupport(true);
 
 const ArtifactFileSchema = z.strictObject({
@@ -55,14 +44,13 @@ const ArtifactFileSchema = z.strictObject({
 const ArtifactMetadataSchema = z.strictObject({
   artifactVersion: z.literal(1),
   sdkVersion: z.string().min(1),
-  runtime: z.literal("node24"),
+  runtime: z.literal("deno"),
   files: z.record(z.string(), ArtifactFileSchema),
 });
 const NpmPackageSchema = z.object({
   name: z.string().optional(),
   version: z.string().optional(),
   license: z.string().optional(),
-  packageManager: z.string().optional(),
 });
 const DependencyMapSchema = z.record(z.string(), z.string()).default({});
 const ProjectPackageSchema = NpmPackageSchema.extend({
@@ -70,7 +58,7 @@ const ProjectPackageSchema = NpmPackageSchema.extend({
   optionalDependencies: DependencyMapSchema,
 });
 const PackageLockSchema = z.object({
-  lockfileVersion: z.number().min(2),
+  lockfileVersion: z.literal(3),
   packages: z.record(
     z.string(),
     z.object({
@@ -121,7 +109,7 @@ export async function createIntegrationArchive(inputPath: string): Promise<Integ
   const artifact: ArtifactMetadata = {
     artifactVersion: 1,
     sdkVersion: Package.version,
-    runtime: "node24",
+    runtime: "deno",
     files: Object.fromEntries(
       Object.keys(files)
         .sort()
@@ -153,8 +141,8 @@ async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
       outfile: "integration.mjs",
       bundle: true,
       format: "esm",
-      platform: "node",
-      target: "node24",
+      platform: "neutral",
+      target: "es2024",
       mainFields: ["module", "main"],
       sourcemap: "inline",
       sourcesContent: false,
@@ -163,7 +151,6 @@ async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
       write: false,
       logLevel: "silent",
       logOverride: { "unsupported-dynamic-import": "error" },
-      define: RuntimeGlobalDefines,
       plugins: [
         {
           name: "beetl-connect-imports",
@@ -185,7 +172,6 @@ async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
   )?.contents;
   if (!bundle) throw new Error("Bundler did not produce integration.mjs");
   await validateLockedDependencies(entryPath, output.metafile);
-  await validateBundlePolicy(bundle);
   assertSize("integration.mjs", bundle, Limits.bundle);
   await typeCheckIntegration(entryPath);
   const integration = await importBundle(bundle, inputPath);
@@ -254,7 +240,6 @@ async function loadArchive(path: string): Promise<BuiltIntegration> {
     throw new Error(`Invalid artifact metadata: ${z.prettifyError(artifact.error)}`);
   }
   validateArtifactMetadata(artifact.data, files);
-  await validateBundlePolicy(files["integration.mjs"]!);
   try {
     manifest = JSON.parse(Decoder.decode(files["manifest.json"]!));
   } catch (error) {
@@ -396,46 +381,6 @@ function assertSize(name: string, bytes: Uint8Array, maximum: number): void {
   }
 }
 
-async function validateBundlePolicy(bundle: Uint8Array): Promise<void> {
-  const source = Decoder.decode(bundle);
-  const rewritten = (
-    await transform(source, {
-      loader: "js",
-      format: "esm",
-      target: "node24",
-      define: RuntimeGlobalDefines,
-      logLevel: "silent",
-    })
-  ).code;
-  if (rewritten.includes(`${RuntimeGlobalPrefix}fetch`)) {
-    throw new Error("Unsupported global fetch; provider requests must use ctx.fetch");
-  }
-
-  const syntax = ts.createSourceFile("integration.mjs", source, ts.ScriptTarget.Latest, false);
-  const externalImports = new Set<string>();
-  const inspect = (node: ts.Node): void => {
-    let specifier: ts.Expression | undefined;
-    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-      specifier = node.moduleSpecifier;
-    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-      specifier = node.arguments[0];
-    }
-    if (specifier !== undefined) {
-      if (!ts.isStringLiteral(specifier) || !NodeBuiltins.has(specifier.text)) {
-        externalImports.add(ts.isStringLiteral(specifier) ? specifier.text : "dynamic import");
-      }
-      return;
-    }
-    ts.forEachChild(node, inspect);
-  };
-  inspect(syntax);
-  if (externalImports.size > 0) {
-    throw new Error(
-      `Integration bundle contains external import ${JSON.stringify([...externalImports][0])}`,
-    );
-  }
-}
-
 async function validateLockedDependencies(entryPath: string, metafile: Metafile): Promise<void> {
   const workingDirectory = dirname(entryPath);
   let packageDirectory: string | undefined;
@@ -469,7 +414,6 @@ async function validateLockedDependencies(entryPath: string, metafile: Metafile)
       if (
         specifier === undefined ||
         specifier === "@beetlio/connect" ||
-        NodeBuiltins.has(specifier) ||
         specifier.startsWith(".") ||
         specifier.startsWith("/") ||
         specifier.includes(":")
@@ -500,32 +444,27 @@ async function validateLockedDependencies(entryPath: string, metafile: Metafile)
   }
 
   let lockDirectory: string | undefined;
-  let lockfile: string | undefined;
   for (let directory = packageDirectory; ; directory = dirname(directory)) {
-    const entries = new Set(await readdir(directory));
-    const found = Object.keys(LockfileManagers).filter((name) => entries.has(name));
-    if (found.length > 1) throw new Error(`Multiple lockfiles found in ${directory}`);
-    if (found.length === 1) {
+    try {
+      await stat(join(directory, "package-lock.json"));
       lockDirectory = directory;
-      lockfile = found[0];
       break;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }
     if (dirname(directory) === directory) break;
   }
-  if (lockDirectory === undefined || lockfile === undefined) {
+  if (lockDirectory === undefined) {
     throw new Error("Integrations with npm dependencies require a committed package-lock.json");
-  }
-  if (lockfile !== "package-lock.json") {
-    throw new Error(
-      `Unsupported lockfile ${lockfile}; integrations currently require package-lock.json`,
-    );
   }
 
   let lockValue: unknown;
   try {
-    lockValue = JSON.parse(await readFile(join(lockDirectory, lockfile), "utf8"));
+    lockValue = JSON.parse(await readFile(join(lockDirectory, "package-lock.json"), "utf8"));
   } catch (error) {
-    throw new Error(`Could not parse ${join(lockDirectory, lockfile)}`, { cause: error });
+    throw new Error(`Could not parse ${join(lockDirectory, "package-lock.json")}`, {
+      cause: error,
+    });
   }
   const parsedLock = PackageLockSchema.safeParse(lockValue);
   if (!parsedLock.success) {
@@ -668,6 +607,7 @@ async function typeCheckIntegration(entryPath: string): Promise<void> {
     noUncheckedIndexedAccess: true,
     skipLibCheck: true,
     strict: true,
+    types: [],
     paths: {
       ...configured.paths,
       "@beetlio/connect": [SdkTypesEntry],
@@ -706,29 +646,6 @@ async function integrationBuildError(error: unknown, entryPath: string): Promise
       !specifier.includes(":")
     );
   });
-  const hint = missingDependency
-    ? `\nInstall dependencies with \`${await installCommand(entryPath)}\` and retry.`
-    : "";
+  const hint = missingDependency ? "\nInstall dependencies with `npm install` and retry." : "";
   return new Error(`${messages.join("").trim()}${hint}`, { cause: error });
-}
-
-async function installCommand(entryPath: string): Promise<string> {
-  let directory = dirname(entryPath);
-  while (true) {
-    const entries = new Set(await readdir(directory));
-    const packageManager = entries.has("package.json")
-      ? await readFile(join(directory, "package.json"), "utf8")
-          .then((source) => NpmPackageSchema.parse(JSON.parse(source)).packageManager)
-          .catch(() => undefined)
-      : undefined;
-    const manager =
-      (typeof packageManager === "string"
-        ? packageManager.match(/^(npm|pnpm|yarn|bun)@/)?.[1]
-        : undefined) ??
-      Object.entries(LockfileManagers).find(([lockfile]) => entries.has(lockfile))?.[1];
-    if (manager !== undefined) return `${manager} install`;
-    const parent = dirname(directory);
-    if (parent === directory) return "npm install";
-    directory = parent;
-  }
 }

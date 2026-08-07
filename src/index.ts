@@ -1,5 +1,11 @@
 import { type JSONType as JsonValue, z } from "zod";
 
+import type {
+  InputField as InputManifestField,
+  InputObjectSchema,
+  InputValueSchema,
+} from "./manifest.ts";
+
 export { z };
 export type { JsonValue };
 
@@ -19,8 +25,6 @@ interface StringInputOptions extends InputOptions<string> {
   readonly placeholder?: string;
 }
 
-type SecretInputOptions = Omit<StringInputOptions, "default">;
-
 interface NumberInputOptions extends InputOptions<number> {
   readonly min?: number;
   readonly max?: number;
@@ -36,42 +40,54 @@ export interface SelectOption<Value extends string = string> {
   readonly label: string;
 }
 
-type ConfigurableInput<Schema extends z.ZodType = z.ZodType> = Schema & {
-  readonly "~beetl-input": true;
-};
-type ConfigurableShape = Record<string, ConfigurableInput>;
-
-function configurable<Schema extends z.ZodType>(
-  schema: Schema,
-  metadata: Readonly<Record<string, unknown>>,
-): ConfigurableInput<Schema> {
-  return schema.meta({ ...metadata, "x-beetl-input": true }) as ConfigurableInput<Schema>;
+export interface ConfigurationField<Schema extends z.ZodType = z.ZodType> {
+  readonly kind: "configuration";
+  readonly schema: Schema;
+  readonly manifest: InputManifestField;
+  readonly optional: boolean;
 }
 
-function inputMetadata(
-  options: { readonly label?: string; readonly description?: string },
-  extra: Readonly<Record<string, unknown>> = {},
-): Record<string, unknown> {
+type ConfigurationShape = Record<string, ConfigurationField>;
+type SchemaShape<Shape extends ConfigurationShape> = {
+  readonly [Key in keyof Shape]: Shape[Key]["schema"];
+};
+
+export interface ConfigurationObject<
+  Shape extends ConfigurationShape = ConfigurationShape,
+> extends ConfigurationField<z.ZodObject<SchemaShape<Shape>>> {
+  readonly shape: Shape;
+  readonly manifest: InputObjectSchema;
+}
+
+export interface CredentialField<Schema extends z.ZodType<string> = z.ZodType<string>> {
+  readonly kind: "credential";
+  readonly schema: Schema;
+  readonly manifest: InputValueSchema;
+}
+
+type CredentialShape = Record<string, CredentialField>;
+type CredentialSchemaShape<Shape extends CredentialShape> = {
+  readonly [Key in keyof Shape]: Shape[Key]["schema"];
+};
+
+export interface CredentialObject<Shape extends CredentialShape = CredentialShape> {
+  readonly kind: "credentials";
+  readonly shape: Shape;
+  readonly schema: z.ZodObject<CredentialSchemaShape<Shape>>;
+  readonly manifest: InputObjectSchema;
+}
+
+function metadata(options: {
+  readonly label?: string;
+  readonly description?: string;
+}): Pick<InputValueSchema, "title" | "description"> {
   return {
     ...(options.label === undefined ? {} : { title: options.label }),
     ...(options.description === undefined ? {} : { description: options.description }),
-    ...extra,
   };
 }
 
-function withDefault<Value>(schema: z.ZodType<Value>, value: Value | undefined): z.ZodType<Value> {
-  if (value === undefined) return schema;
-  const result = schema.safeParse(value);
-  if (!result.success) {
-    throw new Error(`Invalid input default: ${z.prettifyError(result.error)}`);
-  }
-  return schema.default(result.data as never) as unknown as z.ZodType<Value>;
-}
-
-function stringInput(
-  options: StringInputOptions = {},
-  widget?: "textarea" | "password",
-): ConfigurableInput<z.ZodType<string>> {
+function stringSchema(options: Omit<StringInputOptions, "default">): z.ZodType<string> {
   let schema = z.string();
   if (options.minLength !== undefined) schema = schema.min(options.minLength);
   if (options.maxLength !== undefined) schema = schema.max(options.maxLength);
@@ -80,111 +96,261 @@ function stringInput(
   if (options.format === "url") schema = schema.check(z.url());
   if (options.format === "date") schema = schema.check(z.iso.date());
   if (options.format === "date-time") schema = schema.check(z.iso.datetime());
-  return configurable(
-    withDefault(schema, options.default),
-    inputMetadata(options, {
+  return schema;
+}
+
+function configurationField<Schema extends z.ZodType>(
+  schema: Schema,
+  manifest: InputValueSchema,
+  options: { readonly default?: z.input<Schema> },
+): ConfigurationField<z.ZodType<z.output<Schema>>> {
+  if (!Object.hasOwn(options, "default")) {
+    return {
+      kind: "configuration",
+      schema: schema as unknown as z.ZodType<z.output<Schema>>,
+      manifest,
+      optional: false,
+    };
+  }
+  const parsed = schema.safeParse(options.default);
+  if (!parsed.success) {
+    throw new Error(`Invalid input default: ${z.prettifyError(parsed.error)}`);
+  }
+  return {
+    kind: "configuration",
+    schema: schema.default(parsed.data as never) as z.ZodType<z.output<Schema>>,
+    manifest: { ...manifest, default: parsed.data as JsonValue },
+    optional: false,
+  };
+}
+
+function stringInput(
+  options: StringInputOptions = {},
+  widget?: "textarea",
+): ConfigurationField<z.ZodType<string>> {
+  return configurationField(
+    stringSchema(options),
+    {
+      type: "string",
+      ...metadata(options),
+      ...(options.minLength === undefined ? {} : { minLength: options.minLength }),
+      ...(options.maxLength === undefined ? {} : { maxLength: options.maxLength }),
+      ...(options.pattern === undefined ? {} : { pattern: options.pattern }),
+      ...(options.format === undefined ? {} : { format: options.format }),
       ...(options.placeholder === undefined ? {} : { "x-beetl-placeholder": options.placeholder }),
       ...(widget === undefined ? {} : { "x-beetl-widget": widget }),
-      ...(widget === "password" ? { writeOnly: true } : {}),
-    }),
+    },
+    options,
   );
 }
 
-/** Typed, serializable fields for connection and sync input forms. */
+/** Typed, non-secret connection and sync configuration. */
 export const input = {
   string: (options: StringInputOptions = {}) => stringInput(options),
   text: (options: StringInputOptions = {}) => stringInput(options, "textarea"),
-  secret(options: SecretInputOptions = {}): ConfigurableInput<z.ZodType<string>> {
-    if ((options as StringInputOptions).default !== undefined) {
-      throw new Error("Secret inputs cannot declare defaults");
-    }
-    return stringInput(options, "password");
-  },
 
-  integer(options: NumberInputOptions = {}): ConfigurableInput<z.ZodType<number>> {
+  integer(options: NumberInputOptions = {}): ConfigurationField<z.ZodType<number>> {
     let schema = z.number().int();
     if (options.min !== undefined) schema = schema.min(options.min);
     if (options.max !== undefined) schema = schema.max(options.max);
-    return configurable(withDefault(schema, options.default), inputMetadata(options));
+    return configurationField(
+      schema,
+      {
+        type: "integer",
+        ...metadata(options),
+        ...(options.min === undefined ? {} : { minimum: options.min }),
+        ...(options.max === undefined ? {} : { maximum: options.max }),
+      },
+      options,
+    );
   },
 
-  number(options: NumberInputOptions = {}): ConfigurableInput<z.ZodType<number>> {
+  number(options: NumberInputOptions = {}): ConfigurationField<z.ZodType<number>> {
     let schema = z.number();
     if (options.min !== undefined) schema = schema.min(options.min);
     if (options.max !== undefined) schema = schema.max(options.max);
-    return configurable(withDefault(schema, options.default), inputMetadata(options));
+    return configurationField(
+      schema,
+      {
+        type: "number",
+        ...metadata(options),
+        ...(options.min === undefined ? {} : { minimum: options.min }),
+        ...(options.max === undefined ? {} : { maximum: options.max }),
+      },
+      options,
+    );
   },
 
-  boolean(options: InputOptions<boolean> = {}): ConfigurableInput<z.ZodType<boolean>> {
-    return configurable(withDefault(z.boolean(), options.default), inputMetadata(options));
+  boolean(options: InputOptions<boolean> = {}): ConfigurationField<z.ZodType<boolean>> {
+    return configurationField(z.boolean(), { type: "boolean", ...metadata(options) }, options);
   },
 
   select<const Options extends readonly [SelectOption, ...SelectOption[]]>(
     options: Options,
-    metadata: InputOptions<Options[number]["value"]> = {},
-  ): ConfigurableInput<z.ZodType<Options[number]["value"]>> {
+    details: InputOptions<Options[number]["value"]> = {},
+  ): ConfigurationField<z.ZodType<Options[number]["value"]>> {
     const values = options.map(({ value }) => value) as [string, ...string[]];
-    return configurable(
-      withDefault(z.enum(values), metadata.default),
-      inputMetadata(metadata, {
+    return configurationField(
+      z.enum(values),
+      {
+        type: "string",
+        ...metadata(details),
+        enum: values,
         "x-beetl-options": options,
-      }),
+      },
+      details,
     );
   },
 
   multiselect<const Options extends readonly [SelectOption, ...SelectOption[]]>(
     options: Options,
-    metadata: Omit<ArrayInputOptions, "default"> & {
+    details: Omit<ArrayInputOptions, "default"> & {
       readonly default?: readonly Options[number]["value"][];
     } = {},
-  ): ConfigurableInput<z.ZodType<Options[number]["value"][]>> {
+  ): ConfigurationField<z.ZodType<Options[number]["value"][]>> {
     let schema = z.array(z.enum(options.map(({ value }) => value) as [string, ...string[]]));
-    if (metadata.minItems !== undefined) schema = schema.min(metadata.minItems);
-    if (metadata.maxItems !== undefined) schema = schema.max(metadata.maxItems);
-    return configurable(
-      withDefault(schema, metadata.default === undefined ? undefined : [...metadata.default]),
-      inputMetadata(metadata, {
+    if (details.minItems !== undefined) schema = schema.min(details.minItems);
+    if (details.maxItems !== undefined) schema = schema.max(details.maxItems);
+    return configurationField(
+      schema,
+      {
+        type: "array",
+        ...metadata(details),
+        items: { type: "string", enum: options.map(({ value }) => value) },
+        ...(details.minItems === undefined ? {} : { minItems: details.minItems }),
+        ...(details.maxItems === undefined ? {} : { maxItems: details.maxItems }),
         "x-beetl-options": options,
-      }),
+      },
+      Object.hasOwn(details, "default") ? { default: [...details.default!] } : {},
     );
   },
 
-  object<const Shape extends ConfigurableShape>(
+  object<const Shape extends ConfigurationShape>(
     shape: Shape,
     options: Pick<InputOptions<never>, "label" | "description"> = {},
-  ): ConfigurableInput<z.ZodObject<Shape>> {
-    return configurable(z.object(shape), inputMetadata(options));
+  ): ConfigurationObject<Shape> {
+    if (Object.values(shape).some((field) => field.kind !== "configuration")) {
+      throw new Error("Configuration objects can contain only input.* fields");
+    }
+    const required = Object.entries(shape)
+      .filter(([, field]) => !field.optional && !Object.hasOwn(field.manifest, "default"))
+      .map(([name]) => name);
+    return {
+      kind: "configuration",
+      shape,
+      schema: z.strictObject(
+        Object.fromEntries(
+          Object.entries(shape).map(([name, field]) => [name, field.schema]),
+        ) as SchemaShape<Shape>,
+      ),
+      manifest: {
+        type: "object",
+        ...metadata(options),
+        properties: Object.fromEntries(
+          Object.entries(shape).map(([name, field]) => [name, field.manifest]),
+        ),
+        additionalProperties: false,
+        ...(required.length === 0 ? {} : { required }),
+      },
+      optional: false,
+    };
   },
 
-  array<const Item extends ConfigurableInput>(
+  array<const Item extends ConfigurationField>(
     item: Item,
     options: ArrayInputOptions = {},
-  ): ConfigurableInput<z.ZodType<z.output<Item>[]>> {
-    let schema = z.array(item);
-    if (options.minItems !== undefined) schema = schema.min(options.minItems);
-    if (options.maxItems !== undefined) schema = schema.max(options.maxItems);
-    return configurable(
-      withDefault(
-        schema,
-        options.default === undefined ? undefined : ([...options.default] as z.output<Item>[]),
+  ): ConfigurationField<z.ZodType<z.output<Item["schema"]>[]>> {
+    if (item.kind !== "configuration" || item.optional) {
+      throw new Error("Configuration arrays require a non-optional input.* field");
+    }
+    let arraySchema = z.array(item.schema);
+    if (options.minItems !== undefined) arraySchema = arraySchema.min(options.minItems);
+    if (options.maxItems !== undefined) arraySchema = arraySchema.max(options.maxItems);
+    const schema = arraySchema as z.ZodType<z.output<Item["schema"]>[]>;
+    return configurationField(
+      schema,
+      {
+        type: "array",
+        ...metadata(options),
+        items: item.manifest,
+        ...(options.minItems === undefined ? {} : { minItems: options.minItems }),
+        ...(options.maxItems === undefined ? {} : { maxItems: options.maxItems }),
+      },
+      Object.hasOwn(options, "default")
+        ? { default: [...options.default!] as z.input<typeof schema> }
+        : {},
+    );
+  },
+
+  json(options: InputOptions<JsonValue> = {}): ConfigurationField<z.ZodType<JsonValue>> {
+    return configurationField(
+      z.json(),
+      { ...metadata(options), "x-beetl-widget": "json" },
+      options,
+    );
+  },
+
+  optional<const Field extends ConfigurationField>(
+    field: Field,
+  ): ConfigurationField<z.ZodOptional<Field["schema"]>> {
+    if (field.kind !== "configuration") {
+      throw new Error("Only input.* fields can be optional configuration");
+    }
+    if (Object.hasOwn(field.manifest, "default")) {
+      throw new Error("Defaulted inputs cannot also be optional");
+    }
+    return { ...field, schema: field.schema.optional(), optional: true };
+  },
+};
+
+type CredentialOptions = Omit<StringInputOptions, "default">;
+
+function credentialField(
+  options: CredentialOptions,
+  secret: boolean,
+): CredentialField<z.ZodType<string>> {
+  return {
+    kind: "credential",
+    schema: stringSchema(options),
+    manifest: {
+      type: "string",
+      ...metadata(options),
+      ...(options.minLength === undefined ? {} : { minLength: options.minLength }),
+      ...(options.maxLength === undefined ? {} : { maxLength: options.maxLength }),
+      ...(options.pattern === undefined ? {} : { pattern: options.pattern }),
+      ...(options.format === undefined ? {} : { format: options.format }),
+      ...(options.placeholder === undefined ? {} : { "x-beetl-placeholder": options.placeholder }),
+      ...(secret ? { "x-beetl-widget": "password" as const, writeOnly: true } : {}),
+    },
+  };
+}
+
+/** Authentication values entered by the user and retained only by the host. */
+export const credential = {
+  string: (options: CredentialOptions = {}) => credentialField(options, false),
+  secret: (options: CredentialOptions = {}) => credentialField(options, true),
+  object<const Shape extends CredentialShape>(shape: Shape): CredentialObject<Shape> {
+    if (Object.values(shape).some((field) => field.kind !== "credential")) {
+      throw new Error("Credential objects can contain only credential.* fields");
+    }
+    const required = Object.keys(shape);
+    return {
+      kind: "credentials",
+      shape,
+      schema: z.strictObject(
+        Object.fromEntries(
+          Object.entries(shape).map(([name, field]) => [name, field.schema]),
+        ) as CredentialSchemaShape<Shape>,
       ),
-      inputMetadata(options),
-    );
-  },
-
-  json(options: InputOptions<JsonValue> = {}): ConfigurableInput<z.ZodType<JsonValue>> {
-    return configurable(
-      withDefault(z.json(), options.default),
-      inputMetadata(options, {
-        "x-beetl-widget": "json",
-      }),
-    );
-  },
-
-  optional<const Schema extends ConfigurableInput>(
-    schema: Schema,
-  ): ConfigurableInput<z.ZodOptional<Schema>> {
-    return schema.optional() as ConfigurableInput<z.ZodOptional<Schema>>;
+      manifest: {
+        type: "object",
+        properties: Object.fromEntries(
+          Object.entries(shape).map(([name, field]) => [name, field.manifest]),
+        ),
+        additionalProperties: false,
+        ...(required.length === 0 ? {} : { required }),
+      },
+    };
   },
 };
 
@@ -200,12 +366,7 @@ export interface RetryPolicy {
 
 export type RetryDefinition = false | RetryPolicy;
 
-export type BaseUrlDefinition = string | { readonly oauthTokenField: string };
-
-type AuthenticationFieldSchema = ConfigurableInput<z.ZodType<string>>;
-export type AuthenticationInputSchema = ConfigurableInput<z.ZodType> & {
-  readonly shape: z.ZodRawShape;
-};
+export type ProviderOriginDefinition = string | { readonly oauthTokenField: string };
 
 export type AuthManifest =
   | { type: "none" }
@@ -231,33 +392,33 @@ export type AuthManifest =
       query: Readonly<Record<string, string>>;
     };
 
-export type AuthDefinition = AuthManifest & { inputs: AuthenticationInputSchema };
+export type AuthDefinition = AuthManifest & { credentials: CredentialObject };
 
 export const auth = {
   none(): AuthDefinition {
-    return { type: "none", inputs: input.object({}) };
+    return { type: "none", credentials: credential.object({}) };
   },
 
-  bearer(options: { token?: AuthenticationFieldSchema } = {}): AuthDefinition {
+  bearer(options: { token?: CredentialField } = {}): AuthDefinition {
     return {
       type: "bearer",
-      inputs: input.object({
-        token: options.token ?? input.secret({ label: "Bearer token" }),
+      credentials: credential.object({
+        token: options.token ?? credential.secret({ label: "Bearer token" }),
       }),
     };
   },
 
   basic(
     options: {
-      username?: AuthenticationFieldSchema;
-      password?: AuthenticationFieldSchema;
+      username?: CredentialField;
+      password?: CredentialField;
     } = {},
   ): AuthDefinition {
     return {
       type: "basic",
-      inputs: input.object({
-        username: options.username ?? input.string({ label: "Username" }),
-        password: options.password ?? input.secret({ label: "Password" }),
+      credentials: credential.object({
+        username: options.username ?? credential.string({ label: "Username" }),
+        password: options.password ?? credential.secret({ label: "Password" }),
       }),
     };
   },
@@ -265,12 +426,12 @@ export const auth = {
   apiKey(options: {
     in: "header" | "query";
     name: string;
-    apiKey?: AuthenticationFieldSchema;
+    apiKey?: CredentialField;
   }): AuthDefinition {
     return {
       type: "api_key",
-      inputs: input.object({
-        apiKey: options.apiKey ?? input.secret({ label: "API key" }),
+      credentials: credential.object({
+        apiKey: options.apiKey ?? credential.secret({ label: "API key" }),
       }),
       in: options.in,
       name: options.name,
@@ -278,8 +439,8 @@ export const auth = {
   },
 
   oauth2AuthorizationCode(options: {
-    clientId?: AuthenticationFieldSchema;
-    clientSecret?: AuthenticationFieldSchema;
+    clientId?: CredentialField;
+    clientSecret?: CredentialField;
     issuer: string;
     authorizationUrl: string;
     tokenUrl: string;
@@ -288,8 +449,8 @@ export const auth = {
   }): AuthDefinition {
     return {
       type: "oauth2_authorization_code",
-      inputs: input.object({
-        clientId: options.clientId ?? input.string({ label: "OAuth client ID" }),
+      credentials: credential.object({
+        clientId: options.clientId ?? credential.string({ label: "OAuth client ID" }),
         ...(options.clientSecret === undefined ? {} : { clientSecret: options.clientSecret }),
       }),
       issuer: options.issuer,
@@ -301,14 +462,14 @@ export const auth = {
     };
   },
 
-  custom<const Shape extends Record<string, AuthenticationFieldSchema>>(options: {
-    inputs: ConfigurableInput<z.ZodObject<Shape>>;
+  custom<const Shape extends CredentialShape>(options: {
+    credentials: CredentialObject<Shape>;
     headers?: Readonly<Record<string, string>>;
     query?: Readonly<Record<string, string>>;
   }): AuthDefinition {
     return {
       type: "custom",
-      inputs: options.inputs,
+      credentials: options.credentials,
       headers: options.headers ?? {},
       query: options.query ?? {},
     };
@@ -350,7 +511,7 @@ export type PaginationOverride =
 
 type RecordSchema = z.ZodType;
 type CheckpointSchema = z.ZodType;
-type ConfigSchema = ConfigurableInput<z.ZodType<JsonObject>>;
+type ConfigSchema = ConfigurationObject;
 
 export interface PaginationResponseMetadata {
   readonly status: number;
@@ -378,7 +539,7 @@ export interface IntegrationLogger {
   error(message: string, fields?: JsonObject): Promise<void>;
 }
 
-export interface ConnectionContext<ConnectionConfigValue extends JsonObject> {
+export interface ConnectionContext<ConnectionConfigValue extends object> {
   readonly config: ConnectionConfigValue;
   readonly signal: AbortSignal;
   fetch(path: string, init?: SyncFetchInit): Promise<Response>;
@@ -389,8 +550,8 @@ export interface SyncContext<
   RecordInput,
   CheckpointInput,
   CheckpointOutput,
-  ConfigValue extends JsonObject,
-  ConnectionConfigValue extends JsonObject = JsonObject,
+  ConfigValue extends object,
+  ConnectionConfigValue extends object = JsonObject,
 > {
   readonly config: {
     readonly connection: ConnectionConfigValue;
@@ -406,9 +567,16 @@ export interface SyncContext<
   readonly log: IntegrationLogger;
 }
 
-type ConfigOutput<Config extends ConfigSchema | undefined> = Config extends ConfigSchema
-  ? z.output<Config>
-  : JsonObject;
+type OptionalConfigurationKeys<Shape extends ConfigurationShape> = {
+  [Key in keyof Shape]: undefined extends z.output<Shape[Key]["schema"]> ? Key : never;
+}[keyof Shape];
+type ConfigurationOutput<Shape extends ConfigurationShape> = {
+  [Key in Exclude<keyof Shape, OptionalConfigurationKeys<Shape>>]: z.output<Shape[Key]["schema"]>;
+} & {
+  [Key in OptionalConfigurationKeys<Shape>]?: z.output<Shape[Key]["schema"]>;
+};
+type ConfigOutput<Config extends ConfigSchema | undefined> =
+  Config extends ConfigurationObject<infer Shape> ? ConfigurationOutput<Shape> : JsonObject;
 
 export type SyncMode = "append" | "snapshot";
 
@@ -416,7 +584,7 @@ export interface SyncDefinition<
   Records extends RecordSchema = RecordSchema,
   Checkpoint extends CheckpointSchema | undefined = CheckpointSchema | undefined,
   Config extends ConfigSchema | undefined = ConfigSchema | undefined,
-  ConnectionConfigValue extends JsonObject = JsonObject,
+  ConnectionConfigValue extends object = JsonObject,
 > {
   readonly key: string;
   readonly displayName: string;
@@ -456,7 +624,7 @@ type ErasedSyncDefinition = SyncDefinition<
 export interface ConnectionDefinition<
   Config extends ConfigSchema | undefined = ConfigSchema | undefined,
 > {
-  readonly baseUrl: BaseUrlDefinition;
+  readonly origin: ProviderOriginDefinition;
   readonly auth?: AuthDefinition;
   readonly inputs?: Config;
   readonly retry?: RetryDefinition;
@@ -485,7 +653,7 @@ export interface IntegrationDefinition<
   readonly syncs: Syncs;
 }
 
-type BoundDefineSync<ConnectionConfigValue extends JsonObject> = <
+type BoundDefineSync<ConnectionConfigValue extends object> = <
   const Records extends RecordSchema,
   const Checkpoint extends CheckpointSchema | undefined = undefined,
   const Config extends ConfigSchema | undefined = undefined,

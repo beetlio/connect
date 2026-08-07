@@ -17,7 +17,7 @@ const hit = (id: string, label: string) => ({
 
 test("Wikidata example identifies the client and follows continuation", async (t) => {
   const requests: Array<{ url: URL; userAgent: string }> = [];
-  const baseUrl = await fixtureServer(t, (request, response) => {
+  const origin = await fixtureServer(t, (request, response) => {
     const url = new URL(request.url ?? "/", "http://fixture");
     requests.push({ url, userAgent: request.headers["user-agent"] ?? "" });
     response.setHeader("content-type", "application/json");
@@ -39,7 +39,7 @@ test("Wikidata example identifies the client and follows continuation", async (t
   const directory = await fixtureDirectory(t, "beetl-wikidata");
   const outputPath = join(directory, "entities.ndjson");
   const host = new LocalHost({
-    baseUrl,
+    origin,
     outputPath,
     statePath: join(directory, "state.json"),
     onLog: () => undefined,

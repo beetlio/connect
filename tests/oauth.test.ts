@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { auth, input } from "@beetlio/connect";
+import { auth, credential } from "@beetlio/connect";
 import { authorizeOAuth } from "../src/oauth.ts";
 import { fixtureServer } from "./support.ts";
 
@@ -52,7 +52,7 @@ test("authorization-code flow uses PKCE and returns provider authorization state
     authorizationUrl: `${provider}/authorize`,
     tokenUrl: `${provider}/token`,
     scopes: ["api", "refresh_token"],
-    clientSecret: input.secret(),
+    clientSecret: credential.secret(),
     tokenFields: { instanceUrl: "instance_url" },
   });
   assert.equal(oauth.type, "oauth2_authorization_code");
@@ -60,7 +60,7 @@ test("authorization-code flow uses PKCE and returns provider authorization state
 
   const authorizationState = await authorizeOAuth({
     auth: oauth,
-    authenticationInput: { clientId: "client-id", clientSecret: "client-secret" },
+    credentials: { clientId: "client-id", clientSecret: "client-secret" },
     redirectUri: "https://app.example/oauth/callback",
     async onAuthorizationUrl(url) {
       const authorization = await fetch(url, { redirect: "manual" });
@@ -79,7 +79,7 @@ test("authorization-code flow uses PKCE and returns provider authorization state
   await assert.rejects(
     authorizeOAuth({
       auth: oauth,
-      authenticationInput: { clientId: "client-id", clientSecret: "client-secret" },
+      credentials: { clientId: "client-id", clientSecret: "client-secret" },
       redirectUri: "http://127.0.0.1:0/oauth/callback",
       signal: controller.signal,
       onAuthorizationUrl() {},

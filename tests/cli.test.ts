@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -25,7 +24,7 @@ function runCli(cwd: string, ...args: string[]) {
   return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
 }
 
-test("CLI runs source integrations from typed profiles and Node artifacts", async (t) => {
+test("CLI runs source integrations from typed profiles and Deno artifacts", async (t) => {
   const directory = await fixtureDirectory(t, "beetl-cli");
   const workingDirectory = join(directory, "workspace");
   const dependency = join(directory, "node_modules/fixture-dependency");
@@ -74,7 +73,7 @@ test("CLI runs source integrations from typed profiles and Node artifacts", asyn
         key: "fixture",
         displayName: "Fixture",
         connection: {
-          baseUrl: "https://api.example.com",
+          origin: "https://api.example.com",
           inputs: input.object({ prefix: input.string() }),
           async verify(ctx) {
             if (ctx.config.prefix !== "configured") throw new Error("connection config failed");
@@ -130,7 +129,7 @@ test("CLI runs source integrations from typed profiles and Node artifacts", asyn
       revision: ConnectionRevision,
       provider: Provider,
       inputs: { prefix: 42 },
-      authenticationInput: {},
+      credentials: {},
     }),
   );
   const invalidConnection = runCli(workingDirectory, "sync", directory, "--output", sourceOutput);
@@ -145,7 +144,7 @@ test("CLI runs source integrations from typed profiles and Node artifacts", asyn
       revision: ConnectionRevision,
       provider: { ...Provider, origin: "https://other.example.com" },
       inputs: { prefix: "configured" },
-      authenticationInput: {},
+      credentials: {},
     }),
   );
   const wrongProvider = runCli(workingDirectory, "verify", directory, "--connection", "primary");
@@ -160,7 +159,7 @@ test("CLI runs source integrations from typed profiles and Node artifacts", asyn
       revision: ConnectionRevision,
       provider: Provider,
       inputs: { prefix: "configured" },
-      authenticationInput: {},
+      credentials: {},
     }),
   );
   const verified = runCli(workingDirectory, "verify", directory, "--connection", "primary");
@@ -194,31 +193,10 @@ test("CLI runs source integrations from typed profiles and Node artifacts", asyn
   ]);
   assert.equal(runCli(workingDirectory, "check", artifact).status, 0);
   const metadata = JSON.parse(new TextDecoder().decode(files["artifact.json"]!));
-  assert.equal(metadata.runtime, "node24");
+  assert.equal(metadata.runtime, "deno");
   const repack = runCli(workingDirectory, "pack", artifact);
   assert.equal(repack.status, 1);
   assert.match(repack.stderr, /pack requires integration source/);
-
-  for (const [filename, source, expected] of [
-    ["import.beetl.zip", 'import "missing-package";', /external import "missing-package"/],
-  ] as const) {
-    const unsafeFiles = unzipSync(new Uint8Array(await readFile(artifact)));
-    const bundle = new TextEncoder().encode(
-      `${source}\n${new TextDecoder().decode(unsafeFiles["integration.mjs"]!)}`,
-    );
-    unsafeFiles["integration.mjs"] = bundle;
-    const metadata = JSON.parse(new TextDecoder().decode(unsafeFiles["artifact.json"]!));
-    metadata.files["integration.mjs"] = {
-      bytes: bundle.byteLength,
-      sha256: createHash("sha256").update(bundle).digest("hex"),
-    };
-    unsafeFiles["artifact.json"] = new TextEncoder().encode(`${JSON.stringify(metadata)}\n`);
-    const path = join(directory, filename);
-    await writeFile(path, zipSync(unsafeFiles));
-    const rejected = runCli(workingDirectory, "check", path);
-    assert.equal(rejected.status, 1, `${filename}: ${rejected.stderr}`);
-    assert.match(rejected.stderr, expected);
-  }
 
   const artifactOutput = join(directory, "artifact.ndjson");
   const artifactSync = runCli(
@@ -254,7 +232,7 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
         key: "multiple",
         displayName: "Multiple",
         icon: "icon.png",
-        connection: { baseUrl: "https://api.example.com" },
+        connection: { origin: "https://api.example.com" },
         syncs: (defineSync) => ["first", "second"].map((key) => defineSync({
           key,
           displayName: key,
@@ -304,7 +282,7 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
   assert.deepEqual(savedConnection.provider, Provider);
   assert.match(savedConnection.revision, /^[0-9a-f-]{36}$/);
   assert.deepEqual(savedConnection.inputs, {});
-  assert.deepEqual(savedConnection.authenticationInput, {});
+  assert.deepEqual(savedConnection.credentials, {});
   assert.deepEqual(
     JSON.parse(
       await readFile(
@@ -360,7 +338,7 @@ test("CLI reports integration source locations and error causes", async (t) => {
         key: "errors",
         displayName: "Errors",
         connection: {
-          baseUrl: "https://api.example.com",
+          origin: "https://api.example.com",
           async verify() {
             throw new Error("bad credentials");
           },
@@ -387,7 +365,7 @@ test("CLI reports integration source locations and error causes", async (t) => {
     revision: ConnectionRevision,
     provider: Provider,
     inputs: {},
-    authenticationInput: {},
+    credentials: {},
   };
   await mkdir(dirname(connectionPath), { recursive: true });
   await writeFile(connectionPath, JSON.stringify(storedConnection));
@@ -403,7 +381,7 @@ test("CLI reports integration source locations and error causes", async (t) => {
   assert.match(result.stderr, /Error: provider failed/);
 });
 
-test("dependency bundles must be locked and target Node 24", async (t) => {
+test("dependency bundles require the npm lockfile and portable modules", async (t) => {
   const directory = await fixtureDirectory(t, "beetl-cli-dependencies");
   const integrationDirectory = join(directory, "integration");
   const dependency = join(directory, "node_modules/runtime-specific");
@@ -423,10 +401,7 @@ test("dependency bundles must be locked and target Node 24", async (t) => {
       types: "./index.d.ts",
     }),
   );
-  await writeFile(
-    join(dependency, "index.js"),
-    'import { Buffer } from "node:buffer";\nexport const value = Buffer.from("x");\n',
-  );
+  await writeFile(join(dependency, "index.js"), 'export const value = "portable";\n');
   await writeFile(join(dependency, "index.d.ts"), "export const value: Uint8Array;\n");
   await writeFile(join(directory, "shared.ts"), 'export { value } from "runtime-specific";\n');
   await writeFile(
@@ -437,16 +412,13 @@ test("dependency bundles must be locked and target Node 24", async (t) => {
       export default defineIntegration({
         key: "runtime-specific",
         displayName: "Runtime specific",
-        connection: { baseUrl: "https://api.example.com" },
+        connection: { origin: "https://api.example.com" },
         syncs: [
           {
             key: "items",
             displayName: "Items",
             records: z.object({ size: z.number() }),
             async run(ctx) {
-              const globals = globalThis;
-              const { fetch: providerFetch } = globals;
-              await providerFetch("https://api.example.com/items");
               await ctx.emit({ records: [{ size: value.length }] });
             },
           },
@@ -483,15 +455,14 @@ test("dependency bundles must be locked and target Node 24", async (t) => {
       },
     }),
   );
-  const runtimeSpecific = runCli(directory, "check", integrationDirectory);
-  assert.equal(runtimeSpecific.status, 0, runtimeSpecific.stderr);
-  const directFetch = runCli(
-    directory,
-    "sync",
-    integrationDirectory,
-    "--output",
-    join(directory, "runtime-specific.ndjson"),
+  const portable = runCli(directory, "check", integrationDirectory);
+  assert.equal(portable.status, 0, portable.stderr);
+
+  await writeFile(
+    join(dependency, "index.js"),
+    'import { Buffer } from "node:buffer";\nexport const value = Buffer.from("x");\n',
   );
-  assert.equal(directFetch.status, 1);
-  assert.match(directFetch.stderr, /providerFetch is not a function/);
+  const nodeOnly = runCli(directory, "check", integrationDirectory);
+  assert.equal(nodeOnly.status, 1);
+  assert.match(nodeOnly.stderr, /Could not resolve "node:buffer"/);
 });

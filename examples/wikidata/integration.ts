@@ -19,7 +19,7 @@ export default defineIntegration({
   key: "wikidata",
   displayName: "Wikidata",
   connection: {
-    baseUrl: "https://www.wikidata.org",
+    origin: "https://www.wikidata.org",
     auth: auth.none(),
     inputs: input.object({
       userAgent: input.string({

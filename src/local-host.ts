@@ -3,10 +3,11 @@ import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { AuthDefinition, BaseUrlDefinition, JsonValue } from "./index.ts";
+import type { AuthDefinition, JsonValue, ProviderOriginDefinition } from "./index.ts";
 import { refreshOAuthAuthorization, type OAuthAuthorizationState } from "./oauth.ts";
 import {
   resolveRetry,
+  providerOrigin,
   type EmittedBatch,
   type LogEntry,
   type ProviderRequest,
@@ -18,9 +19,9 @@ import {
 const MaxProviderResponseBytes = 16 * 1024 * 1024;
 
 export interface LocalHostOptions {
-  baseUrl: BaseUrlDefinition;
+  origin: ProviderOriginDefinition;
   auth?: AuthDefinition;
-  authenticationInput?: Readonly<Record<string, string>>;
+  credentials?: Readonly<Record<string, string>>;
   authorizationState?: OAuthAuthorizationState;
   outputPath: string;
   statePath: string;
@@ -31,10 +32,10 @@ export interface LocalHostOptions {
 }
 
 export class LocalHost implements SyncHost {
-  #baseUrl: URL;
-  readonly #baseUrlDefinition: BaseUrlDefinition;
+  #origin: URL;
+  readonly #originDefinition: ProviderOriginDefinition;
   readonly #auth: AuthDefinition | { readonly type: "none" };
-  readonly #authenticationInput: Readonly<Record<string, string>>;
+  readonly #credentials: Readonly<Record<string, string>>;
   #authorizationState: OAuthAuthorizationState | undefined;
   #authorizationVersion = 0;
   #refreshing: Promise<boolean> | undefined;
@@ -47,11 +48,11 @@ export class LocalHost implements SyncHost {
   readonly #onAuthorizationStateChanged: (state: OAuthAuthorizationState) => void | Promise<void>;
 
   constructor(options: LocalHostOptions) {
-    this.#baseUrlDefinition = options.baseUrl;
+    this.#originDefinition = options.origin;
     this.#auth = options.auth ?? { type: "none" };
-    this.#authenticationInput = options.authenticationInput ?? {};
+    this.#credentials = options.credentials ?? {};
     this.#authorizationState = options.authorizationState;
-    this.#baseUrl = resolveProviderUrl(this.#baseUrlDefinition, this.#authorizationState);
+    this.#origin = resolveProviderOrigin(this.#originDefinition, this.#authorizationState);
     this.#outputPath = options.outputPath;
     this.#statePath = options.statePath;
     this.#fetch = options.fetch ?? globalThis.fetch;
@@ -69,8 +70,8 @@ export class LocalHost implements SyncHost {
     for (let attempt = 1; ; attempt += 1) {
       requestSignal?.throwIfAborted();
       const authorizationVersion = this.#authorizationVersion;
-      const url = new URL(request.path, this.#baseUrl);
-      if (url.origin !== this.#baseUrl.origin) {
+      const url = new URL(request.path, this.#origin);
+      if (url.origin !== this.#origin.origin) {
         throw new Error("Provider request escaped the configured origin");
       }
       const headers = new Headers(
@@ -202,7 +203,7 @@ export class LocalHost implements SyncHost {
       throw new Error("Authenticated provider requests require HTTPS");
     }
     if (this.#auth.type === "bearer") {
-      headers.set("authorization", `Bearer ${this.#authenticationValue("token")}`);
+      headers.set("authorization", `Bearer ${this.#credential("token")}`);
       return;
     }
     if (this.#auth.type === "oauth2_authorization_code") {
@@ -213,13 +214,13 @@ export class LocalHost implements SyncHost {
     }
     if (this.#auth.type === "basic") {
       const value = Buffer.from(
-        `${this.#authenticationValue("username")}:${this.#authenticationValue("password")}`,
+        `${this.#credential("username")}:${this.#credential("password")}`,
       ).toString("base64");
       headers.set("authorization", `Basic ${value}`);
       return;
     }
     if (this.#auth.type === "api_key") {
-      const apiKey = this.#authenticationValue("apiKey");
+      const apiKey = this.#credential("apiKey");
       if (this.#auth.in === "header") {
         headers.set(this.#auth.name, apiKey);
         return;
@@ -228,17 +229,17 @@ export class LocalHost implements SyncHost {
       return;
     }
     for (const [name, field] of Object.entries(this.#auth.headers)) {
-      headers.set(name, this.#authenticationValue(field));
+      headers.set(name, this.#credential(field));
     }
     for (const [name, field] of Object.entries(this.#auth.query)) {
-      url.searchParams.set(name, this.#authenticationValue(field));
+      url.searchParams.set(name, this.#credential(field));
     }
   }
 
-  #authenticationValue(name: string): string {
-    const value = this.#authenticationInput[name];
+  #credential(name: string): string {
+    const value = this.#credentials[name];
     if (value === undefined) {
-      throw new Error(`Missing authentication input ${JSON.stringify(name)}`);
+      throw new Error(`Missing credential ${JSON.stringify(name)}`);
     }
     return value;
   }
@@ -276,15 +277,15 @@ export class LocalHost implements SyncHost {
     }
     const authorizationState = await refreshOAuthAuthorization({
       auth: this.#auth,
-      authenticationInput: this.#authenticationInput,
+      credentials: this.#credentials,
       authorizationState: this.#authorizationState,
       fetch: this.#fetch,
       ...(signal === undefined ? {} : { signal }),
     });
-    const baseUrl = resolveProviderUrl(this.#baseUrlDefinition, authorizationState);
+    const origin = resolveProviderOrigin(this.#originDefinition, authorizationState);
     await this.#onAuthorizationStateChanged(authorizationState);
     this.#authorizationState = authorizationState;
-    this.#baseUrl = baseUrl;
+    this.#origin = origin;
     this.#authorizationVersion += 1;
     return true;
   }
@@ -294,8 +295,8 @@ export class LocalHost implements SyncHost {
   }
 }
 
-export function resolveProviderUrl(
-  definition: BaseUrlDefinition,
+export function resolveProviderOrigin(
+  definition: ProviderOriginDefinition,
   authorizationState?: OAuthAuthorizationState,
 ): URL {
   let value: string;
@@ -310,14 +311,7 @@ export function resolveProviderUrl(
     }
     value = tokenField;
   }
-  const url = new URL(value);
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("Connection base URL must use HTTP or HTTPS");
-  }
-  if (url.username || url.password) {
-    throw new Error("Connection base URL cannot contain credentials");
-  }
-  return url;
+  return providerOrigin(value);
 }
 
 export async function replacePrivateFile(path: string, value: string | Uint8Array): Promise<void> {

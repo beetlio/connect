@@ -13,7 +13,7 @@ export default defineIntegration({
   key: "basic",
   displayName: "Basic dummy API",
   connection: {
-    baseUrl: "https://api.example.com",
+    origin: "https://api.example.com",
     auth: auth.none(),
     async verify(ctx) {
       const response = await ctx.fetch("/health");

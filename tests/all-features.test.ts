@@ -26,7 +26,7 @@ test("all-features example verifies, paginates, checkpoints, and resumes", async
   const workspaces: string[] = [];
   const apiVersions: string[] = [];
   const logs: string[] = [];
-  const baseUrl = await fixtureServer(t, (request, response) => {
+  const origin = await fixtureServer(t, (request, response) => {
     const url = new URL(request.url ?? "/", "http://fixture");
     authorizations.push(request.headers.authorization ?? "");
     workspaces.push(url.searchParams.get("workspace") ?? "");
@@ -65,9 +65,9 @@ test("all-features example verifies, paginates, checkpoints, and resumes", async
   });
   const directory = await fixtureDirectory(t, "beetl-all-features");
   const host = new LocalHost({
-    baseUrl,
+    origin,
     auth: integration.connection.auth!,
-    authenticationInput: { clientId: "fixture-client" },
+    credentials: { clientId: "fixture-client" },
     authorizationState: {
       accessToken: "fixture-token",
       refreshToken: "fixture-refresh-token",

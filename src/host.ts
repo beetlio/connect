@@ -73,7 +73,7 @@ export interface VerifyConnectionInput {
   signal?: AbortSignal;
 }
 
-const EmptyConfig = z.object({});
+const EmptyConfig = z.strictObject({});
 
 export async function runSync(
   integration: IntegrationDefinition,
@@ -93,11 +93,15 @@ export async function runSync(
   }
 
   const connectionConfig = parse(
-    integration.connection.inputs ?? EmptyConfig,
+    integration.connection.inputs?.schema ?? EmptyConfig,
     input.connectionConfig ?? {},
     "connection config",
   );
-  const syncConfig = parse(sync.inputs ?? EmptyConfig, input.syncConfig ?? {}, "sync config");
+  const syncConfig = parse(
+    sync.inputs?.schema ?? EmptyConfig,
+    input.syncConfig ?? {},
+    "sync config",
+  );
   const initialCheckpoint =
     snapshot || input.checkpoint === undefined
       ? undefined
@@ -109,8 +113,6 @@ export async function runSync(
   let latestCheckpoint = initialCheckpoint;
   let emitQueue = Promise.resolve();
   let contextOpen = true;
-  const operations = createPendingOperations();
-
   const rejectClosed = <T>(): Promise<T> => {
     const rejected = Promise.reject<T>(new Error("Sync context is closed"));
     void rejected.catch(() => undefined);
@@ -164,15 +166,21 @@ export async function runSync(
     level: LogEntry["level"],
     message: string,
     fields: JsonObject = {},
-  ): Promise<void> =>
-    contextOpen ? operations.track(host.log({ level, message, fields })) : rejectClosed();
+  ): Promise<void> => {
+    if (!contextOpen) return rejectClosed();
+    const operation = host.log({ level, message, fields });
+    void operation.catch(() => undefined);
+    return operation;
+  };
 
   const fetch = (path: string, init?: SyncFetchInit): Promise<Response> => {
     if (!contextOpen) {
       return rejectClosed<Response>();
     }
     signal.throwIfAborted();
-    return operations.track(hostFetch(host, path, init, signal, integration.connection.retry));
+    const operation = hostFetch(host, path, init, signal, integration.connection.retry);
+    void operation.catch(() => undefined);
+    return operation;
   };
 
   const logger = {
@@ -213,18 +221,12 @@ export async function runSync(
       contextOpen = false;
     }
 
-    const [[emitResult], operationResult] = await Promise.all([
-      Promise.allSettled([emitQueue]),
-      operations.settle(),
-    ]);
+    const [emitResult] = await Promise.allSettled([emitQueue]);
     if (runFailed) {
       throw runError;
     }
     if (emitResult?.status === "rejected") {
       throw emitResult.reason;
-    }
-    if (!operationResult.ok) {
-      throw operationResult.reason;
     }
     signal.throwIfAborted();
     if (snapshot) {
@@ -265,12 +267,11 @@ export async function verifyConnection(
   }
 
   const config = parse(
-    integration.connection.inputs ?? EmptyConfig,
+    integration.connection.inputs?.schema ?? EmptyConfig,
     input.connectionConfig ?? {},
     "connection config",
   );
   const signal = input.signal ?? new AbortController().signal;
-  const operations = createPendingOperations();
   let contextOpen = true;
 
   const rejectClosed = <T>(): Promise<T> => {
@@ -283,14 +284,20 @@ export async function verifyConnection(
       return rejectClosed<Response>();
     }
     signal.throwIfAborted();
-    return operations.track(hostFetch(host, path, init, signal, integration.connection.retry));
+    const operation = hostFetch(host, path, init, signal, integration.connection.retry);
+    void operation.catch(() => undefined);
+    return operation;
   };
   const log = (
     level: LogEntry["level"],
     message: string,
     fields: JsonObject = {},
-  ): Promise<void> =>
-    contextOpen ? operations.track(host.log({ level, message, fields })) : rejectClosed();
+  ): Promise<void> => {
+    if (!contextOpen) return rejectClosed();
+    const operation = host.log({ level, message, fields });
+    void operation.catch(() => undefined);
+    return operation;
+  };
 
   signal.throwIfAborted();
   let verifyError: unknown;
@@ -314,85 +321,10 @@ export async function verifyConnection(
     contextOpen = false;
   }
 
-  const operationResult = await operations.settle();
   if (verifyFailed) {
     throw verifyError;
   }
-  if (!operationResult.ok) {
-    throw operationResult.reason;
-  }
   signal.throwIfAborted();
-}
-
-interface PendingOperation {
-  readonly promise: Promise<unknown>;
-  observed: boolean;
-  failure?: { readonly reason: unknown };
-}
-
-class ObservedPromise<T> implements Promise<T> {
-  readonly [Symbol.toStringTag] = "Promise";
-  readonly #promise: Promise<T>;
-  readonly #observe: () => void;
-
-  constructor(promise: Promise<T>, observe: () => void) {
-    this.#promise = promise;
-    this.#observe = observe;
-    void this.#promise.catch(() => undefined);
-  }
-
-  then<TResult1 = T, TResult2 = never>(
-    onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
-    onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null,
-  ): Promise<TResult1 | TResult2> {
-    if (onrejected !== undefined && onrejected !== null) this.#observe();
-    return new ObservedPromise(this.#promise.then(onfulfilled, onrejected), this.#observe);
-  }
-
-  catch<TResult = never>(
-    onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | null,
-  ): Promise<T | TResult> {
-    if (onrejected !== undefined && onrejected !== null) this.#observe();
-    return new ObservedPromise(this.#promise.catch(onrejected), this.#observe);
-  }
-
-  finally(onfinally?: (() => void) | null): Promise<T> {
-    return new ObservedPromise(this.#promise.finally(onfinally), this.#observe);
-  }
-}
-
-function createPendingOperations() {
-  const pending = new Set<PendingOperation>();
-
-  return {
-    track<T>(operation: Promise<T>): Promise<T> {
-      const tracked: PendingOperation = { promise: operation, observed: false };
-      pending.add(tracked);
-      void operation.then(
-        () => pending.delete(tracked),
-        (reason: unknown) => {
-          tracked.failure = { reason };
-          if (tracked.observed) pending.delete(tracked);
-        },
-      );
-      return new ObservedPromise(operation, () => {
-        tracked.observed = true;
-        if (tracked.failure !== undefined) pending.delete(tracked);
-      });
-    },
-
-    async settle(): Promise<
-      { readonly ok: true } | { readonly ok: false; readonly reason: unknown }
-    > {
-      const operations = [...pending];
-      await Promise.allSettled(operations.map(({ promise }) => promise));
-      const failure = operations.find(
-        (operation) => !operation.observed && operation.failure !== undefined,
-      )?.failure;
-      pending.clear();
-      return failure === undefined ? { ok: true } : { ok: false, reason: failure.reason };
-    },
-  };
 }
 
 export function validateIntegration(integration: IntegrationDefinition): void {
@@ -411,27 +343,21 @@ export function validateIntegration(integration: IntegrationDefinition): void {
     throw new Error("Integration icon must be icon.png or icon.webp");
   }
   const auth = integration.connection.auth ?? authentication.none();
-  if (typeof integration.connection.baseUrl === "string") {
-    const baseUrl = new URL(integration.connection.baseUrl);
+  if (typeof integration.connection.origin === "string") {
+    const origin = providerOrigin(integration.connection.origin);
     const isLoopback =
-      baseUrl.hostname === "localhost" ||
-      baseUrl.hostname === "[::1]" ||
-      /^127(?:\.\d{1,3}){3}$/.test(baseUrl.hostname);
-    if (baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:") {
-      throw new Error("Connection base URL must use HTTP or HTTPS");
-    }
-    if (baseUrl.username || baseUrl.password) {
-      throw new Error("Connection base URL cannot contain credentials");
-    }
-    if (auth.type !== "none" && baseUrl.protocol !== "https:" && !isLoopback) {
-      throw new Error("Authenticated connection base URLs must use HTTPS or loopback HTTP");
+      origin.hostname === "localhost" ||
+      origin.hostname === "[::1]" ||
+      /^127(?:\.\d{1,3}){3}$/.test(origin.hostname);
+    if (auth.type !== "none" && origin.protocol !== "https:" && !isLoopback) {
+      throw new Error("Authenticated provider origins must use HTTPS or loopback HTTP");
     }
   }
 
-  const authenticationInputKeys = new Set(Object.keys(auth.inputs.shape));
-  for (const field of authenticationInputReferences(auth)) {
-    if (!authenticationInputKeys.has(field)) {
-      throw new Error(`Authentication references unknown input ${JSON.stringify(field)}`);
+  const credentialKeys = new Set(Object.keys(auth.credentials.shape));
+  for (const field of credentialReferences(auth)) {
+    if (!credentialKeys.has(field)) {
+      throw new Error(`Authentication references unknown credential ${JSON.stringify(field)}`);
     }
   }
   if (
@@ -456,6 +382,15 @@ export function validateIntegration(integration: IntegrationDefinition): void {
       });
     }
   }
+  const queryNames =
+    auth.type === "api_key" && auth.in === "query"
+      ? [auth.name]
+      : auth.type === "custom"
+        ? Object.keys(auth.query)
+        : [];
+  if (queryNames.some((name) => !name.trim())) {
+    throw new Error("Authentication query parameter names cannot be empty");
+  }
   if (auth.type === "oauth2_authorization_code") {
     for (const value of [auth.issuer, auth.authorizationUrl, auth.tokenUrl]) {
       const url = new URL(value);
@@ -477,13 +412,13 @@ export function validateIntegration(integration: IntegrationDefinition): void {
       throw new Error("OAuth token field mappings cannot be empty");
     }
     if (
-      typeof integration.connection.baseUrl !== "string" &&
-      auth.tokenFields[integration.connection.baseUrl.oauthTokenField] === undefined
+      typeof integration.connection.origin !== "string" &&
+      auth.tokenFields[integration.connection.origin.oauthTokenField] === undefined
     ) {
-      throw new Error("Connection base URL references an unknown OAuth token field");
+      throw new Error("Provider origin references an unknown OAuth token field");
     }
-  } else if (typeof integration.connection.baseUrl !== "string") {
-    throw new Error("Dynamic connection base URLs require OAuth authentication");
+  } else if (typeof integration.connection.origin !== "string") {
+    throw new Error("Dynamic provider origins require OAuth authentication");
   }
 
   resolveRetry(integration.connection.retry);
@@ -518,6 +453,20 @@ export function validateIntegration(integration: IntegrationDefinition): void {
       primaryKeys.add(path);
     }
   }
+}
+
+export function providerOrigin(value: string): URL {
+  const origin = new URL(value);
+  if (origin.protocol !== "http:" && origin.protocol !== "https:") {
+    throw new Error("Provider origin must use HTTP or HTTPS");
+  }
+  if (origin.username || origin.password) {
+    throw new Error("Provider origin cannot contain credentials");
+  }
+  if (origin.pathname !== "/" || origin.search || origin.hash) {
+    throw new Error("Provider origin cannot contain a path, query, or fragment");
+  }
+  return origin;
 }
 
 function validateKey(key: string, label: string): void {
@@ -763,7 +712,7 @@ function responseCanHaveBody(status: number): boolean {
   return status !== 101 && status !== 204 && status !== 205 && status !== 304;
 }
 
-function authenticationInputReferences(auth: AuthDefinition): readonly string[] {
+function credentialReferences(auth: AuthDefinition): readonly string[] {
   if (auth.type === "none") return [];
   if (auth.type === "bearer") return ["token"];
   if (auth.type === "basic") return ["username", "password"];

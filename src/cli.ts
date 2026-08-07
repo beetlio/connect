@@ -29,7 +29,7 @@ import type {
   JsonValue,
 } from "./index.ts";
 import { runSync, verifyConnection } from "./host.ts";
-import { LocalHost, replacePrivateFile, resolveProviderUrl } from "./local-host.ts";
+import { LocalHost, replacePrivateFile, resolveProviderOrigin } from "./local-host.ts";
 import { authorizeOAuth, type OAuthAuthorizationState } from "./oauth.ts";
 
 interface ProfileConfiguration {
@@ -54,7 +54,7 @@ const UserConfigDirectory = envPaths("beetl-connect", { suffix: "" }).config;
 const ProviderFetch = globalThis.fetch.bind(globalThis);
 const EmptyInputs = z.strictObject({});
 const JsonObjectSchema = z.record(z.string(), z.json());
-const AuthenticationInputValuesSchema = z.record(z.string(), z.string());
+const CredentialValuesSchema = z.record(z.string(), z.string());
 const LocalNameSchema = z.string().regex(LocalNamePattern);
 const ProfileSchema = z.strictObject({
   integration: z.string().min(1),
@@ -85,18 +85,13 @@ const StoredConnectionSchema = z.strictObject({
   name: LocalNameSchema,
   revision: z.uuid(),
   provider: ProviderBindingSchema,
-  baseUrl: z.url({ protocol: /^https?$/ }).optional(),
+  origin: z.url({ protocol: /^https?$/ }).optional(),
   inputs: JsonObjectSchema.default({}),
-  authenticationInput: AuthenticationInputValuesSchema.default({}),
+  credentials: CredentialValuesSchema.default({}),
   authorizationState: OAuthAuthorizationStateSchema.optional(),
 });
 type StoredConnection = z.output<typeof StoredConnectionSchema>;
 
-Object.defineProperty(globalThis, "fetch", {
-  value: undefined,
-  configurable: false,
-  writable: false,
-});
 const integrationArgument = () =>
   argument(pathValue({ mustExist: true, type: "either", metavar: "INTEGRATION" }), {
     description: message`Integration file, directory, or .beetl.zip artifact.`,
@@ -130,7 +125,7 @@ const Cli = or(
         }),
       ),
     }),
-    { brief: message`Build a Node 24 .beetl.zip artifact.` },
+    { brief: message`Build a Deno-compatible .beetl.zip artifact.` },
   ),
   command(
     "check",
@@ -160,9 +155,9 @@ const Cli = or(
     object({
       command: constant("connect"),
       integrationPath: integrationArgument(),
-      baseUrl: optional(
-        option("--base-url", url({ allowedProtocols: ["http:", "https:"], metavar: "URL" }), {
-          description: message`Override the provider base URL.`,
+      origin: optional(
+        option("--origin", url({ allowedProtocols: ["http:", "https:"], metavar: "URL" }), {
+          description: message`Override the provider origin.`,
         }),
       ),
       connection: connectionOption(),
@@ -250,7 +245,7 @@ async function main(args = process.argv.slice(2)): Promise<void> {
   if (options.command === "connect") {
     const name = options.connection ?? DefaultConnection;
     const path = join(UserConfigDirectory, "connections", integration.key, `${name}.json`);
-    await connectConnection(integration, manifest, name, path, options.baseUrl);
+    await connectConnection(integration, manifest, name, path, options.origin);
     console.log(`Connected ${integration.displayName} as ${name}`);
     return;
   }
@@ -428,7 +423,7 @@ async function configureProfile(
     throw new Error(`Unknown sync ${JSON.stringify(syncKey)}`);
   }
   const inputs = await promptObject(syncManifest.inputs, existing?.inputs ?? {});
-  const parsedInputs = (sync.inputs ?? EmptyInputs).safeParse(inputs);
+  const parsedInputs = (sync.inputs?.schema ?? EmptyInputs).safeParse(inputs);
   if (!parsedInputs.success) {
     throw new Error(`Invalid sync inputs: ${z.prettifyError(parsedInputs.error)}`);
   }
@@ -436,7 +431,7 @@ async function configureProfile(
     integration: integration.key,
     sync: syncKey,
     connection: requestedConnection ?? existing?.connection ?? DefaultConnection,
-    inputs: JsonObjectSchema.parse(inputs),
+    inputs: JsonObjectSchema.parse(parsedInputs.data),
   };
   const profile: Profile = {
     ...values,
@@ -574,12 +569,14 @@ async function connectConnection(
   manifest: IntegrationManifest,
   name: string,
   path: string,
-  baseUrl?: URL,
+  origin?: URL,
 ): Promise<StoredConnection> {
+  const requestedOrigin =
+    origin === undefined ? undefined : resolveProviderOrigin(origin.href).origin;
   if (
     (!process.stdin.isTTY || !process.stdout.isTTY) &&
     (Object.keys(manifest.connection.inputs.properties).length > 0 ||
-      Object.keys(manifest.connection.authenticationInput.properties).length > 0)
+      Object.keys(manifest.connection.credentials.properties).length > 0)
   ) {
     throw new Error("connect requires an interactive terminal");
   }
@@ -587,32 +584,32 @@ async function connectConnection(
   const existing =
     stored !== undefined &&
     connectionMatchesProvider(integration, manifest, stored) &&
-    (baseUrl === undefined || baseUrl.origin === stored.provider.origin)
+    (requestedOrigin === undefined || requestedOrigin === stored.provider.origin)
       ? stored
       : undefined;
   const inputs = await promptObject(manifest.connection.inputs, existing?.inputs ?? {});
-  const authenticationInput = await promptObject(
-    manifest.connection.authenticationInput,
-    existing?.authenticationInput ?? {},
+  const credentials = await promptObject(
+    manifest.connection.credentials,
+    existing?.credentials ?? {},
   );
-  const parsedInputs = (integration.connection.inputs ?? EmptyInputs).safeParse(inputs);
+  const parsedInputs = (integration.connection.inputs?.schema ?? EmptyInputs).safeParse(inputs);
   if (!parsedInputs.success) {
     throw new Error(`Invalid connection inputs: ${z.prettifyError(parsedInputs.error)}`);
   }
-  const parsedAuthenticationInput = parseAuthenticationInput(
-    integration.connection.auth?.inputs ?? EmptyInputs,
-    authenticationInput,
+  const parsedCredentials = parseCredentials(
+    integration.connection.auth?.credentials.schema ?? EmptyInputs,
+    credentials,
   );
   const controller = new AbortController();
   const abort = () => controller.abort(new Error("Interrupted"));
   process.once("SIGINT", abort);
   try {
-    const configuredBaseUrl = baseUrl?.href ?? existing?.baseUrl;
+    const configuredOrigin = requestedOrigin ?? existing?.origin;
     const authorizationState =
       integration.connection.auth?.type === "oauth2_authorization_code"
         ? await authorizeOAuth({
             auth: integration.connection.auth,
-            authenticationInput: parsedAuthenticationInput,
+            credentials: parsedCredentials,
             redirectUri: "http://127.0.0.1:53682/oauth/callback",
             fetch: ProviderFetch,
             signal: controller.signal,
@@ -623,11 +620,11 @@ async function connectConnection(
       integration: integration.key,
       name,
       revision: randomUUID(),
-      ...(configuredBaseUrl === undefined ? {} : { baseUrl: configuredBaseUrl }),
-      inputs: JsonObjectSchema.parse(inputs),
-      authenticationInput: AuthenticationInputValuesSchema.parse(authenticationInput),
+      ...(configuredOrigin === undefined ? {} : { origin: configuredOrigin }),
+      inputs: JsonObjectSchema.parse(parsedInputs.data),
+      credentials: CredentialValuesSchema.parse(parsedCredentials),
       ...(authorizationState === undefined ? {} : { authorizationState }),
-      provider: providerBinding(integration, manifest, configuredBaseUrl, authorizationState),
+      provider: providerBinding(integration, manifest, configuredOrigin, authorizationState),
     });
     if (manifest.connection.canVerify) {
       await verifyConnection(
@@ -664,13 +661,10 @@ function createLocalHost(
   const { onConnectionChanged, ...files } = options;
   const auth = integration.connection.auth;
   return new LocalHost({
-    baseUrl: connection.baseUrl ?? integration.connection.baseUrl,
+    origin: connection.origin ?? integration.connection.origin,
     fetch: ProviderFetch,
     ...(auth === undefined ? {} : { auth }),
-    authenticationInput: parseAuthenticationInput(
-      auth?.inputs ?? EmptyInputs,
-      connection.authenticationInput,
-    ),
+    credentials: parseCredentials(auth?.credentials.schema ?? EmptyInputs, connection.credentials),
     ...(connection.authorizationState === undefined
       ? {}
       : { authorizationState: connection.authorizationState }),
@@ -678,7 +672,7 @@ function createLocalHost(
       const updated = {
         ...connection,
         authorizationState,
-        provider: providerBinding(integration, manifest, connection.baseUrl, authorizationState),
+        provider: providerBinding(integration, manifest, connection.origin, authorizationState),
       };
       return onConnectionChanged(updated);
     },
@@ -686,25 +680,22 @@ function createLocalHost(
   });
 }
 
-function parseAuthenticationInput(
-  schema: z.ZodType,
-  input: unknown,
-): Readonly<Record<string, string>> {
+function parseCredentials(schema: z.ZodType, input: unknown): Readonly<Record<string, string>> {
   const result = schema.safeParse(input);
   if (!result.success) {
-    throw new Error(`Invalid authentication input: ${z.prettifyError(result.error)}`);
+    throw new Error(`Invalid credentials: ${z.prettifyError(result.error)}`);
   }
-  return AuthenticationInputValuesSchema.parse(result.data);
+  return CredentialValuesSchema.parse(result.data);
 }
 
 function providerBinding(
   integration: IntegrationDefinition,
   manifest: IntegrationManifest,
-  baseUrl: string | undefined,
+  origin: string | undefined,
   authorizationState: OAuthAuthorizationState | undefined,
 ): ProviderBinding {
   return {
-    origin: resolveProviderUrl(baseUrl ?? integration.connection.baseUrl, authorizationState)
+    origin: resolveProviderOrigin(origin ?? integration.connection.origin, authorizationState)
       .origin,
     authentication: z.json().parse(manifest.connection.auth),
   };
@@ -718,7 +709,7 @@ function connectionMatchesProvider(
   try {
     return isDeepStrictEqual(
       connection.provider,
-      providerBinding(integration, manifest, connection.baseUrl, connection.authorizationState),
+      providerBinding(integration, manifest, connection.origin, connection.authorizationState),
     );
   } catch {
     return false;

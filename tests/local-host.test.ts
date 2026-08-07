@@ -3,7 +3,7 @@ import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { auth, defineIntegration, defineSync, input, z } from "@beetlio/connect";
+import { auth, credential, defineIntegration, defineSync, z } from "@beetlio/connect";
 import { runSync, type ProviderRequest } from "@beetlio/connect/host";
 import { LocalHost } from "../src/local-host.ts";
 import { fixtureDirectory } from "./support.ts";
@@ -15,7 +15,7 @@ test("authentication stays on secure origins and supports declarative fields", a
   let authorization = "";
   const authenticated = {
     auth: auth.bearer(),
-    authenticationInput: { token: "secret" },
+    credentials: { token: "secret" },
     outputPath: "unused",
     statePath: "unused",
     fetch: async (_input: URL | RequestInfo, init?: RequestInit) => {
@@ -26,23 +26,26 @@ test("authentication stays on secure origins and supports declarative fields", a
   };
 
   await assert.rejects(
-    new LocalHost({ ...authenticated, baseUrl: "http://example.com" }).request(Request),
+    new LocalHost({ ...authenticated, origin: "http://example.com" }).request(Request),
     /require HTTPS/,
   );
   assert.equal(calls, 0);
-  await new LocalHost({ ...authenticated, baseUrl: "http://127.0.0.1" }).request(Request);
+  await new LocalHost({ ...authenticated, origin: "http://127.0.0.1" }).request(Request);
   assert.equal(authorization, "Bearer secret");
 
   let url = "";
   let account = "";
   const custom = new LocalHost({
-    baseUrl: "https://api.example.com",
+    origin: "https://api.example.com",
     auth: auth.custom({
-      inputs: input.object({ account: input.string(), apiKey: input.secret() }),
+      credentials: credential.object({
+        account: credential.string(),
+        apiKey: credential.secret(),
+      }),
       headers: { "x-account": "account" },
       query: { api_key: "apiKey" },
     }),
-    authenticationInput: { account: "acct_123", apiKey: "secret" },
+    credentials: { account: "acct_123", apiKey: "secret" },
     outputPath: "unused",
     statePath: "unused",
     fetch: async (input, init) => {
@@ -59,7 +62,7 @@ test("authentication stays on secure origins and supports declarative fields", a
 test("retry policy retries transient responses and can be disabled", async () => {
   let calls = 0;
   const host = new LocalHost({
-    baseUrl: "https://api.example.com",
+    origin: "https://api.example.com",
     outputPath: "unused",
     statePath: "unused",
     fetch: async () => {
@@ -79,7 +82,7 @@ test("retry policy retries transient responses and can be disabled", async () =>
 
   calls = 0;
   const singleAttempt = new LocalHost({
-    baseUrl: "https://api.example.com",
+    origin: "https://api.example.com",
     outputPath: "unused",
     statePath: "unused",
     fetch: async () => {
@@ -112,9 +115,9 @@ test("OAuth refresh is single-flight and isolated from waiter cancellation", asy
   const refreshStarted = new Promise<void>((resolve) => (notifyRefreshStarted = resolve));
   const refreshGate = new Promise<void>((resolve) => (releaseRefresh = resolve));
   const host = new LocalHost({
-    baseUrl: { oauthTokenField: "instanceUrl" },
+    origin: { oauthTokenField: "instanceUrl" },
     auth: oauth,
-    authenticationInput: { clientId: "client-id" },
+    credentials: { clientId: "client-id" },
     authorizationState: {
       accessToken: "expired-token",
       refreshToken: "refresh-token",
@@ -165,7 +168,7 @@ test("OAuth refresh is single-flight and isolated from waiter cancellation", asy
 
 test("provider responses have a hard size limit", async () => {
   const host = new LocalHost({
-    baseUrl: "https://api.example.com",
+    origin: "https://api.example.com",
     outputPath: "unused",
     statePath: "unused",
     fetch: async () => new Response(new Uint8Array(16 * 1024 * 1024 + 1)),
@@ -173,7 +176,7 @@ test("provider responses have a hard size limit", async () => {
   await assert.rejects(host.request({ ...Request, retry: false }), /exceeds 16 MiB/);
 
   const bodyless = new LocalHost({
-    baseUrl: "https://api.example.com",
+    origin: "https://api.example.com",
     outputPath: "unused",
     statePath: "unused",
     fetch: async () =>
@@ -189,7 +192,7 @@ test("checkpoint replacement uses private exclusive files", async (t) => {
   const predictableTemporaryPath = `${statePath}.tmp-${process.pid}`;
   await writeFile(predictableTemporaryPath, "reserved");
   const host = new LocalHost({
-    baseUrl: "https://api.example.com",
+    origin: "https://api.example.com",
     outputPath: join(directory, "items.ndjson"),
     statePath,
   });
@@ -209,7 +212,7 @@ test("snapshot output is replaced only after a successful run", async (t) => {
   const integration = defineIntegration({
     key: "snapshot",
     displayName: "Snapshot",
-    connection: { baseUrl: "https://api.example.com" },
+    connection: { origin: "https://api.example.com" },
     syncs: [
       defineSync({
         key: "items",
@@ -224,7 +227,7 @@ test("snapshot output is replaced only after a successful run", async (t) => {
     ],
   });
   const host = new LocalHost({
-    baseUrl: integration.connection.baseUrl,
+    origin: integration.connection.origin,
     outputPath,
     statePath: join(directory, "state.json"),
     onLog: () => undefined,

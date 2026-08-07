@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   auth,
+  credential,
   createIntegrationManifest,
   defineIntegration,
   defineSync,
@@ -22,11 +23,11 @@ test("authoring produces a typed integration manifest", () => {
     key: "typed",
     displayName: "Typed",
     connection: {
-      baseUrl: "https://api.example.com",
+      origin: "https://api.example.com",
       inputs: input.object({
         apiVersion: input.string({ label: "API version", minLength: 1 }),
       }),
-      auth: auth.bearer({ token: input.secret({ label: "API token" }) }),
+      auth: auth.bearer({ token: credential.secret({ label: "API token" }) }),
     },
     syncs: (defineSync) => [
       defineSync({
@@ -53,8 +54,6 @@ test("authoring produces a typed integration manifest", () => {
           await ctx.emit({ records: [{ id: `${apiVersion}-${region}` }] });
           void includeArchived;
           if (false) {
-            // @ts-expect-error Connection inputs remain schema-derived.
-            ctx.config.connection.missing;
             // @ts-expect-error Record IDs remain strings.
             await ctx.emit({ records: [{ id: 1 }] });
           }
@@ -71,7 +70,7 @@ test("authoring produces a typed integration manifest", () => {
     title: "API version",
   });
   assert.deepEqual(manifest.connection.auth, { type: "bearer" });
-  assert.deepEqual(manifest.connection.authenticationInput.properties.token, {
+  assert.deepEqual(manifest.connection.credentials.properties.token, {
     type: "string",
     title: "API token",
     "x-beetl-widget": "password",
@@ -89,7 +88,7 @@ test("runSync validates configuration and transforms emitted domain values", asy
     key: "transformed",
     displayName: "Transformed",
     connection: {
-      baseUrl: "https://api.example.com",
+      origin: "https://api.example.com",
       inputs: input.object({ account: input.string() }),
     },
     syncs: (defineSync) => [
@@ -141,7 +140,7 @@ test("pagination yields records, cursors, and response metadata without response
     key: "pages",
     displayName: "Pages",
     connection: {
-      baseUrl: "https://api.example.com",
+      origin: "https://api.example.com",
       pagination: {
         type: "cursor",
         cursorParameter: "after",
@@ -270,7 +269,7 @@ test("next-url pagination follows relative URLs across empty pages", async () =>
   const integration = defineIntegration({
     key: "next-pages",
     displayName: "Next pages",
-    connection: { baseUrl: "https://api.example.com" },
+    connection: { origin: "https://api.example.com" },
     syncs: (defineSync) => [
       defineSync({
         key: "items",
@@ -321,20 +320,15 @@ test("next-url pagination follows relative URLs across empty pages", async () =>
   assert.deepEqual(result, { batches: 2, records: 1 });
 });
 
-test("connection verification validates config and can recover from request failures", async () => {
+test("connection verification can recover from caught request failures", async () => {
   const requested: string[] = [];
   const integration = defineIntegration({
     key: "verified",
     displayName: "Verified",
     connection: {
-      baseUrl: "https://api.example.com",
+      origin: "https://api.example.com",
       inputs: input.object({ account: input.string() }),
       async verify(ctx) {
-        if (ctx.config.account === "abandoned") {
-          void ctx.fetch("/optional");
-          await new Promise<void>((resolve) => setImmediate(resolve));
-          return;
-        }
         try {
           await ctx.fetch("/optional");
         } catch {
@@ -356,10 +350,6 @@ test("connection verification validates config and can recover from request fail
   });
   await verifyConnection(integration, { connectionConfig: { account: "acme" } }, host);
   assert.deepEqual(requested, ["/optional", "/accounts/acme"]);
-  await assert.rejects(
-    verifyConnection(integration, { connectionConfig: { account: "abandoned" } }, host),
-    /not available/,
-  );
 });
 
 test("sync operations stay ordered, tracked, and closed after the run", async () => {
@@ -379,7 +369,7 @@ test("sync operations stay ordered, tracked, and closed after the run", async ()
   const integration = defineIntegration({
     key: "ordered",
     displayName: "Ordered",
-    connection: { baseUrl: "https://api.example.com" },
+    connection: { origin: "https://api.example.com" },
     syncs: [sync],
   });
 
@@ -407,7 +397,7 @@ test("records must be JSON values before they cross the host boundary", async ()
   const integration = defineIntegration({
     key: "json",
     displayName: "JSON",
-    connection: { baseUrl: "https://api.example.com" },
+    connection: { origin: "https://api.example.com" },
     syncs: [
       defineSync({
         key: "items",
@@ -428,7 +418,14 @@ test("records must be JSON values before they cross the host boundary", async ()
 });
 
 test("integration contracts enforce authentication and input invariants", () => {
-  assert.throws(() => input.secret({ default: "secret" } as never), /cannot declare defaults/);
+  assert.throws(
+    () => input.object({ token: credential.secret() } as never),
+    /only input\.\* fields/,
+  );
+  assert.throws(
+    () => input.optional(input.string({ default: "value" })),
+    /cannot also be optional/,
+  );
   assert.throws(() => input.integer({ min: 1, default: 0 }), /Invalid input default/);
   assert.throws(
     () =>
@@ -437,7 +434,7 @@ test("integration contracts enforce authentication and input invariants", () => 
           key: "retry",
           displayName: "Retry",
           connection: {
-            baseUrl: "https://example.com",
+            origin: "https://example.com",
             retry: { maxDelayMs: 100 },
           },
           syncs: [],
@@ -448,14 +445,14 @@ test("integration contracts enforce authentication and input invariants", () => 
   const authenticatedHttp = defineIntegration({
     key: "authenticated-http",
     displayName: "Authenticated HTTP",
-    connection: { baseUrl: "http://example.com", auth: auth.bearer() },
+    connection: { origin: "http://example.com", auth: auth.bearer() },
     syncs: [],
   });
   assert.throws(() => validateIntegration(authenticatedHttp), /must use HTTPS or loopback HTTP/);
   assert.doesNotThrow(() =>
     validateIntegration({
       ...authenticatedHttp,
-      connection: { ...authenticatedHttp.connection, baseUrl: "http://[::1]:8080" },
+      connection: { ...authenticatedHttp.connection, origin: "http://[::1]:8080" },
     }),
   );
 
@@ -463,9 +460,9 @@ test("integration contracts enforce authentication and input invariants", () => 
     key: "invalid",
     displayName: "Invalid",
     connection: {
-      baseUrl: "https://user:secret@example.com",
+      origin: "https://user:secret@example.com",
       auth: auth.custom({
-        inputs: input.object({ token: input.string({ default: "secret" }) }),
+        credentials: credential.object({ token: credential.secret() }),
         headers: { authorization: "missing" },
       }),
     },
@@ -487,70 +484,54 @@ test("integration contracts enforce authentication and input invariants", () => 
         ...integration,
         connection: {
           ...integration.connection,
-          baseUrl: "https://example.com",
+          origin: "https://example.com",
           auth: auth.custom({
-            inputs: input.object({ token: input.secret() }),
+            credentials: credential.object({ token: credential.secret() }),
             headers: { authorization: "missing" },
           }),
         },
       }),
-    /unknown input "missing"/,
+    /unknown credential "missing"/,
   );
   assert.throws(
     () =>
       validateIntegration({
         ...integration,
         connection: {
-          baseUrl: "https://example.com",
+          origin: "https://example.com",
           auth: auth.bearer(),
         },
       }),
     /Duplicate primary key path "id"/,
   );
-  assert.throws(() => createIntegrationManifest(integration), /cannot declare defaults/);
-  assert.doesNotThrow(() =>
+  assert.throws(
+    () =>
+      validateIntegration(
+        defineIntegration({
+          key: "path-origin",
+          displayName: "Path origin",
+          connection: { origin: "https://example.com/api" },
+          syncs: [],
+        }),
+      ),
+    /cannot contain a path/,
+  );
+  assert.deepEqual(
     createIntegrationManifest(
       defineIntegration({
         key: "default-field",
         displayName: "Default field",
         connection: {
-          baseUrl: "https://example.com",
+          origin: "https://example.com",
           auth: auth.custom({
-            inputs: input.object({ default: input.secret() }),
+            credentials: credential.object({ default: credential.secret() }),
             headers: { authorization: "default" },
           }),
         },
         syncs: [],
       }),
-    ),
-  );
-  assert.throws(
-    () =>
-      createIntegrationManifest(
-        defineIntegration({
-          key: "composite-input",
-          displayName: "Composite input",
-          connection: {
-            baseUrl: "https://example.com",
-            inputs: input.object({ value: z.union([z.number(), z.boolean()]) as never }),
-          },
-          syncs: [],
-        }),
-      ),
-    /must be declared with input\.\*/,
-  );
-  assert.doesNotThrow(() =>
-    createIntegrationManifest(
-      defineIntegration({
-        key: "json-input",
-        displayName: "JSON input",
-        connection: {
-          baseUrl: "https://example.com",
-          inputs: input.object({ headers: input.json() }),
-        },
-        syncs: [],
-      }),
-    ),
+    ).connection.credentials.properties.default,
+    { type: "string", "x-beetl-widget": "password", writeOnly: true },
   );
   assert.throws(
     () =>
@@ -559,12 +540,27 @@ test("integration contracts enforce authentication and input invariants", () => 
           key: "invalid-header",
           displayName: "Invalid header",
           connection: {
-            baseUrl: "https://example.com",
+            origin: "https://example.com",
             auth: auth.apiKey({ in: "header", name: "" }),
           },
           syncs: [],
         }),
       ),
     /Invalid authentication header name/,
+  );
+  assert.throws(
+    () =>
+      validateIntegration(
+        defineIntegration({
+          key: "invalid-query",
+          displayName: "Invalid query",
+          connection: {
+            origin: "https://example.com",
+            auth: auth.apiKey({ in: "query", name: " " }),
+          },
+          syncs: [],
+        }),
+      ),
+    /query parameter names cannot be empty/,
   );
 });

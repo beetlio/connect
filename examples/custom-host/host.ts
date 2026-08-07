@@ -14,9 +14,9 @@ class ConsoleHost implements SyncHost {
   #snapshot: EmittedBatch["records"][number][] | undefined;
 
   async request(request: ProviderRequest, signal?: AbortSignal): Promise<ProviderResponse> {
-    const baseUrl = new URL("https://www.wikidata.org");
-    const url = new URL(request.path, baseUrl);
-    if (url.origin !== baseUrl.origin) {
+    const origin = new URL("https://www.wikidata.org");
+    const url = new URL(request.path, origin);
+    if (url.origin !== origin.origin) {
       throw new Error("Provider request escaped the configured origin");
     }
 

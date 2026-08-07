@@ -20,8 +20,9 @@ npm run build
 3. Validate external data with Zod and keep credentials outside sync contexts.
 4. Update the README when CLI behavior or public APIs change.
 
-The codebase uses strict TypeScript, ES modules, and Node.js built-ins. Avoid new
-dependencies when the standard library or existing packages cover the change.
+The CLI uses strict TypeScript, ES modules, and Node.js built-ins. Integration
+artifacts are neutral ESM and cannot use Node-only modules. Avoid new dependencies
+when the standard library or existing packages cover the change.
 
 ## Verify
 
