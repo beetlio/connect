@@ -34,7 +34,7 @@ inspects the emitted NDJSON.
 - Bearer, basic, API-key, custom, and OAuth 2.0 authentication
 - Cursor and offset pagination helpers
 - Managed retries, incremental checkpoints, and atomic snapshots
-- Portable `.beetl.zip` artifacts for running an integration elsewhere
+- Deterministic Node 24 `.beetl.zip` artifacts
 - NDJSON output that works with tools such as `jq`, DuckDB, and data pipelines
 
 ## Install
@@ -111,30 +111,33 @@ outside integration code and adds authentication when it sends each request.
 
 | Command                                                                  | Purpose                                             |
 | ------------------------------------------------------------------------ | --------------------------------------------------- |
-| `pack <integration>`                                                     | Build a portable `.beetl.zip` artifact              |
+| `pack <integration>`                                                     | Build a Node 24 `.beetl.zip` artifact               |
 | `check <integration>`                                                    | Type-check and validate an integration              |
 | `configure <integration> [key] [--profile <name>] [--connection <name>]` | Configure sync inputs and select a named connection |
 | `connect <integration> [--connection <name>]`                            | Create or reauthorize a named connection            |
 | `verify <integration> [--connection <name>]`                             | Verify a named connection                           |
 | `sync <integration> [key]`                                               | Run one sync and write NDJSON records               |
 
-Run `beetl-connect <command> --help` for command-specific options. The
-integration argument can be an entry file or a directory containing
-`integration.ts`. The CLI type-checks source integrations with its bundled
-TypeScript compiler, then bundles the entry, local imports, and installed npm
-dependencies. Install dependencies in the integration project with its package
-manager; a separate TypeScript compiler is not required. Integrations that use
-npm packages must declare them in `dependencies` and commit a current
-`package-lock.json`; other lockfile formats are not supported yet. Node built-in
-modules, Node-only globals, native add-ons, and runtime-computed imports are
-rejected so artifacts stay portable. Bare global `fetch` calls are rejected
-during checking, and the CLI removes global `fetch` before integration code is
-loaded so aliases cannot bypass `ctx.fetch()`. Connect never installs packages
-or runs dependency lifecycle scripts. Commands also accept a packed `.beetl.zip`;
-running an artifact does not require TypeScript, npm, or the integration's dependencies.
-Artifacts contain the executable bundle, manifest, license notices, and SHA-256
-integrity metadata. Source and archive bundles pass the same runtime-policy checks.
-Inline source maps preserve TypeScript locations without embedding the original source.
+Run `beetl-connect <command> --help` for command-specific options. `pack`
+accepts an entry file or a directory containing `integration.ts`. It type-checks
+source with the bundled TypeScript compiler and bundles local imports and
+installed npm dependencies for Node 24. Dependencies must be declared in
+`dependencies` and pinned by a current `package-lock.json`; other lockfile
+formats are not supported yet.
+
+`check`, `configure`, `connect`, `verify`, and `sync` also accept a packed
+`.beetl.zip`. Artifacts contain the Node bundle, manifest, runtime declaration,
+license notices, SHA-256 integrity metadata, and inline source maps without
+source contents. They run without the integration source, npm, or installed
+dependencies. Node built-ins are provided by the runtime; other external imports
+are rejected.
+
+Connection and sync configuration must use `input.object()` and the `input.*`
+field helpers so one finite schema drives TypeScript types, the manifest, and
+interactive prompts. Use ordinary Zod schemas for records and checkpoints.
+Provider traffic must use `ctx.fetch()`: the CLI removes global `fetch` before
+loading integration code. These checks improve compatibility; they are not a
+sandbox, so only run integrations you trust locally.
 
 Local commands use the `default` profile unless `--profile <name>` is supplied.
 Profiles contain only sync inputs and a named connection reference. If the
@@ -178,7 +181,8 @@ files are retained, and `--state` can select one explicitly.
 Each yielded page includes the response status and normalized headers. Integrations can
 also issue requests directly for custom pagination and checkpoint strategies. Retries
 apply to safe HTTP methods by default and can be configured per connection. The CLI
-rejects provider response bodies larger than 16 MiB.
+rejects malformed or repeated continuations, follows continuations across empty pages,
+limits pagination to 10,000 pages, and rejects provider response bodies larger than 16 MiB.
 
 ## Examples
 
@@ -243,8 +247,8 @@ timestamped NDJSON snapshot to the current directory.
 ## Using Connect from another application
 
 The CLI is the primary interface. Applications that need to execute the same
-integrations with their own authentication, request, and persistence services can
-implement the optional `SyncHost` interface from `@beetlio/connect/host`. See
+Node 24 artifacts with their own authentication, request, and persistence services
+can implement the optional `SyncHost` interface from `@beetlio/connect/host`. See
 the runnable [custom host example](examples/custom-host/host.ts). `SyncHost` is a
 capability boundary, not a sandbox: custom executors must prevent integration
 code from reaching providers directly. The production boundary belongs in an

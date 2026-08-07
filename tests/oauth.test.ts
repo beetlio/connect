@@ -73,4 +73,17 @@ test("authorization-code flow uses PKCE and returns provider authorization state
     refreshToken: "refresh-token",
     tokenFields: { instanceUrl: "https://tenant.example" },
   });
+
+  const controller = new AbortController();
+  controller.abort(new Error("cancelled"));
+  await assert.rejects(
+    authorizeOAuth({
+      auth: oauth,
+      authenticationInput: { clientId: "client-id", clientSecret: "client-secret" },
+      redirectUri: "http://127.0.0.1:0/oauth/callback",
+      signal: controller.signal,
+      onAuthorizationUrl() {},
+    }),
+    /cancelled/,
+  );
 });

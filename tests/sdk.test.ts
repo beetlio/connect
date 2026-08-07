@@ -83,24 +83,24 @@ test("authoring produces a typed integration manifest", () => {
   assert.equal(manifest.syncs[0]?.mode, "append");
 });
 
-test("runSync parses every domain boundary and serializes emitted batches", async () => {
+test("runSync validates configuration and transforms emitted domain values", async () => {
   const batches: EmittedBatch[] = [];
   const integration = defineIntegration({
     key: "transformed",
     displayName: "Transformed",
     connection: {
       baseUrl: "https://api.example.com",
-      inputs: z.object({ account: z.string().transform((value) => value.toUpperCase()) }),
+      inputs: input.object({ account: input.string() }),
     },
     syncs: (defineSync) => [
       defineSync({
         key: "items",
         displayName: "Items",
-        inputs: z.object({ limit: z.coerce.number().int() }),
+        inputs: input.object({ limit: input.integer() }),
         records: z.string().transform(Number),
         checkpoint: z.string().transform(Number),
         async run(ctx) {
-          assert.equal(ctx.config.connection.account, "ACME");
+          assert.equal(ctx.config.connection.account, "acme");
           assert.equal(ctx.config.sync.limit, 2);
           assert.equal(ctx.checkpoint, 1);
           await ctx.emit({ records: ["2"], checkpoint: "2" });
@@ -115,7 +115,7 @@ test("runSync parses every domain boundary and serializes emitted batches", asyn
     "items",
     {
       connectionConfig: { account: "acme" },
-      syncConfig: { limit: "2" },
+      syncConfig: { limit: 2 },
       checkpoint: "1",
     },
     syncHost({ emit: async (batch) => void batches.push(batch) }),
@@ -222,9 +222,48 @@ test("pagination yields records, cursors, and response metadata without response
   ]);
   assert.deepEqual(records, [{ id: 1 }, { id: 2 }, { id: 3 }]);
   assert.deepEqual(result, { batches: 3, records: 3 });
+
+  await assert.rejects(
+    runSync(
+      integration,
+      "items",
+      {},
+      syncHost({
+        async request() {
+          return {
+            status: 200,
+            headers: [["content-type", "application/json"]],
+            body: new TextEncoder().encode(JSON.stringify({ data: [], paging: { next: true } })),
+          };
+        },
+      }),
+    ),
+    /invalid pagination cursor/,
+  );
+
+  const cursors = ["A", "B", "A"];
+  await assert.rejects(
+    runSync(
+      integration,
+      "items",
+      {},
+      syncHost({
+        async request() {
+          return {
+            status: 200,
+            headers: [["content-type", "application/json"]],
+            body: new TextEncoder().encode(
+              JSON.stringify({ data: [], paging: { next: cursors.shift() } }),
+            ),
+          };
+        },
+      }),
+    ),
+    /repeated a pagination cursor/,
+  );
 });
 
-test("next-url pagination follows relative provider URLs", async () => {
+test("next-url pagination follows relative URLs across empty pages", async () => {
   const requests: string[] = [];
   const next: Array<string | number | undefined> = [];
   const Item = z.object({ id: z.number() });
@@ -268,7 +307,7 @@ test("next-url pagination follows relative provider URLs", async () => {
           body: new TextEncoder().encode(
             JSON.stringify(
               request.path === "/items?limit=2"
-                ? { data: [{ id: 1 }, { id: 2 }], next: "/items/page/two" }
+                ? { data: [], next: "/items/page/two" }
                 : { data: [{ id: 3 }] },
             ),
           ),
@@ -279,7 +318,7 @@ test("next-url pagination follows relative provider URLs", async () => {
 
   assert.deepEqual(requests, ["/items?limit=2", "/items/page/two"]);
   assert.deepEqual(next, ["/items/page/two", undefined]);
-  assert.deepEqual(result, { batches: 2, records: 3 });
+  assert.deepEqual(result, { batches: 2, records: 1 });
 });
 
 test("connection verification validates config and can recover from request failures", async () => {
@@ -289,7 +328,7 @@ test("connection verification validates config and can recover from request fail
     displayName: "Verified",
     connection: {
       baseUrl: "https://api.example.com",
-      inputs: z.object({ account: z.string() }),
+      inputs: input.object({ account: input.string() }),
       async verify(ctx) {
         if (ctx.config.account === "abandoned") {
           void ctx.fetch("/optional");
@@ -426,7 +465,7 @@ test("integration contracts enforce authentication and input invariants", () => 
     connection: {
       baseUrl: "https://user:secret@example.com",
       auth: auth.custom({
-        inputs: z.object({ token: z.string().default("secret") }),
+        inputs: input.object({ token: input.string({ default: "secret" }) }),
         headers: { authorization: "missing" },
       }),
     },
@@ -450,7 +489,7 @@ test("integration contracts enforce authentication and input invariants", () => 
           ...integration.connection,
           baseUrl: "https://example.com",
           auth: auth.custom({
-            inputs: z.object({ token: z.string() }),
+            inputs: input.object({ token: input.secret() }),
             headers: { authorization: "missing" },
           }),
         },
@@ -489,16 +528,16 @@ test("integration contracts enforce authentication and input invariants", () => 
     () =>
       createIntegrationManifest(
         defineIntegration({
-          key: "dynamic-input",
-          displayName: "Dynamic input",
+          key: "composite-input",
+          displayName: "Composite input",
           connection: {
             baseUrl: "https://example.com",
-            inputs: z.object({ headers: z.record(z.string(), z.string()) }),
+            inputs: input.object({ value: z.union([z.number(), z.boolean()]) as never }),
           },
           syncs: [],
         }),
       ),
-    /declare it with input\.json\(\)/,
+    /must be declared with input\.\*/,
   );
   assert.doesNotThrow(() =>
     createIntegrationManifest(
@@ -512,5 +551,20 @@ test("integration contracts enforce authentication and input invariants", () => 
         syncs: [],
       }),
     ),
+  );
+  assert.throws(
+    () =>
+      validateIntegration(
+        defineIntegration({
+          key: "invalid-header",
+          displayName: "Invalid header",
+          connection: {
+            baseUrl: "https://example.com",
+            auth: auth.apiKey({ in: "header", name: "" }),
+          },
+          syncs: [],
+        }),
+      ),
+    /Invalid authentication header name/,
   );
 });

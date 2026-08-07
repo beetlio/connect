@@ -21,7 +21,6 @@ import { z } from "zod";
 
 import { createIntegrationArchive, loadIntegration } from "./artifact.ts";
 import type {
-  AuthenticationInputSchema,
   InputField,
   InputObjectSchema,
   IntegrationDefinition,
@@ -102,6 +101,10 @@ const integrationArgument = () =>
   argument(pathValue({ mustExist: true, type: "either", metavar: "INTEGRATION" }), {
     description: message`Integration file, directory, or .beetl.zip artifact.`,
   });
+const sourceIntegrationArgument = () =>
+  argument(pathValue({ mustExist: true, type: "either", metavar: "INTEGRATION" }), {
+    description: message`Integration source file or directory.`,
+  });
 const profileOption = () =>
   optional(
     option("--profile", string({ metavar: "NAME", pattern: LocalNamePattern }), {
@@ -120,14 +123,14 @@ const Cli = or(
     "pack",
     object({
       command: constant("pack"),
-      integrationPath: integrationArgument(),
+      integrationPath: sourceIntegrationArgument(),
       outputPath: optional(
         option("--output", pathValue({ metavar: "PATH" }), {
           description: message`Artifact output path.`,
         }),
       ),
     }),
-    { brief: message`Build a portable .beetl.zip artifact.` },
+    { brief: message`Build a Node 24 .beetl.zip artifact.` },
   ),
   command(
     "check",
@@ -684,14 +687,14 @@ function createLocalHost(
 }
 
 function parseAuthenticationInput(
-  schema: AuthenticationInputSchema,
+  schema: z.ZodType,
   input: unknown,
 ): Readonly<Record<string, string>> {
   const result = schema.safeParse(input);
   if (!result.success) {
     throw new Error(`Invalid authentication input: ${z.prettifyError(result.error)}`);
   }
-  return result.data;
+  return AuthenticationInputValuesSchema.parse(result.data);
 }
 
 function providerBinding(

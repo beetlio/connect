@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { createRequire, setSourceMapsSupport } from "node:module";
+import { builtinModules, createRequire, setSourceMapsSupport } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -42,20 +42,9 @@ const LockfileManagers = {
   "bun.lockb": "bun",
   "package-lock.json": "npm",
 } as const;
-const RuntimeSpecificGlobals = [
-  "Buffer",
-  "__dirname",
-  "__filename",
-  "clearImmediate",
-  "global",
-  "process",
-  "require",
-  "setImmediate",
-] as const;
 const RuntimeGlobalPrefix = "__beetl_unsupported_runtime_global_";
-const RuntimeGlobalDefines = Object.fromEntries(
-  [...RuntimeSpecificGlobals, "fetch"].map((name) => [name, `${RuntimeGlobalPrefix}${name}`]),
-);
+const RuntimeGlobalDefines = { fetch: `${RuntimeGlobalPrefix}fetch` };
+const NodeBuiltins = new Set(builtinModules.flatMap((name) => [name, `node:${name}`]));
 
 setSourceMapsSupport(true);
 
@@ -66,6 +55,7 @@ const ArtifactFileSchema = z.strictObject({
 const ArtifactMetadataSchema = z.strictObject({
   artifactVersion: z.literal(1),
   sdkVersion: z.string().min(1),
+  runtime: z.literal("node24"),
   files: z.record(z.string(), ArtifactFileSchema),
 });
 const NpmPackageSchema = z.object({
@@ -116,6 +106,9 @@ export async function loadIntegration(inputPath: string): Promise<BuiltIntegrati
 }
 
 export async function createIntegrationArchive(inputPath: string): Promise<IntegrationArchive> {
+  if (inputPath.endsWith(".beetl.zip")) {
+    throw new Error("pack requires integration source, not an existing artifact");
+  }
   const built = await buildIntegration(inputPath);
   const files: Record<string, Uint8Array> = {
     "integration.mjs": built.bundle,
@@ -128,6 +121,7 @@ export async function createIntegrationArchive(inputPath: string): Promise<Integ
   const artifact: ArtifactMetadata = {
     artifactVersion: 1,
     sdkVersion: Package.version,
+    runtime: "node24",
     files: Object.fromEntries(
       Object.keys(files)
         .sort()
@@ -159,8 +153,8 @@ async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
       outfile: "integration.mjs",
       bundle: true,
       format: "esm",
-      platform: "neutral",
-      target: "es2024",
+      platform: "node",
+      target: "node24",
       mainFields: ["module", "main"],
       sourcemap: "inline",
       sourcesContent: false,
@@ -408,41 +402,37 @@ async function validateBundlePolicy(bundle: Uint8Array): Promise<void> {
     await transform(source, {
       loader: "js",
       format: "esm",
-      target: "es2024",
+      target: "node24",
       define: RuntimeGlobalDefines,
       logLevel: "silent",
     })
   ).code;
-  for (const name of RuntimeSpecificGlobals) {
-    const globalAccess = new RegExp(
-      `\\bglobalThis\\s*(?:(?:\\.|\\?\\.)\\s*${name}|\\[\\s*["']${name}["']\\s*\\])`,
-    );
-    if (rewritten.includes(`${RuntimeGlobalPrefix}${name}`) || globalAccess.test(rewritten)) {
-      throw new Error(
-        `Unsupported runtime global ${JSON.stringify(name)}; integrations must use portable Web APIs`,
-      );
-    }
-  }
   if (rewritten.includes(`${RuntimeGlobalPrefix}fetch`)) {
     throw new Error("Unsupported global fetch; provider requests must use ctx.fetch");
   }
 
   const syntax = ts.createSourceFile("integration.mjs", source, ts.ScriptTarget.Latest, false);
-  let imported = false;
+  const externalImports = new Set<string>();
   const inspect = (node: ts.Node): void => {
-    if (
-      ts.isImportDeclaration(node) ||
-      (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) ||
-      (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword)
-    ) {
-      imported = true;
+    let specifier: ts.Expression | undefined;
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      specifier = node.moduleSpecifier;
+    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      specifier = node.arguments[0];
+    }
+    if (specifier !== undefined) {
+      if (!ts.isStringLiteral(specifier) || !NodeBuiltins.has(specifier.text)) {
+        externalImports.add(ts.isStringLiteral(specifier) ? specifier.text : "dynamic import");
+      }
       return;
     }
     ts.forEachChild(node, inspect);
   };
   inspect(syntax);
-  if (imported) {
-    throw new Error("Integration bundles must be self-contained and cannot contain imports");
+  if (externalImports.size > 0) {
+    throw new Error(
+      `Integration bundle contains external import ${JSON.stringify([...externalImports][0])}`,
+    );
   }
 }
 
@@ -479,6 +469,7 @@ async function validateLockedDependencies(entryPath: string, metafile: Metafile)
       if (
         specifier === undefined ||
         specifier === "@beetlio/connect" ||
+        NodeBuiltins.has(specifier) ||
         specifier.startsWith(".") ||
         specifier.startsWith("/") ||
         specifier.includes(":")

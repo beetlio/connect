@@ -1,20 +1,23 @@
 import { z } from "zod";
 
-import type {
-  AuthDefinition,
-  IntegrationDefinition,
-  JsonObject,
-  JsonValue,
-  PaginateOptions,
-  PaginationDefinition,
-  PaginationOverride,
-  PaginationPage,
-  PaginationResponseMetadata,
-  RetryDefinition,
-  RetryPolicy,
-  SyncFetchInit,
-  SyncDefinition,
+import {
+  auth as authentication,
+  type AuthDefinition,
+  type IntegrationDefinition,
+  type JsonObject,
+  type JsonValue,
+  type PaginateOptions,
+  type PaginationDefinition,
+  type PaginationOverride,
+  type PaginationPage,
+  type PaginationResponseMetadata,
+  type RetryDefinition,
+  type RetryPolicy,
+  type SyncFetchInit,
+  type SyncDefinition,
 } from "./index.ts";
+
+const MaxPaginationPages = 10_000;
 
 export interface ProviderRequest {
   method: string;
@@ -407,7 +410,7 @@ export function validateIntegration(integration: IntegrationDefinition): void {
   ) {
     throw new Error("Integration icon must be icon.png or icon.webp");
   }
-  const auth = integration.connection.auth ?? { type: "none" as const, inputs: z.object({}) };
+  const auth = integration.connection.auth ?? authentication.none();
   if (typeof integration.connection.baseUrl === "string") {
     const baseUrl = new URL(integration.connection.baseUrl);
     const isLoopback =
@@ -437,6 +440,21 @@ export function validateIntegration(integration: IntegrationDefinition): void {
     Object.keys(auth.query).length === 0
   ) {
     throw new Error("Custom authentication must inject at least one header or query parameter");
+  }
+  const headerNames =
+    auth.type === "api_key" && auth.in === "header"
+      ? [auth.name]
+      : auth.type === "custom"
+        ? Object.keys(auth.headers)
+        : [];
+  for (const name of headerNames) {
+    try {
+      new Headers().set(name, "value");
+    } catch (error) {
+      throw new Error(`Invalid authentication header name ${JSON.stringify(name)}`, {
+        cause: error,
+      });
+    }
   }
   if (auth.type === "oauth2_authorization_code") {
     for (const value of [auth.issuer, auth.authorizationUrl, auth.tokenUrl]) {
@@ -560,6 +578,17 @@ async function* paginateRequests<Records extends z.ZodType>(
   options: PaginateOptions<Records>,
 ): AsyncGenerator<PaginationPage<z.output<Records>>, void, void> {
   const pagination = resolvePagination(defaults, options.pagination);
+  let pages = 0;
+  const fetchPage = (path: string) => {
+    pages += 1;
+    if (pages > MaxPaginationPages) {
+      throw new Error(`Pagination exceeded ${MaxPaginationPages} pages`);
+    }
+    return fetch(path, {
+      ...(options.headers === undefined ? {} : { headers: options.headers }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+  };
 
   if (pagination.type === "next-url") {
     let path = withQuery(options.path, {});
@@ -569,10 +598,7 @@ async function* paginateRequests<Records extends z.ZodType>(
         throw new Error("Provider repeated a pagination next URL");
       }
       seenPaths.add(path);
-      const response = await fetch(path, {
-        ...(options.headers === undefined ? {} : { headers: options.headers }),
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-      });
+      const response = await fetchPage(path);
       const { body, metadata } = await parsePageResponse(response);
       const records = parsePageRecords(options.records, body, pagination.responsePath);
       const candidate = valueAtPath(body, pagination.nextUrlPath);
@@ -585,12 +611,7 @@ async function* paginateRequests<Records extends z.ZodType>(
       }
       const nextPageParam =
         typeof candidate === "string" && candidate.trim() ? withQuery(candidate, {}) : undefined;
-      if (records.length === 0) {
-        if (nextPageParam !== undefined) {
-          throw new Error("Provider returned an empty page with a pagination next URL");
-        }
-        return;
-      }
+      if (records.length === 0 && nextPageParam === undefined) return;
       yield {
         records,
         ...(nextPageParam === undefined ? {} : { nextPageParam }),
@@ -603,57 +624,54 @@ async function* paginateRequests<Records extends z.ZodType>(
 
   if (pagination.type === "cursor") {
     let cursor = pagination.initialCursor;
+    const seenCursors = new Set(cursor === undefined ? [] : [String(cursor)]);
     while (true) {
-      const response = await fetch(
+      const response = await fetchPage(
         withQuery(options.path, {
           ...(cursor === undefined ? {} : { [pagination.cursorParameter]: String(cursor) }),
           ...(pagination.limit === undefined
             ? {}
             : { [pagination.limitParameter]: String(pagination.limit) }),
         }),
-        {
-          ...(options.headers === undefined ? {} : { headers: options.headers }),
-          ...(options.signal === undefined ? {} : { signal: options.signal }),
-        },
       );
       const { body, metadata } = await parsePageResponse(response);
       const records = parsePageRecords(options.records, body, pagination.responsePath);
       const candidate = valueAtPath(body, pagination.cursorPath);
-      const nextPageParam =
-        typeof candidate === "number" && Number.isFinite(candidate)
-          ? candidate
-          : typeof candidate === "string" && candidate.trim()
-            ? candidate
-            : undefined;
-      const hasNext = nextPageParam !== undefined && String(nextPageParam) !== String(cursor);
-      if (records.length === 0 && !hasNext) {
-        return;
+      let nextPageParam: string | number | undefined;
+      if (candidate !== undefined && candidate !== null) {
+        if (!(
+          (typeof candidate === "number" && Number.isFinite(candidate)) ||
+          (typeof candidate === "string" && candidate.trim())
+        )) {
+          throw new Error("Provider returned an invalid pagination cursor");
+        }
+        nextPageParam = candidate;
+        const key = String(candidate);
+        if (seenCursors.has(key)) {
+          throw new Error("Provider repeated a pagination cursor");
+        }
+        seenCursors.add(key);
       }
+      if (records.length === 0 && nextPageParam === undefined) return;
       yield {
         records,
-        ...(hasNext ? { nextPageParam } : {}),
+        ...(nextPageParam === undefined ? {} : { nextPageParam }),
         response: metadata,
       };
-      if (!hasNext) {
-        return;
-      }
+      if (nextPageParam === undefined) return;
       cursor = nextPageParam;
     }
   }
 
   let offset = pagination.initialOffset ?? 0;
   while (true) {
-    const response = await fetch(
+    const response = await fetchPage(
       withQuery(options.path, {
         [pagination.offsetParameter]: String(offset),
         ...(pagination.limit === undefined
           ? {}
           : { [pagination.limitParameter]: String(pagination.limit) }),
       }),
-      {
-        ...(options.headers === undefined ? {} : { headers: options.headers }),
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-      },
     );
     const { body, metadata } = await parsePageResponse(response);
     const records = parsePageRecords(options.records, body, pagination.responsePath);

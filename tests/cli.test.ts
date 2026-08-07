@@ -25,7 +25,7 @@ function runCli(cwd: string, ...args: string[]) {
   return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
 }
 
-test("CLI runs source integrations from typed profiles and portable artifacts", async (t) => {
+test("CLI runs source integrations from typed profiles and Node artifacts", async (t) => {
   const directory = await fixtureDirectory(t, "beetl-cli");
   const workingDirectory = join(directory, "workspace");
   const dependency = join(directory, "node_modules/fixture-dependency");
@@ -67,7 +67,7 @@ test("CLI runs source integrations from typed profiles and portable artifacts", 
   await writeFile(
     join(directory, "integration.ts"),
     `
-      import { defineIntegration, z } from "@beetlio/connect";
+      import { defineIntegration, input, z } from "@beetlio/connect";
       import { suffix } from "fixture-dependency";
 
       export default defineIntegration({
@@ -75,17 +75,17 @@ test("CLI runs source integrations from typed profiles and portable artifacts", 
         displayName: "Fixture",
         connection: {
           baseUrl: "https://api.example.com",
-          inputs: z.object({ prefix: z.string().transform((value) => value.length) }),
+          inputs: input.object({ prefix: input.string() }),
           async verify(ctx) {
-            if (ctx.config.prefix !== 10) throw new Error("connection transform failed");
+            if (ctx.config.prefix !== "configured") throw new Error("connection config failed");
           },
         },
         syncs: (defineSync) => [defineSync({
           key: "items",
           displayName: "Items",
           records: z.object({ id: z.string() }),
-          inputs: z.object({
-            label: z.string().default("profile").transform((value) => value.length),
+          inputs: input.object({
+            label: input.string({ default: "profile" }),
           }),
           async run(ctx) {
             await ctx.emit({ records: [{
@@ -176,7 +176,7 @@ test("CLI runs source integrations from typed profiles and portable artifacts", 
   );
   assert.equal(sourceSync.status, 0, sourceSync.stderr);
   assert.deepEqual(JSON.parse((await readFile(sourceOutput, "utf8")).trim()), {
-    id: "10-bundled-7",
+    id: "configured-bundled-profile",
   });
 
   const artifact = join(directory, "fixture.beetl.zip");
@@ -193,10 +193,14 @@ test("CLI runs source integrations from typed profiles and portable artifacts", 
     "manifest.json",
   ]);
   assert.equal(runCli(workingDirectory, "check", artifact).status, 0);
+  const metadata = JSON.parse(new TextDecoder().decode(files["artifact.json"]!));
+  assert.equal(metadata.runtime, "node24");
+  const repack = runCli(workingDirectory, "pack", artifact);
+  assert.equal(repack.status, 1);
+  assert.match(repack.stderr, /pack requires integration source/);
 
   for (const [filename, source, expected] of [
-    ["global.beetl.zip", "globalThis.process;", /Unsupported runtime global "process"/],
-    ["import.beetl.zip", 'import "node:fs";', /cannot contain imports/],
+    ["import.beetl.zip", 'import "missing-package";', /external import "missing-package"/],
   ] as const) {
     const unsafeFiles = unzipSync(new Uint8Array(await readFile(artifact)));
     const bundle = new TextEncoder().encode(
@@ -228,7 +232,7 @@ test("CLI runs source integrations from typed profiles and portable artifacts", 
   );
   assert.equal(artifactSync.status, 0, artifactSync.stderr);
   assert.deepEqual(JSON.parse((await readFile(artifactOutput, "utf8")).trim()), {
-    id: "10-bundled-7",
+    id: "configured-bundled-profile",
   });
 
   const bundle = files["integration.mjs"]!;
@@ -399,7 +403,7 @@ test("CLI reports integration source locations and error causes", async (t) => {
   assert.match(result.stderr, /Error: provider failed/);
 });
 
-test("dependency bundles must be locked and use portable runtime APIs", async (t) => {
+test("dependency bundles must be locked and target Node 24", async (t) => {
   const directory = await fixtureDirectory(t, "beetl-cli-dependencies");
   const integrationDirectory = join(directory, "integration");
   const dependency = join(directory, "node_modules/runtime-specific");
@@ -419,7 +423,10 @@ test("dependency bundles must be locked and use portable runtime APIs", async (t
       types: "./index.d.ts",
     }),
   );
-  await writeFile(join(dependency, "index.js"), 'export const value = Buffer.from("x");\n');
+  await writeFile(
+    join(dependency, "index.js"),
+    'import { Buffer } from "node:buffer";\nexport const value = Buffer.from("x");\n',
+  );
   await writeFile(join(dependency, "index.d.ts"), "export const value: Uint8Array;\n");
   await writeFile(join(directory, "shared.ts"), 'export { value } from "runtime-specific";\n');
   await writeFile(
@@ -477,12 +484,7 @@ test("dependency bundles must be locked and use portable runtime APIs", async (t
     }),
   );
   const runtimeSpecific = runCli(directory, "check", integrationDirectory);
-  assert.equal(runtimeSpecific.status, 1);
-  assert.match(runtimeSpecific.stderr, /Unsupported runtime global "Buffer"/);
-
-  await writeFile(join(dependency, "index.js"), "export const value = new Uint8Array();\n");
-  const portable = runCli(directory, "check", integrationDirectory);
-  assert.equal(portable.status, 0, portable.stderr);
+  assert.equal(runtimeSpecific.status, 0, runtimeSpecific.stderr);
   const directFetch = runCli(
     directory,
     "sync",

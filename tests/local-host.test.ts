@@ -3,7 +3,7 @@ import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { auth, defineIntegration, defineSync, z } from "@beetlio/connect";
+import { auth, defineIntegration, defineSync, input, z } from "@beetlio/connect";
 import { runSync, type ProviderRequest } from "@beetlio/connect/host";
 import { LocalHost } from "../src/local-host.ts";
 import { fixtureDirectory } from "./support.ts";
@@ -38,7 +38,7 @@ test("authentication stays on secure origins and supports declarative fields", a
   const custom = new LocalHost({
     baseUrl: "https://api.example.com",
     auth: auth.custom({
-      inputs: z.object({ account: z.string(), apiKey: z.string() }),
+      inputs: input.object({ account: input.string(), apiKey: input.secret() }),
       headers: { "x-account": "account" },
       query: { api_key: "apiKey" },
     }),

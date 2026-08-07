@@ -15,6 +15,7 @@ interface InputMetadata {
   readonly title?: string;
   readonly description?: string;
   readonly default?: JsonValue;
+  "x-beetl-input"?: true;
 }
 
 export interface InputObjectSchema extends InputMetadata {
@@ -61,7 +62,7 @@ export interface IntegrationManifest {
   }[];
 }
 
-const EmptyObject = z.object({});
+const EmptyObject = z.object({}).meta({ "x-beetl-input": true });
 const SchemaValueKeywords = new Set([
   "additionalProperties",
   "contains",
@@ -138,19 +139,37 @@ function inputJsonSchema(schema: z.ZodType): InputObjectSchema {
     throw new Error("Integration input schemas must describe an object");
   }
   const input = result as unknown as InputObjectSchema;
-  assertPromptableInputs(input);
+  assertPromptableInputs(input, "Integration inputs");
   return input;
 }
 
-function assertPromptableInputs(schema: InputObjectSchema): void {
+function assertPromptableInputs(schema: InputObjectSchema, location: string): void {
+  if (schema["x-beetl-input"] !== true) {
+    throw new Error(`${location} must be declared with input.object()`);
+  }
+  delete schema["x-beetl-input"];
   for (const [name, field] of Object.entries(schema.properties)) {
-    if (field.type !== "object") continue;
-    if (!("properties" in field) || field.properties === undefined) {
+    const fieldLocation = `Input ${JSON.stringify(name)}`;
+    if (field["x-beetl-input"] !== true) {
+      throw new Error(`${fieldLocation} must be declared with input.*`);
+    }
+    if ("x-beetl-widget" in field && field["x-beetl-widget"] === "json") {
+      delete field["x-beetl-input"];
+      continue;
+    }
+    if (field.type === "object") {
+      if (!("properties" in field) || field.properties === undefined) {
+        throw new Error(`${fieldLocation} must use input.json() for arbitrary JSON objects`);
+      }
+      assertPromptableInputs(field, fieldLocation);
+      continue;
+    }
+    delete field["x-beetl-input"];
+    if (!field.type) {
       throw new Error(
-        `Input ${JSON.stringify(name)} is a dynamic object; declare it with input.json()`,
+        `${fieldLocation} cannot be represented by the interactive configuration form`,
       );
     }
-    assertPromptableInputs(field);
   }
 }
 

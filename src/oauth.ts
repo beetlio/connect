@@ -190,6 +190,7 @@ function waitForAuthorizationCallback(
       }
     };
     server.on("request", request);
+    if (signal?.aborted) abort();
   });
 }
 

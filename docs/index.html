@@ -191,8 +191,10 @@ export default defineIntegration({
 
           <h3>Runtime validation</h3>
           <p>
-            Connection inputs, authentication inputs, sync inputs, records, and checkpoints are
-            parsed with their declared Zod schemas before Connect sends or writes them.
+            Connection and sync configuration uses <code>input.object()</code> and the finite
+            <code>input.*</code> field helpers. That schema drives TypeScript types, the manifest,
+            and interactive prompts. Records and checkpoints use ordinary Zod schemas. Connect
+            parses every value before it crosses its declared boundary.
           </p>
         </section>
 
@@ -304,8 +306,10 @@ beetl-connect verify . --connection default</code></pre>
           <p>
             <code>ctx.paginate()</code> supports cursor, offset, and provider-supplied next-URL
             pagination. It validates page records and includes response status and normalized
-            headers on each yielded page. Integrations can use <code>ctx.fetch()</code> directly
-            when a provider requires a different strategy.
+            headers on each yielded page. Continuations are followed across empty pages; malformed
+            or repeated continuations fail the sync, and a run is limited to 10,000 pages.
+            Integrations can use <code>ctx.fetch()</code> directly when a provider requires a
+            different strategy.
           </p>
 
           <h3>Retries</h3>
@@ -336,7 +340,7 @@ beetl-connect verify . --connection default</code></pre>
               <tbody>
                 <tr>
                   <td><code>pack &lt;integration&gt;</code></td>
-                  <td>Build a deterministic, portable <code>.beetl.zip</code> artifact.</td>
+                  <td>Build a deterministic Node 24 <code>.beetl.zip</code> artifact.</td>
                 </tr>
                 <tr>
                   <td><code>check &lt;integration&gt;</code></td>
@@ -408,18 +412,17 @@ beetl-connect verify . --connection default</code></pre>
             </p>
           </div>
           <p>
-            The integration argument can be an entry file, a directory containing
-            <code>integration.ts</code>, or a packed <code>.beetl.zip</code>. The CLI type-checks
-            source with its bundled TypeScript compiler, then bundles local imports and installed
-            npm dependencies. Connect never installs packages or runs dependency lifecycle scripts.
-            The packed artifact contains the executable bundle, manifest, license notices, and
-            integrity metadata; it omits the original TypeScript source and runs without npm or
-            installed dependencies. Node built-in modules, native add-ons, and runtime-computed
-            imports are rejected. Bare global <code>fetch</code> calls are rejected during checking,
-            and the CLI removes global <code>fetch</code> before loading integration code so aliases
-            cannot bypass <code>ctx.fetch()</code>. Source and archive bundles pass the same
-            runtime-policy checks, and inline source maps preserve TypeScript locations without
-            embedding source contents.
+            <code>pack</code> accepts an entry file or directory containing
+            <code>integration.ts</code>. It type-checks source with the bundled TypeScript compiler
+            and bundles local imports and installed npm dependencies for Node 24. Dependencies must
+            be declared and pinned by a current <code>package-lock.json</code>. Connect never
+            installs packages or runs dependency lifecycle scripts. Other commands also accept a
+            packed <code>.beetl.zip</code>. An artifact contains the Node bundle, manifest, runtime
+            declaration, license notices, integrity metadata, and inline source maps without source
+            contents. Node built-ins are provided by the runtime; other external imports are
+            rejected. Provider traffic must use <code>ctx.fetch()</code>; the CLI removes global
+            <code>fetch</code> before loading integration code. These checks improve compatibility
+            but are not a sandbox.
           </p>
           <p>
             Profiles and named connections are stored with owner-only permissions in the operating
@@ -560,8 +563,9 @@ beetl-connect verify . --connection default</code></pre>
 
           <h2>Advanced: custom hosts</h2>
           <p>
-            The CLI is the primary interface. Applications that need their own authentication,
-            request, and persistence services can implement the optional
+            The CLI is the primary interface. Applications that need to execute Node 24 artifacts
+            with their own authentication, request, and persistence services can implement the
+            optional
             <code>SyncHost</code> interface from <code>@beetlio/connect/host</code>. See the
             runnable
             <a href="https://github.com/beetlio/connect/blob/main/examples/custom-host/host.ts"

@@ -36,6 +36,18 @@ export interface SelectOption<Value extends string = string> {
   readonly label: string;
 }
 
+type ConfigurableInput<Schema extends z.ZodType = z.ZodType> = Schema & {
+  readonly "~beetl-input": true;
+};
+type ConfigurableShape = Record<string, ConfigurableInput>;
+
+function configurable<Schema extends z.ZodType>(
+  schema: Schema,
+  metadata: Readonly<Record<string, unknown>>,
+): ConfigurableInput<Schema> {
+  return schema.meta({ ...metadata, "x-beetl-input": true }) as ConfigurableInput<Schema>;
+}
+
 function inputMetadata(
   options: { readonly label?: string; readonly description?: string },
   extra: Readonly<Record<string, unknown>> = {},
@@ -59,7 +71,7 @@ function withDefault<Value>(schema: z.ZodType<Value>, value: Value | undefined):
 function stringInput(
   options: StringInputOptions = {},
   widget?: "textarea" | "password",
-): z.ZodType<string> {
+): ConfigurableInput<z.ZodType<string>> {
   let schema = z.string();
   if (options.minLength !== undefined) schema = schema.min(options.minLength);
   if (options.maxLength !== undefined) schema = schema.max(options.maxLength);
@@ -68,7 +80,8 @@ function stringInput(
   if (options.format === "url") schema = schema.check(z.url());
   if (options.format === "date") schema = schema.check(z.iso.date());
   if (options.format === "date-time") schema = schema.check(z.iso.datetime());
-  return withDefault(schema, options.default).meta(
+  return configurable(
+    withDefault(schema, options.default),
     inputMetadata(options, {
       ...(options.placeholder === undefined ? {} : { "x-beetl-placeholder": options.placeholder }),
       ...(widget === undefined ? {} : { "x-beetl-widget": widget }),
@@ -81,37 +94,38 @@ function stringInput(
 export const input = {
   string: (options: StringInputOptions = {}) => stringInput(options),
   text: (options: StringInputOptions = {}) => stringInput(options, "textarea"),
-  secret(options: SecretInputOptions = {}): z.ZodType<string> {
+  secret(options: SecretInputOptions = {}): ConfigurableInput<z.ZodType<string>> {
     if ((options as StringInputOptions).default !== undefined) {
       throw new Error("Secret inputs cannot declare defaults");
     }
     return stringInput(options, "password");
   },
 
-  integer(options: NumberInputOptions = {}): z.ZodType<number> {
+  integer(options: NumberInputOptions = {}): ConfigurableInput<z.ZodType<number>> {
     let schema = z.number().int();
     if (options.min !== undefined) schema = schema.min(options.min);
     if (options.max !== undefined) schema = schema.max(options.max);
-    return withDefault(schema, options.default).meta(inputMetadata(options));
+    return configurable(withDefault(schema, options.default), inputMetadata(options));
   },
 
-  number(options: NumberInputOptions = {}): z.ZodType<number> {
+  number(options: NumberInputOptions = {}): ConfigurableInput<z.ZodType<number>> {
     let schema = z.number();
     if (options.min !== undefined) schema = schema.min(options.min);
     if (options.max !== undefined) schema = schema.max(options.max);
-    return withDefault(schema, options.default).meta(inputMetadata(options));
+    return configurable(withDefault(schema, options.default), inputMetadata(options));
   },
 
-  boolean(options: InputOptions<boolean> = {}): z.ZodType<boolean> {
-    return withDefault(z.boolean(), options.default).meta(inputMetadata(options));
+  boolean(options: InputOptions<boolean> = {}): ConfigurableInput<z.ZodType<boolean>> {
+    return configurable(withDefault(z.boolean(), options.default), inputMetadata(options));
   },
 
   select<const Options extends readonly [SelectOption, ...SelectOption[]]>(
     options: Options,
     metadata: InputOptions<Options[number]["value"]> = {},
-  ): z.ZodType<Options[number]["value"]> {
+  ): ConfigurableInput<z.ZodType<Options[number]["value"]>> {
     const values = options.map(({ value }) => value) as [string, ...string[]];
-    return withDefault(z.enum(values), metadata.default).meta(
+    return configurable(
+      withDefault(z.enum(values), metadata.default),
       inputMetadata(metadata, {
         "x-beetl-options": options,
       }),
@@ -123,50 +137,54 @@ export const input = {
     metadata: Omit<ArrayInputOptions, "default"> & {
       readonly default?: readonly Options[number]["value"][];
     } = {},
-  ): z.ZodType<Options[number]["value"][]> {
+  ): ConfigurableInput<z.ZodType<Options[number]["value"][]>> {
     let schema = z.array(z.enum(options.map(({ value }) => value) as [string, ...string[]]));
     if (metadata.minItems !== undefined) schema = schema.min(metadata.minItems);
     if (metadata.maxItems !== undefined) schema = schema.max(metadata.maxItems);
-    return withDefault(
-      schema,
-      metadata.default === undefined ? undefined : [...metadata.default],
-    ).meta(
+    return configurable(
+      withDefault(schema, metadata.default === undefined ? undefined : [...metadata.default]),
       inputMetadata(metadata, {
         "x-beetl-options": options,
       }),
     );
   },
 
-  object<const Shape extends z.ZodRawShape>(
+  object<const Shape extends ConfigurableShape>(
     shape: Shape,
     options: Pick<InputOptions<never>, "label" | "description"> = {},
-  ): z.ZodObject<Shape> {
-    return z.object(shape).meta(inputMetadata(options));
+  ): ConfigurableInput<z.ZodObject<Shape>> {
+    return configurable(z.object(shape), inputMetadata(options));
   },
 
-  array<const Item extends z.ZodType>(
+  array<const Item extends ConfigurableInput>(
     item: Item,
     options: ArrayInputOptions = {},
-  ): z.ZodType<z.output<Item>[]> {
+  ): ConfigurableInput<z.ZodType<z.output<Item>[]>> {
     let schema = z.array(item);
     if (options.minItems !== undefined) schema = schema.min(options.minItems);
     if (options.maxItems !== undefined) schema = schema.max(options.maxItems);
-    return withDefault(
-      schema,
-      options.default === undefined ? undefined : ([...options.default] as z.output<Item>[]),
-    ).meta(inputMetadata(options));
+    return configurable(
+      withDefault(
+        schema,
+        options.default === undefined ? undefined : ([...options.default] as z.output<Item>[]),
+      ),
+      inputMetadata(options),
+    );
   },
 
-  json(options: InputOptions<JsonValue> = {}): z.ZodType<JsonValue> {
-    return withDefault(z.json(), options.default).meta(
+  json(options: InputOptions<JsonValue> = {}): ConfigurableInput<z.ZodType<JsonValue>> {
+    return configurable(
+      withDefault(z.json(), options.default),
       inputMetadata(options, {
         "x-beetl-widget": "json",
       }),
     );
   },
 
-  optional<const Schema extends z.ZodType>(schema: Schema): z.ZodOptional<Schema> {
-    return schema.optional();
+  optional<const Schema extends ConfigurableInput>(
+    schema: Schema,
+  ): ConfigurableInput<z.ZodOptional<Schema>> {
+    return schema.optional() as ConfigurableInput<z.ZodOptional<Schema>>;
   },
 };
 
@@ -184,8 +202,10 @@ export type RetryDefinition = false | RetryPolicy;
 
 export type BaseUrlDefinition = string | { readonly oauthTokenField: string };
 
-type AuthenticationFieldSchema = z.ZodType<string>;
-export type AuthenticationInputSchema = z.ZodObject<Record<string, AuthenticationFieldSchema>>;
+type AuthenticationFieldSchema = ConfigurableInput<z.ZodType<string>>;
+export type AuthenticationInputSchema = ConfigurableInput<z.ZodType> & {
+  readonly shape: z.ZodRawShape;
+};
 
 export type AuthManifest =
   | { type: "none" }
@@ -215,13 +235,13 @@ export type AuthDefinition = AuthManifest & { inputs: AuthenticationInputSchema 
 
 export const auth = {
   none(): AuthDefinition {
-    return { type: "none", inputs: z.object({}) };
+    return { type: "none", inputs: input.object({}) };
   },
 
   bearer(options: { token?: AuthenticationFieldSchema } = {}): AuthDefinition {
     return {
       type: "bearer",
-      inputs: z.object({
+      inputs: input.object({
         token: options.token ?? input.secret({ label: "Bearer token" }),
       }),
     };
@@ -235,7 +255,7 @@ export const auth = {
   ): AuthDefinition {
     return {
       type: "basic",
-      inputs: z.object({
+      inputs: input.object({
         username: options.username ?? input.string({ label: "Username" }),
         password: options.password ?? input.secret({ label: "Password" }),
       }),
@@ -249,7 +269,7 @@ export const auth = {
   }): AuthDefinition {
     return {
       type: "api_key",
-      inputs: z.object({
+      inputs: input.object({
         apiKey: options.apiKey ?? input.secret({ label: "API key" }),
       }),
       in: options.in,
@@ -268,7 +288,7 @@ export const auth = {
   }): AuthDefinition {
     return {
       type: "oauth2_authorization_code",
-      inputs: z.object({
+      inputs: input.object({
         clientId: options.clientId ?? input.string({ label: "OAuth client ID" }),
         ...(options.clientSecret === undefined ? {} : { clientSecret: options.clientSecret }),
       }),
@@ -281,8 +301,8 @@ export const auth = {
     };
   },
 
-  custom(options: {
-    inputs: AuthenticationInputSchema;
+  custom<const Shape extends Record<string, AuthenticationFieldSchema>>(options: {
+    inputs: ConfigurableInput<z.ZodObject<Shape>>;
     headers?: Readonly<Record<string, string>>;
     query?: Readonly<Record<string, string>>;
   }): AuthDefinition {
@@ -330,7 +350,7 @@ export type PaginationOverride =
 
 type RecordSchema = z.ZodType;
 type CheckpointSchema = z.ZodType;
-type ConfigSchema = z.ZodType<JsonObject>;
+type ConfigSchema = ConfigurableInput<z.ZodType<JsonObject>>;
 
 export interface PaginationResponseMetadata {
   readonly status: number;
