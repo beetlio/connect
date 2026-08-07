@@ -82,8 +82,9 @@ test("authoring produces a typed integration manifest", () => {
   assert.equal(manifest.syncs[0]?.mode, "append");
 });
 
-test("runSync validates configuration and transforms emitted domain values", async () => {
+test("runSync awaits asynchronous record and checkpoint validation", async () => {
   const batches: EmittedBatch[] = [];
+  const nonEmptyString = z.string().refine(async (value) => value.length > 0);
   const integration = defineIntegration({
     key: "transformed",
     displayName: "Transformed",
@@ -96,18 +97,19 @@ test("runSync validates configuration and transforms emitted domain values", asy
         key: "items",
         displayName: "Items",
         inputs: input.object({ limit: input.integer() }),
-        records: z.string().transform(Number),
-        checkpoint: z.string().transform(Number),
+        records: nonEmptyString,
+        checkpoint: nonEmptyString,
         async run(ctx) {
           assert.equal(ctx.config.connection.account, "acme");
           assert.equal(ctx.config.sync.limit, 2);
-          assert.equal(ctx.checkpoint, 1);
+          assert.equal(ctx.checkpoint, "1");
           await ctx.emit({ records: ["2"], checkpoint: "2" });
           await ctx.emit({ records: ["3"], checkpoint: "3" });
         },
       }),
     ],
   });
+  createIntegrationManifest(integration);
 
   const result = await runSync(
     integration,
@@ -123,11 +125,11 @@ test("runSync validates configuration and transforms emitted domain values", asy
   assert.deepEqual(
     batches.map(({ sequence, records, checkpoint }) => ({ sequence, records, checkpoint })),
     [
-      { sequence: 0, records: [2], checkpoint: 2 },
-      { sequence: 1, records: [3], checkpoint: 3 },
+      { sequence: 0, records: ["2"], checkpoint: "2" },
+      { sequence: 1, records: ["3"], checkpoint: "3" },
     ],
   );
-  assert.deepEqual(result, { batches: 2, records: 2, checkpoint: 3 });
+  assert.deepEqual(result, { batches: 2, records: 2, checkpoint: "3" });
 });
 
 test("pagination yields records, cursors, and response metadata without response envelopes", async () => {
@@ -135,7 +137,7 @@ test("pagination yields records, cursors, and response metadata without response
   const next: Array<string | number | undefined> = [];
   const responses: unknown[] = [];
   const records: unknown[] = [];
-  const Item = z.object({ id: z.number() });
+  const Item = z.object({ id: z.number() }).refine(async ({ id }) => id > 0);
   const integration = defineIntegration({
     key: "pages",
     displayName: "Pages",

@@ -92,12 +92,12 @@ export async function runSync(
     throw new Error("Snapshot syncs require host snapshot support");
   }
 
-  const connectionConfig = parse(
+  const connectionConfig = await parse(
     integration.connection.inputs?.schema ?? EmptyConfig,
     input.connectionConfig ?? {},
     "connection config",
   );
-  const syncConfig = parse(
+  const syncConfig = await parse(
     sync.inputs?.schema ?? EmptyConfig,
     input.syncConfig ?? {},
     "sync config",
@@ -105,7 +105,7 @@ export async function runSync(
   const initialCheckpoint =
     snapshot || input.checkpoint === undefined
       ? undefined
-      : parseCheckpoint(sync, input.checkpoint);
+      : await parseCheckpoint(sync, input.checkpoint);
   const signal = input.signal ?? new AbortController().signal;
 
   let sequence = 0;
@@ -124,24 +124,12 @@ export async function runSync(
       return rejectClosed();
     }
 
-    let parsedRecords: JsonValue[];
-    let checkpoint: JsonValue | undefined;
-    try {
-      parsedRecords = value.records.map((record, index) =>
-        parse(sync.records, record, `record ${index}`),
-      );
-      checkpoint =
-        value.checkpoint === undefined ? undefined : parseCheckpoint(sync, value.checkpoint);
-    } catch (error) {
-      const failed = emitQueue.then(() => {
-        throw error;
-      });
-      emitQueue = failed;
-      void failed.catch(() => undefined);
-      return failed;
-    }
-
     const queued = emitQueue.then(async () => {
+      const parsedRecords = await Promise.all(
+        value.records.map((record, index) => parse(sync.records, record, `record ${index}`)),
+      );
+      const checkpoint =
+        value.checkpoint === undefined ? undefined : await parseCheckpoint(sync, value.checkpoint);
       signal.throwIfAborted();
       const batch: EmittedBatch = {
         batchId: crypto.randomUUID(),
@@ -266,7 +254,7 @@ export async function verifyConnection(
     );
   }
 
-  const config = parse(
+  const config = await parse(
     integration.connection.inputs?.schema ?? EmptyConfig,
     input.connectionConfig ?? {},
     "connection config",
@@ -549,7 +537,7 @@ async function* paginateRequests<Records extends z.ZodType>(
       seenPaths.add(path);
       const response = await fetchPage(path);
       const { body, metadata } = await parsePageResponse(response);
-      const records = parsePageRecords(options.records, body, pagination.responsePath);
+      const records = await parsePageRecords(options.records, body, pagination.responsePath);
       const candidate = valueAtPath(body, pagination.nextUrlPath);
       if (
         candidate !== undefined &&
@@ -584,7 +572,7 @@ async function* paginateRequests<Records extends z.ZodType>(
         }),
       );
       const { body, metadata } = await parsePageResponse(response);
-      const records = parsePageRecords(options.records, body, pagination.responsePath);
+      const records = await parsePageRecords(options.records, body, pagination.responsePath);
       const candidate = valueAtPath(body, pagination.cursorPath);
       let nextPageParam: string | number | undefined;
       if (candidate !== undefined && candidate !== null) {
@@ -623,7 +611,7 @@ async function* paginateRequests<Records extends z.ZodType>(
       }),
     );
     const { body, metadata } = await parsePageResponse(response);
-    const records = parsePageRecords(options.records, body, pagination.responsePath);
+    const records = await parsePageRecords(options.records, body, pagination.responsePath);
     if (records.length === 0) {
       return;
     }
@@ -672,14 +660,14 @@ async function parsePageResponse(
   };
 }
 
-function parsePageRecords<Records extends z.ZodType>(
+async function parsePageRecords<Records extends z.ZodType>(
   schema: Records,
   body: unknown,
   responsePath: string | undefined,
-): z.output<Records>[] {
-  const result = z
+): Promise<z.output<Records>[]> {
+  const result = await z
     .array(schema)
-    .safeParse(responsePath === undefined ? body : valueAtPath(body, responsePath));
+    .safeParseAsync(responsePath === undefined ? body : valueAtPath(body, responsePath));
   if (!result.success) {
     throw new Error(`Invalid paginated records: ${z.prettifyError(result.error)}`);
   }
@@ -813,8 +801,12 @@ function validatePagination(pagination: PaginationDefinition): void {
   }
 }
 
-function parse<T>(schema: z.ZodType<T>, value: unknown, label: string): T & JsonValue {
-  const result = schema.safeParse(value);
+async function parse<T>(
+  schema: z.ZodType<T>,
+  value: unknown,
+  label: string,
+): Promise<T & JsonValue> {
+  const result = await schema.safeParseAsync(value);
   if (!result.success) {
     throw new Error(`Invalid ${label}: ${z.prettifyError(result.error)}`);
   }
@@ -833,7 +825,7 @@ function parse<T>(schema: z.ZodType<T>, value: unknown, label: string): T & Json
   return snapshot as T & JsonValue;
 }
 
-function parseCheckpoint(sync: SyncDefinition, value: unknown): JsonValue {
+async function parseCheckpoint(sync: SyncDefinition, value: unknown): Promise<JsonValue> {
   if (!sync.checkpoint) {
     throw new Error(`Sync ${JSON.stringify(sync.key)} does not declare a checkpoint`);
   }

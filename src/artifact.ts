@@ -423,10 +423,8 @@ async function validateLockedDependencies(entryPath: string, metafile: Metafile)
 
   const directDependencies = new Set<string>();
   for (const root of directPackageRoots) {
-    const dependency = NpmPackageSchema.parse(
-      JSON.parse(await readFile(join(root, "package.json"), "utf8")),
-    ).name;
-    if (dependency !== undefined) directDependencies.add(dependency);
+    const parent = basename(dirname(root));
+    directDependencies.add(parent.startsWith("@") ? `${parent}/${basename(root)}` : basename(root));
   }
   const declared = {
     ...packageManifest.dependencies,

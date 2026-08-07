@@ -416,12 +416,12 @@ test("dependency bundles require the npm lockfile and portable modules", async (
   await mkdir(dependency, { recursive: true });
   await writeFile(
     join(integrationDirectory, "package.json"),
-    JSON.stringify({ dependencies: { "runtime-specific": "1.0.0" } }),
+    JSON.stringify({ dependencies: { "runtime-specific": "npm:portable-package@1.0.0" } }),
   );
   await writeFile(
     join(dependency, "package.json"),
     JSON.stringify({
-      name: "runtime-specific",
+      name: "portable-package",
       version: "1.0.0",
       type: "module",
       exports: "./index.js",
@@ -472,7 +472,9 @@ test("dependency bundles require the npm lockfile and portable modules", async (
     JSON.stringify({
       lockfileVersion: 3,
       packages: {
-        integration: { dependencies: { "runtime-specific": "1.0.0" } },
+        integration: {
+          dependencies: { "runtime-specific": "npm:portable-package@1.0.0" },
+        },
         "node_modules/runtime-specific": { version: "0.9.0" },
       },
     }),
@@ -486,7 +488,9 @@ test("dependency bundles require the npm lockfile and portable modules", async (
     JSON.stringify({
       lockfileVersion: 3,
       packages: {
-        integration: { dependencies: { "runtime-specific": "1.0.0" } },
+        integration: {
+          dependencies: { "runtime-specific": "npm:portable-package@1.0.0" },
+        },
         "node_modules/runtime-specific": { version: "1.0.0" },
       },
     }),
