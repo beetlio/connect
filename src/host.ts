@@ -11,6 +11,7 @@ import type {
   PaginationPage,
   PaginationResponseMetadata,
   RetryDefinition,
+  RetryPolicy,
   SyncFetchInit,
   SyncDefinition,
 } from "./index.ts";
@@ -105,7 +106,7 @@ export async function runSync(
   let latestCheckpoint = initialCheckpoint;
   let emitQueue = Promise.resolve();
   let contextOpen = true;
-  const operations = createOperationTracker();
+  const operations = createPendingOperations();
 
   const rejectClosed = <T>(): Promise<T> => {
     const rejected = Promise.reject<T>(new Error("Sync context is closed"));
@@ -266,7 +267,7 @@ export async function verifyConnection(
     "connection config",
   );
   const signal = input.signal ?? new AbortController().signal;
-  const operations = createOperationTracker();
+  const operations = createPendingOperations();
   let contextOpen = true;
 
   const rejectClosed = <T>(): Promise<T> => {
@@ -320,27 +321,72 @@ export async function verifyConnection(
   signal.throwIfAborted();
 }
 
-function createOperationTracker() {
-  const pending = new Set<Promise<unknown>>();
-  let failure: { readonly reason: unknown } | undefined;
+interface PendingOperation {
+  readonly promise: Promise<unknown>;
+  observed: boolean;
+  failure?: { readonly reason: unknown };
+}
+
+class ObservedPromise<T> implements Promise<T> {
+  readonly [Symbol.toStringTag] = "Promise";
+  readonly #promise: Promise<T>;
+  readonly #observe: () => void;
+
+  constructor(promise: Promise<T>, observe: () => void) {
+    this.#promise = promise;
+    this.#observe = observe;
+    void this.#promise.catch(() => undefined);
+  }
+
+  then<TResult1 = T, TResult2 = never>(
+    onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null,
+  ): Promise<TResult1 | TResult2> {
+    if (onrejected !== undefined && onrejected !== null) this.#observe();
+    return new ObservedPromise(this.#promise.then(onfulfilled, onrejected), this.#observe);
+  }
+
+  catch<TResult = never>(
+    onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | null,
+  ): Promise<T | TResult> {
+    if (onrejected !== undefined && onrejected !== null) this.#observe();
+    return new ObservedPromise(this.#promise.catch(onrejected), this.#observe);
+  }
+
+  finally(onfinally?: (() => void) | null): Promise<T> {
+    return new ObservedPromise(this.#promise.finally(onfinally), this.#observe);
+  }
+}
+
+function createPendingOperations() {
+  const pending = new Set<PendingOperation>();
 
   return {
     track<T>(operation: Promise<T>): Promise<T> {
-      pending.add(operation);
+      const tracked: PendingOperation = { promise: operation, observed: false };
+      pending.add(tracked);
       void operation.then(
-        () => pending.delete(operation),
+        () => pending.delete(tracked),
         (reason: unknown) => {
-          pending.delete(operation);
-          failure ??= { reason };
+          tracked.failure = { reason };
+          if (tracked.observed) pending.delete(tracked);
         },
       );
-      return operation;
+      return new ObservedPromise(operation, () => {
+        tracked.observed = true;
+        if (tracked.failure !== undefined) pending.delete(tracked);
+      });
     },
 
     async settle(): Promise<
       { readonly ok: true } | { readonly ok: false; readonly reason: unknown }
     > {
-      await Promise.allSettled([...pending]);
+      const operations = [...pending];
+      await Promise.allSettled(operations.map(({ promise }) => promise));
+      const failure = operations.find(
+        (operation) => !operation.observed && operation.failure !== undefined,
+      )?.failure;
+      pending.clear();
       return failure === undefined ? { ok: true } : { ok: false, reason: failure.reason };
     },
   };
@@ -361,17 +407,24 @@ export function validateIntegration(integration: IntegrationDefinition): void {
   ) {
     throw new Error("Integration icon must be icon.png or icon.webp");
   }
+  const auth = integration.connection.auth ?? { type: "none" as const, inputs: z.object({}) };
   if (typeof integration.connection.baseUrl === "string") {
     const baseUrl = new URL(integration.connection.baseUrl);
+    const isLoopback =
+      baseUrl.hostname === "localhost" ||
+      baseUrl.hostname === "[::1]" ||
+      /^127(?:\.\d{1,3}){3}$/.test(baseUrl.hostname);
     if (baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:") {
       throw new Error("Connection base URL must use HTTP or HTTPS");
     }
     if (baseUrl.username || baseUrl.password) {
       throw new Error("Connection base URL cannot contain credentials");
     }
+    if (auth.type !== "none" && baseUrl.protocol !== "https:" && !isLoopback) {
+      throw new Error("Authenticated connection base URLs must use HTTPS or loopback HTTP");
+    }
   }
 
-  const auth = integration.connection.auth ?? { type: "none" as const, inputs: z.object({}) };
   const authenticationInputKeys = new Set(Object.keys(auth.inputs.shape));
   for (const field of authenticationInputReferences(auth)) {
     if (!authenticationInputKeys.has(field)) {
@@ -415,7 +468,7 @@ export function validateIntegration(integration: IntegrationDefinition): void {
     throw new Error("Dynamic connection base URLs require OAuth authentication");
   }
 
-  validateRetry(integration.connection.retry);
+  resolveRetry(integration.connection.retry);
   if (integration.connection.pagination) {
     validatePagination(integration.connection.pagination);
   }
@@ -565,10 +618,6 @@ async function* paginateRequests<Records extends z.ZodType>(
       );
       const { body, metadata } = await parsePageResponse(response);
       const records = parsePageRecords(options.records, body, pagination.responsePath);
-      if (records.length === 0) {
-        return;
-      }
-
       const candidate = valueAtPath(body, pagination.cursorPath);
       const nextPageParam =
         typeof candidate === "number" && Number.isFinite(candidate)
@@ -577,6 +626,9 @@ async function* paginateRequests<Records extends z.ZodType>(
             ? candidate
             : undefined;
       const hasNext = nextPageParam !== undefined && String(nextPageParam) !== String(cursor);
+      if (records.length === 0 && !hasNext) {
+        return;
+      }
       yield {
         records,
         ...(hasNext ? { nextPageParam } : {}),
@@ -704,44 +756,41 @@ function authenticationInputReferences(auth: AuthDefinition): readonly string[] 
   return [...Object.values(auth.headers), ...Object.values(auth.query)];
 }
 
-function validateRetry(retry: RetryDefinition | undefined): void {
-  if (retry === undefined || retry === false) {
-    return;
-  }
-  if (
-    retry.maxAttempts !== undefined &&
-    (!Number.isInteger(retry.maxAttempts) || retry.maxAttempts < 1)
-  ) {
+export type ResolvedRetry = Required<RetryPolicy>;
+
+const DefaultRetry: ResolvedRetry = {
+  maxAttempts: 3,
+  statuses: [408, 429, 500, 502, 503, 504],
+  methods: ["GET", "HEAD", "OPTIONS"],
+  initialDelayMs: 500,
+  maxDelayMs: 30_000,
+};
+
+export function resolveRetry(retry: RetryDefinition | undefined): ResolvedRetry {
+  const resolved =
+    retry === false ? { ...DefaultRetry, maxAttempts: 1 } : { ...DefaultRetry, ...retry };
+  if (!Number.isInteger(resolved.maxAttempts) || resolved.maxAttempts < 1) {
     throw new Error("Retry maxAttempts must be a positive integer");
   }
   if (
-    retry.statuses !== undefined &&
-    (retry.statuses.length === 0 ||
-      retry.statuses.some((status) => !Number.isInteger(status) || status < 100 || status > 599))
+    resolved.statuses.length === 0 ||
+    resolved.statuses.some((status) => !Number.isInteger(status) || status < 100 || status > 599)
   ) {
     throw new Error("Retry statuses must contain valid HTTP status codes");
   }
-  if (
-    retry.methods !== undefined &&
-    (retry.methods.length === 0 || retry.methods.some((method) => !method.trim()))
-  ) {
+  if (resolved.methods.length === 0 || resolved.methods.some((method) => !method.trim())) {
     throw new Error("Retry methods must contain non-empty HTTP methods");
   }
-  for (const [name, value] of [
-    ["initialDelayMs", retry.initialDelayMs],
-    ["maxDelayMs", retry.maxDelayMs],
-  ] as const) {
-    if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
-      throw new Error(`Retry ${name} must be a non-negative number`);
-    }
+  if (!Number.isFinite(resolved.initialDelayMs) || resolved.initialDelayMs < 0) {
+    throw new Error("Retry initialDelayMs must be a non-negative number");
   }
-  if (
-    retry.initialDelayMs !== undefined &&
-    retry.maxDelayMs !== undefined &&
-    retry.initialDelayMs > retry.maxDelayMs
-  ) {
+  if (!Number.isFinite(resolved.maxDelayMs) || resolved.maxDelayMs < 0) {
+    throw new Error("Retry maxDelayMs must be a non-negative number");
+  }
+  if (resolved.initialDelayMs > resolved.maxDelayMs) {
     throw new Error("Retry initialDelayMs cannot exceed maxDelayMs");
   }
+  return resolved;
 }
 
 function validatePagination(pagination: PaginationDefinition): void {

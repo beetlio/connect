@@ -1,22 +1,18 @@
-import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import type {
-  AuthDefinition,
-  BaseUrlDefinition,
-  JsonValue,
-  RetryDefinition,
-  RetryPolicy,
-} from "./index.ts";
+import type { AuthDefinition, BaseUrlDefinition, JsonValue } from "./index.ts";
 import { refreshOAuthAuthorization, type OAuthAuthorizationState } from "./oauth.ts";
-import type {
-  EmittedBatch,
-  LogEntry,
-  ProviderRequest,
-  ProviderResponse,
-  SyncHost,
+import {
+  resolveRetry,
+  type EmittedBatch,
+  type LogEntry,
+  type ProviderRequest,
+  type ProviderResponse,
+  type ResolvedRetry,
+  type SyncHost,
 } from "./host.ts";
 
 const MaxProviderResponseBytes = 16 * 1024 * 1024;
@@ -55,7 +51,7 @@ export class LocalHost implements SyncHost {
     this.#auth = options.auth ?? { type: "none" };
     this.#authenticationInput = options.authenticationInput ?? {};
     this.#authorizationState = options.authorizationState;
-    this.#baseUrl = this.#resolveBaseUrl();
+    this.#baseUrl = resolveProviderUrl(this.#baseUrlDefinition, this.#authorizationState);
     this.#outputPath = options.outputPath;
     this.#statePath = options.statePath;
     this.#fetch = options.fetch ?? globalThis.fetch;
@@ -285,7 +281,7 @@ export class LocalHost implements SyncHost {
       fetch: this.#fetch,
       ...(signal === undefined ? {} : { signal }),
     });
-    const baseUrl = this.#resolveBaseUrl(authorizationState);
+    const baseUrl = resolveProviderUrl(this.#baseUrlDefinition, authorizationState);
     await this.#onAuthorizationStateChanged(authorizationState);
     this.#authorizationState = authorizationState;
     this.#baseUrl = baseUrl;
@@ -293,59 +289,61 @@ export class LocalHost implements SyncHost {
     return true;
   }
 
-  #resolveBaseUrl(authorizationState = this.#authorizationState): URL {
-    const definition = this.#baseUrlDefinition;
-    let value: string;
-    if (typeof definition === "string") {
-      value = definition;
-    } else {
-      const tokenField = authorizationState?.tokenFields[definition.oauthTokenField];
-      if (tokenField === undefined) {
-        throw new Error(
-          `OAuth authorization is missing token field ${JSON.stringify(definition.oauthTokenField)}`,
-        );
-      }
-      value = tokenField;
-    }
-    const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      throw new Error("Connection base URL must use HTTP or HTTPS");
-    }
-    if (url.username || url.password) {
-      throw new Error("Connection base URL cannot contain credentials");
-    }
-    return url;
-  }
-
   async #replaceCheckpoint(checkpoint: JsonValue): Promise<void> {
-    await mkdir(dirname(this.#statePath), { recursive: true });
-    const temporaryPath = `${this.#statePath}.tmp-${process.pid}`;
-    try {
-      await writeFile(temporaryPath, `${JSON.stringify(checkpoint)}\n`, {
-        mode: 0o600,
-      });
-      const file = await open(temporaryPath, "r");
-      try {
-        await file.sync();
-      } finally {
-        await file.close();
-      }
-      await rename(temporaryPath, this.#statePath);
-    } catch (error) {
-      await rm(temporaryPath, { force: true });
-      throw error;
+    await replacePrivateFile(this.#statePath, `${JSON.stringify(checkpoint)}\n`);
+  }
+}
+
+export function resolveProviderUrl(
+  definition: BaseUrlDefinition,
+  authorizationState?: OAuthAuthorizationState,
+): URL {
+  let value: string;
+  if (typeof definition === "string") {
+    value = definition;
+  } else {
+    const tokenField = authorizationState?.tokenFields[definition.oauthTokenField];
+    if (tokenField === undefined) {
+      throw new Error(
+        `OAuth authorization is missing token field ${JSON.stringify(definition.oauthTokenField)}`,
+      );
     }
+    value = tokenField;
+  }
+  const url = new URL(value);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("Connection base URL must use HTTP or HTTPS");
+  }
+  if (url.username || url.password) {
+    throw new Error("Connection base URL cannot contain credentials");
+  }
+  return url;
+}
+
+export async function replacePrivateFile(path: string, value: string | Uint8Array): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const temporaryPath = `${path}.tmp-${randomUUID()}`;
+  const file = await open(temporaryPath, "wx", 0o600);
+  try {
+    await file.writeFile(value);
+    await file.sync();
+    await file.close();
+    await rename(temporaryPath, path);
+  } catch (error) {
+    await file.close().catch(() => undefined);
+    await rm(temporaryPath, { force: true });
+    throw error;
   }
 }
 
 class ResponseTooLargeError extends Error {}
 
 async function readResponseBody(response: Response): Promise<Uint8Array> {
+  if (response.body === null) return new Uint8Array();
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > MaxProviderResponseBytes) {
     throw new ResponseTooLargeError("Provider response exceeds 16 MiB");
   }
-  if (response.body === null) return new Uint8Array();
 
   const chunks: Uint8Array[] = [];
   let length = 0;
@@ -371,35 +369,6 @@ function isMissingFile(error: unknown): boolean {
 
 function isLoopback(hostname: string): boolean {
   return hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
-}
-
-type ResolvedRetry = Required<RetryPolicy>;
-
-const DefaultRetry: ResolvedRetry = {
-  maxAttempts: 3,
-  statuses: [408, 429, 500, 502, 503, 504],
-  methods: ["GET", "HEAD", "OPTIONS"],
-  initialDelayMs: 500,
-  maxDelayMs: 30_000,
-};
-
-function resolveRetry(retry: RetryDefinition | undefined): ResolvedRetry {
-  if (retry === false) {
-    return { ...DefaultRetry, maxAttempts: 1 };
-  }
-  const resolved = { ...DefaultRetry, ...retry };
-  if (!Number.isInteger(resolved.maxAttempts) || resolved.maxAttempts < 1) {
-    throw new Error("Retry maxAttempts must be a positive integer");
-  }
-  if (
-    !Number.isFinite(resolved.initialDelayMs) ||
-    !Number.isFinite(resolved.maxDelayMs) ||
-    resolved.initialDelayMs < 0 ||
-    resolved.maxDelayMs < resolved.initialDelayMs
-  ) {
-    throw new Error("Invalid retry delay configuration");
-  }
-  return resolved;
 }
 
 function shouldRetry(

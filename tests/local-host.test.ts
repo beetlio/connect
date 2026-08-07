@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -171,6 +171,34 @@ test("provider responses have a hard size limit", async () => {
     fetch: async () => new Response(new Uint8Array(16 * 1024 * 1024 + 1)),
   });
   await assert.rejects(host.request({ ...Request, retry: false }), /exceeds 16 MiB/);
+
+  const bodyless = new LocalHost({
+    baseUrl: "https://api.example.com",
+    outputPath: "unused",
+    statePath: "unused",
+    fetch: async () =>
+      new Response(null, { headers: { "content-length": String(32 * 1024 * 1024) } }),
+  });
+  const response = await bodyless.request({ ...Request, method: "HEAD", retry: false });
+  assert.equal(response.body.byteLength, 0);
+});
+
+test("checkpoint replacement uses private exclusive files", async (t) => {
+  const directory = await fixtureDirectory(t, "beetl-checkpoint");
+  const statePath = join(directory, "state.json");
+  const predictableTemporaryPath = `${statePath}.tmp-${process.pid}`;
+  await writeFile(predictableTemporaryPath, "reserved");
+  const host = new LocalHost({
+    baseUrl: "https://api.example.com",
+    outputPath: join(directory, "items.ndjson"),
+    statePath,
+  });
+
+  await host.emit({ batchId: "batch", sequence: 0, records: [], checkpoint: { cursor: "next" } });
+
+  assert.equal(await readFile(predictableTemporaryPath, "utf8"), "reserved");
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), { cursor: "next" });
+  assert.equal((await stat(statePath)).mode & 0o777, 0o600);
 });
 
 test("snapshot output is replaced only after a successful run", async (t) => {

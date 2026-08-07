@@ -41,9 +41,11 @@
     "prepack": "npm run build"
   },
   "dependencies": {
+    "@inquirer/confirm": "^6.1.1",
     "@inquirer/password": "^5.1.1",
     "@optique/core": "^1.2.0",
     "@optique/run": "^1.2.0",
+    "env-paths": "^4.0.0",
     "esbuild": "^0.28.1",
     "fflate": "^0.8.3",
     "oauth4webapi": "^3.8.6",

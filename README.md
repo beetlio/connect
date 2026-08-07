@@ -127,15 +127,19 @@ manager; a separate TypeScript compiler is not required. Integrations that use
 npm packages must declare them in `dependencies` and commit a current
 `package-lock.json`; other lockfile formats are not supported yet. Node built-in
 modules, Node-only globals, native add-ons, and runtime-computed imports are
-rejected so artifacts stay portable. Commands also accept a packed `.beetl.zip`;
+rejected so artifacts stay portable. Bare global `fetch` calls are rejected
+during checking, and the CLI removes global `fetch` before integration code is
+loaded so aliases cannot bypass `ctx.fetch()`. Connect never installs packages
+or runs dependency lifecycle scripts. Commands also accept a packed `.beetl.zip`;
 running an artifact does not require TypeScript, npm, or the integration's dependencies.
 Artifacts contain the executable bundle, manifest, license notices, and SHA-256
-integrity metadata. They intentionally omit the original TypeScript source.
+integrity metadata. Source and archive bundles pass the same runtime-policy checks.
+Inline source maps preserve TypeScript locations without embedding the original source.
 
 Local commands use the `default` profile unless `--profile <name>` is supplied.
 Profiles contain only sync inputs and a named connection reference. If the
 selected profile is missing and the sync declares inputs, the CLI configures it
-interactively before continuing.
+interactively before continuing. An explicitly requested missing profile is an error.
 
 `connect` collects the connection inputs and authentication inputs declared by
 the integration. For OAuth, it then opens the authorization flow and stores the
@@ -148,11 +152,14 @@ beetl-connect configure . repositories
 beetl-connect sync . repositories
 ```
 
-Named connections are stored under `.beetl/connections` with owner-only
-permissions. They include connection inputs, authentication inputs, and OAuth
-authorization state where applicable. They are not encrypted, so treat the
-local machine and working directory as trusted. Incremental sync state is stored
-separately under `.beetl/state`.
+Profiles and named connections are stored with owner-only permissions in the
+operating system's user configuration directory: `$XDG_CONFIG_HOME/beetl-connect`
+on Linux, `~/Library/Preferences/beetl-connect` on macOS, and
+`%APPDATA%\beetl-connect\Config` on Windows. Connections include authentication
+inputs and OAuth authorization state where applicable. Each connection binds
+those secrets to the provider origin and authentication definition; a mismatch
+requires reconnecting. Files are not encrypted, so treat the local user account
+as trusted. Incremental sync state remains in the workspace under `.beetl/state`.
 
 ## Output and state
 
@@ -160,6 +167,12 @@ Append syncs are the default: each run writes a new NDJSON file and can resume
 from its latest checkpoint. A sync can instead declare `mode: "snapshot"`; the
 CLI replaces the file selected by `--output` only after the new snapshot
 succeeds. Without `--output`, each run uses a new timestamped filename.
+Profiles and connections carry revisions. `configure` preserves a profile
+revision when nothing changed, while changed inputs and explicit `connect`
+operations create new revisions. Automatic OAuth refresh preserves the
+connection revision. Default checkpoint paths include both revisions so changed
+filters or credentials cannot silently reuse older state. Existing checkpoint
+files are retained, and `--state` can select one explicitly.
 
 `ctx.paginate()` supports cursor, offset, and provider-supplied next-URL APIs.
 Each yielded page includes the response status and normalized headers. Integrations can
@@ -187,28 +200,37 @@ Configure and run the Wikidata example interactively:
 beetl-connect sync examples/wikidata entities
 ```
 
-For automation, provision the named connection at
-`.beetl/connections/wikidata/default.json`:
+For automation, provision the named connection under the user configuration
+directory at `connections/wikidata/default.json`:
 
 ```json
 {
   "integration": "wikidata",
   "name": "default",
+  "revision": "22222222-2222-4222-8222-222222222222",
+  "provider": {
+    "origin": "https://www.wikidata.org",
+    "authentication": { "type": "none" }
+  },
   "inputs": { "userAgent": "my-wikidata-sync/1.0 (me@example.com)" },
   "authenticationInput": {}
 }
 ```
 
-Then provision `.beetl/profiles/wikidata/default.json`:
+Then provision `profiles/wikidata/default.json` in the same directory:
 
 ```json
 {
   "integration": "wikidata",
   "sync": "entities",
   "connection": "default",
+  "revision": "11111111-1111-4111-8111-111111111111",
   "inputs": { "search": "open source", "language": "en", "maxResults": 25 }
 }
 ```
+
+When provisioning these files directly, generate a new UUID revision whenever
+their inputs or authorization change. `configure` and `connect` do this automatically.
 
 ```sh
 beetl-connect sync examples/wikidata entities
@@ -223,7 +245,10 @@ timestamped NDJSON snapshot to the current directory.
 The CLI is the primary interface. Applications that need to execute the same
 integrations with their own authentication, request, and persistence services can
 implement the optional `SyncHost` interface from `@beetlio/connect/host`. See
-the runnable [custom host example](examples/custom-host/host.ts).
+the runnable [custom host example](examples/custom-host/host.ts). `SyncHost` is a
+capability boundary, not a sandbox: custom executors must prevent integration
+code from reaching providers directly. The production boundary belongs in an
+isolated runtime with provider egress allowed only through the trusted host.
 
 ## Development
 

@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { createRequire, setSourceMapsSupport } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
-import { build, formatMessages, type Metafile } from "esbuild";
+import { build, formatMessages, transform, type Metafile } from "esbuild";
 import { unzipSync, zipSync, type Zippable } from "fflate";
 import ts from "typescript";
 import { z } from "zod";
@@ -54,8 +54,10 @@ const RuntimeSpecificGlobals = [
 ] as const;
 const RuntimeGlobalPrefix = "__beetl_unsupported_runtime_global_";
 const RuntimeGlobalDefines = Object.fromEntries(
-  RuntimeSpecificGlobals.map((name) => [name, `${RuntimeGlobalPrefix}${name}`]),
+  [...RuntimeSpecificGlobals, "fetch"].map((name) => [name, `${RuntimeGlobalPrefix}${name}`]),
 );
+
+setSourceMapsSupport(true);
 
 const ArtifactFileSchema = z.strictObject({
   bytes: z.int().nonnegative(),
@@ -160,7 +162,8 @@ async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
       platform: "neutral",
       target: "es2024",
       mainFields: ["module", "main"],
-      sourcemap: false,
+      sourcemap: "inline",
+      sourcesContent: false,
       legalComments: "external",
       metafile: true,
       write: false,
@@ -188,7 +191,7 @@ async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
   )?.contents;
   if (!bundle) throw new Error("Bundler did not produce integration.mjs");
   await validateLockedDependencies(entryPath, output.metafile);
-  validateRuntimeGlobals(bundle);
+  await validateBundlePolicy(bundle);
   assertSize("integration.mjs", bundle, Limits.bundle);
   await typeCheckIntegration(entryPath);
   const integration = await importBundle(bundle, inputPath);
@@ -257,6 +260,7 @@ async function loadArchive(path: string): Promise<BuiltIntegration> {
     throw new Error(`Invalid artifact metadata: ${z.prettifyError(artifact.error)}`);
   }
   validateArtifactMetadata(artifact.data, files);
+  await validateBundlePolicy(files["integration.mjs"]!);
   try {
     manifest = JSON.parse(Decoder.decode(files["manifest.json"]!));
   } catch (error) {
@@ -398,17 +402,47 @@ function assertSize(name: string, bytes: Uint8Array, maximum: number): void {
   }
 }
 
-function validateRuntimeGlobals(bundle: Uint8Array): void {
+async function validateBundlePolicy(bundle: Uint8Array): Promise<void> {
   const source = Decoder.decode(bundle);
+  const rewritten = (
+    await transform(source, {
+      loader: "js",
+      format: "esm",
+      target: "es2024",
+      define: RuntimeGlobalDefines,
+      logLevel: "silent",
+    })
+  ).code;
   for (const name of RuntimeSpecificGlobals) {
     const globalAccess = new RegExp(
       `\\bglobalThis\\s*(?:(?:\\.|\\?\\.)\\s*${name}|\\[\\s*["']${name}["']\\s*\\])`,
     );
-    if (source.includes(`${RuntimeGlobalPrefix}${name}`) || globalAccess.test(source)) {
+    if (rewritten.includes(`${RuntimeGlobalPrefix}${name}`) || globalAccess.test(rewritten)) {
       throw new Error(
         `Unsupported runtime global ${JSON.stringify(name)}; integrations must use portable Web APIs`,
       );
     }
+  }
+  if (rewritten.includes(`${RuntimeGlobalPrefix}fetch`)) {
+    throw new Error("Unsupported global fetch; provider requests must use ctx.fetch");
+  }
+
+  const syntax = ts.createSourceFile("integration.mjs", source, ts.ScriptTarget.Latest, false);
+  let imported = false;
+  const inspect = (node: ts.Node): void => {
+    if (
+      ts.isImportDeclaration(node) ||
+      (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) ||
+      (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword)
+    ) {
+      imported = true;
+      return;
+    }
+    ts.forEachChild(node, inspect);
+  };
+  inspect(syntax);
+  if (imported) {
+    throw new Error("Integration bundles must be self-contained and cannot contain imports");
   }
 }
 

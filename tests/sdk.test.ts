@@ -42,11 +42,16 @@ test("authoring produces a typed integration manifest", () => {
             ],
             { default: "eu" },
           ),
+          advanced: input.optional(
+            input.object({ includeArchived: input.boolean({ label: "Include archived" }) }),
+          ),
         }),
         async run(ctx) {
           const apiVersion: string = ctx.config.connection.apiVersion;
           const region: "eu" | "us" = ctx.config.sync.region;
+          const includeArchived: boolean | undefined = ctx.config.sync.advanced?.includeArchived;
           await ctx.emit({ records: [{ id: `${apiVersion}-${region}` }] });
+          void includeArchived;
           if (false) {
             // @ts-expect-error Connection inputs remain schema-derived.
             ctx.config.connection.missing;
@@ -73,6 +78,8 @@ test("authoring produces a typed integration manifest", () => {
     writeOnly: true,
   });
   assert.equal(manifest.syncs[0]?.inputs.properties.pageSize?.default, 100);
+  assert.equal(manifest.syncs[0]?.inputs.properties.advanced?.type, "object");
+  assert.ok(!manifest.syncs[0]?.inputs.required?.includes("advanced"));
   assert.equal(manifest.syncs[0]?.mode, "append");
 });
 
@@ -170,18 +177,21 @@ test("pagination yields records, cursors, and response metadata without response
     syncHost({
       async request(request) {
         requests.push(request.path);
-        const continued = request.path.includes("after=two");
+        const second = request.path.includes("after=two");
+        const third = request.path.includes("after=three");
         return {
           status: 200,
           headers: [
             ["content-type", "application/json"],
-            ["x-page", continued ? "two" : "one"],
+            ["x-page", third ? "three" : second ? "two" : "one"],
           ],
           body: new TextEncoder().encode(
             JSON.stringify(
-              continued
+              third
                 ? { data: [{ id: 3 }], paging: {} }
-                : { data: [{ id: 1 }, { id: 2 }], paging: { next: "two" } },
+                : second
+                  ? { data: [{ id: 1 }, { id: 2 }], paging: { next: "three" } }
+                  : { data: [], paging: { next: "two" } },
             ),
           ),
         };
@@ -190,8 +200,12 @@ test("pagination yields records, cursors, and response metadata without response
     }),
   );
 
-  assert.deepEqual(requests, ["/items?limit=2", "/items?after=two&limit=2"]);
-  assert.deepEqual(next, ["two", undefined]);
+  assert.deepEqual(requests, [
+    "/items?limit=2",
+    "/items?after=two&limit=2",
+    "/items?after=three&limit=2",
+  ]);
+  assert.deepEqual(next, ["two", "three", undefined]);
   assert.deepEqual(responses, [
     {
       status: 200,
@@ -201,9 +215,13 @@ test("pagination yields records, cursors, and response metadata without response
       status: 200,
       headers: { "content-type": "application/json", "x-page": "two" },
     },
+    {
+      status: 200,
+      headers: { "content-type": "application/json", "x-page": "three" },
+    },
   ]);
   assert.deepEqual(records, [{ id: 1 }, { id: 2 }, { id: 3 }]);
-  assert.deepEqual(result, { batches: 2, records: 3 });
+  assert.deepEqual(result, { batches: 3, records: 3 });
 });
 
 test("next-url pagination follows relative provider URLs", async () => {
@@ -264,8 +282,8 @@ test("next-url pagination follows relative provider URLs", async () => {
   assert.deepEqual(result, { batches: 2, records: 3 });
 });
 
-test("connection verification uses validated config and the host request boundary", async () => {
-  let requested = "";
+test("connection verification validates config and can recover from request failures", async () => {
+  const requested: string[] = [];
   const integration = defineIntegration({
     key: "verified",
     displayName: "Verified",
@@ -273,6 +291,16 @@ test("connection verification uses validated config and the host request boundar
       baseUrl: "https://api.example.com",
       inputs: z.object({ account: z.string() }),
       async verify(ctx) {
+        if (ctx.config.account === "abandoned") {
+          void ctx.fetch("/optional");
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          return;
+        }
+        try {
+          await ctx.fetch("/optional");
+        } catch {
+          // Optional provider capabilities may be unavailable.
+        }
         const response = await ctx.fetch(`/accounts/${ctx.config.account}`);
         assert.equal(response.status, 204);
       },
@@ -280,17 +308,19 @@ test("connection verification uses validated config and the host request boundar
     syncs: [],
   });
 
-  await verifyConnection(
-    integration,
-    { connectionConfig: { account: "acme" } },
-    syncHost({
-      async request(request) {
-        requested = request.path;
-        return { status: 204, headers: [], body: new Uint8Array() };
-      },
-    }),
+  const host = syncHost({
+    async request(request) {
+      requested.push(request.path);
+      if (request.path === "/optional") throw new Error("not available");
+      return { status: 204, headers: [], body: new Uint8Array() };
+    },
+  });
+  await verifyConnection(integration, { connectionConfig: { account: "acme" } }, host);
+  assert.deepEqual(requested, ["/optional", "/accounts/acme"]);
+  await assert.rejects(
+    verifyConnection(integration, { connectionConfig: { account: "abandoned" } }, host),
+    /not available/,
   );
-  assert.equal(requested, "/accounts/acme");
 });
 
 test("sync operations stay ordered, tracked, and closed after the run", async () => {
@@ -361,6 +391,34 @@ test("records must be JSON values before they cross the host boundary", async ()
 test("integration contracts enforce authentication and input invariants", () => {
   assert.throws(() => input.secret({ default: "secret" } as never), /cannot declare defaults/);
   assert.throws(() => input.integer({ min: 1, default: 0 }), /Invalid input default/);
+  assert.throws(
+    () =>
+      validateIntegration(
+        defineIntegration({
+          key: "retry",
+          displayName: "Retry",
+          connection: {
+            baseUrl: "https://example.com",
+            retry: { maxDelayMs: 100 },
+          },
+          syncs: [],
+        }),
+      ),
+    /initialDelayMs cannot exceed maxDelayMs/,
+  );
+  const authenticatedHttp = defineIntegration({
+    key: "authenticated-http",
+    displayName: "Authenticated HTTP",
+    connection: { baseUrl: "http://example.com", auth: auth.bearer() },
+    syncs: [],
+  });
+  assert.throws(() => validateIntegration(authenticatedHttp), /must use HTTPS or loopback HTTP/);
+  assert.doesNotThrow(() =>
+    validateIntegration({
+      ...authenticatedHttp,
+      connection: { ...authenticatedHttp.connection, baseUrl: "http://[::1]:8080" },
+    }),
+  );
 
   const integration = defineIntegration({
     key: "invalid",

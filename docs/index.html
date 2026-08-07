@@ -411,16 +411,26 @@ beetl-connect verify . --connection default</code></pre>
             The integration argument can be an entry file, a directory containing
             <code>integration.ts</code>, or a packed <code>.beetl.zip</code>. The CLI type-checks
             source with its bundled TypeScript compiler, then bundles local imports and installed
-            npm dependencies. The packed artifact contains the executable bundle, manifest, license
-            notices, and integrity metadata; it omits the original TypeScript source and runs
-            without npm or installed dependencies. Node built-in modules, native add-ons, and
-            runtime-computed imports are rejected so artifacts stay portable.
+            npm dependencies. Connect never installs packages or runs dependency lifecycle scripts.
+            The packed artifact contains the executable bundle, manifest, license notices, and
+            integrity metadata; it omits the original TypeScript source and runs without npm or
+            installed dependencies. Node built-in modules, native add-ons, and runtime-computed
+            imports are rejected. Bare global <code>fetch</code> calls are rejected during checking,
+            and the CLI removes global <code>fetch</code> before loading integration code so aliases
+            cannot bypass <code>ctx.fetch()</code>. Source and archive bundles pass the same
+            runtime-policy checks, and inline source maps preserve TypeScript locations without
+            embedding source contents.
           </p>
           <p>
-            Named connections are stored under <code>.beetl/connections</code> with owner-only
-            permissions. They contain connection inputs, authentication inputs, and OAuth
-            authorization state where applicable. They are not encrypted. Sync checkpoints are
-            stored separately under <code>.beetl/state</code>.
+            Profiles and named connections are stored with owner-only permissions in the operating
+            system's user configuration directory: <code>$XDG_CONFIG_HOME/beetl-connect</code> on
+            Linux, <code>~/Library/Preferences/beetl-connect</code> on macOS, and
+            <code>%APPDATA%\beetl-connect\Config</code> on Windows. Connections contain
+            authentication inputs and OAuth authorization state where applicable. Saved secrets are
+            bound to the provider origin and authentication definition. Connections are not
+            encrypted. Profiles and connections carry revisions; changed inputs and explicit
+            reauthorization create new revisions, while automatic OAuth refresh preserves them. Sync
+            checkpoints remain under <code>.beetl/state</code> and are isolated by those revisions.
           </p>
         </section>
 
@@ -487,25 +497,35 @@ beetl-connect verify . --connection default</code></pre>
           </p>
           <pre><code>beetl-connect sync examples/wikidata entities</code></pre>
           <p>
-            Automation can provision <code>.beetl/connections/wikidata/default.json</code> with this
-            shape:
+            Automation can provision <code>connections/wikidata/default.json</code> under the
+            operating system's user configuration directory with this shape:
           </p>
           <pre><code>{
   "integration": "wikidata",
   "name": "default",
+  "revision": "22222222-2222-4222-8222-222222222222",
+  "provider": {
+    "origin": "https://www.wikidata.org",
+    "authentication": { "type": "none" }
+  },
   "inputs": { "userAgent": "my-wikidata-sync/1.0 (me@example.com)" },
   "authenticationInput": {}
 }</code></pre>
           <p>
-            The profile at <code>.beetl/profiles/wikidata/default.json</code> then selects that
-            connection and contains only sync inputs:
+            The profile at <code>profiles/wikidata/default.json</code> in the same directory then
+            selects that connection and contains only sync inputs:
           </p>
           <pre><code>{
   "integration": "wikidata",
   "sync": "entities",
   "connection": "default",
+  "revision": "11111111-1111-4111-8111-111111111111",
   "inputs": { "search": "open source", "language": "en", "maxResults": 25 }
 }</code></pre>
+          <p>
+            Generate a new UUID revision whenever directly provisioned inputs or authorization
+            change. <code>configure</code> and <code>connect</code> manage revisions automatically.
+          </p>
 
           <h3>Output record</h3>
           <pre><code>{
@@ -546,7 +566,9 @@ beetl-connect verify . --connection default</code></pre>
             runnable
             <a href="https://github.com/beetlio/connect/blob/main/examples/custom-host/host.ts"
               >custom host example</a
-            >.
+            >. <code>SyncHost</code> is a capability boundary, not a sandbox. Custom executors must
+            prevent integration code from reaching providers directly; production isolation and
+            provider-egress enforcement belong outside the integration runtime.
           </p>
 
           <h2>Development commands</h2>

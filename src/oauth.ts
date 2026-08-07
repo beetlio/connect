@@ -62,10 +62,14 @@ export async function authorizeOAuth(
     const callbackServer = createServer();
     await new Promise<void>((resolve, reject) => {
       callbackServer.once("error", reject);
-      callbackServer.listen(Number(redirect.port), redirect.hostname, () => {
-        callbackServer.removeListener("error", reject);
-        resolve();
-      });
+      callbackServer.listen(
+        Number(redirect.port),
+        redirect.hostname === "[::1]" ? "::1" : redirect.hostname,
+        () => {
+          callbackServer.removeListener("error", reject);
+          resolve();
+        },
+      );
     });
     try {
       const callbackPromise = waitForAuthorizationCallback(

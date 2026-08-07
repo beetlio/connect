@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { isDeepStrictEqual } from "node:util";
 
 import { object, or } from "@optique/core/constructs";
 import { message } from "@optique/core/message";
@@ -12,7 +14,9 @@ import { argument, command, constant, option } from "@optique/core/primitives";
 import { string, url } from "@optique/core/valueparser";
 import { run } from "@optique/run";
 import { path as pathValue } from "@optique/run/valueparser";
+import confirm from "@inquirer/confirm";
 import password from "@inquirer/password";
+import envPaths from "env-paths";
 import { z } from "zod";
 
 import { createIntegrationArchive, loadIntegration } from "./artifact.ts";
@@ -26,28 +30,38 @@ import type {
   JsonValue,
 } from "./index.ts";
 import { runSync, verifyConnection } from "./host.ts";
-import { LocalHost } from "./local-host.ts";
+import { LocalHost, replacePrivateFile, resolveProviderUrl } from "./local-host.ts";
 import { authorizeOAuth, type OAuthAuthorizationState } from "./oauth.ts";
 
 interface ProfileConfiguration {
+  readonly profile: string;
+  readonly revision: string;
   readonly connection: string;
   readonly inputs: JsonObject;
 }
 
 type JsonRecord = Record<string, JsonValue>;
+type PromptAnswer =
+  { readonly kind: "omit" } | { readonly kind: "value"; readonly value: JsonValue };
 
 const Package = z
   .object({ version: z.string() })
   .parse(createRequire(import.meta.url)("../package.json"));
 const DefaultProfile = "default";
 const DefaultConnection = "default";
+const ImplicitProfileRevision = "implicit";
+const LocalNamePattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+const UserConfigDirectory = envPaths("beetl-connect", { suffix: "" }).config;
+const ProviderFetch = globalThis.fetch.bind(globalThis);
 const EmptyInputs = z.strictObject({});
 const JsonObjectSchema = z.record(z.string(), z.json());
 const AuthenticationInputValuesSchema = z.record(z.string(), z.string());
+const LocalNameSchema = z.string().regex(LocalNamePattern);
 const ProfileSchema = z.strictObject({
   integration: z.string().min(1),
   sync: z.string().min(1),
-  connection: z.string().min(1),
+  connection: LocalNameSchema,
+  revision: z.uuid(),
   inputs: JsonObjectSchema.default({}),
 });
 type Profile = z.output<typeof ProfileSchema>;
@@ -62,28 +76,41 @@ const OAuthAuthorizationStateSchema = z
     ...(refreshToken === undefined ? {} : { refreshToken }),
     tokenFields,
   }));
+const ProviderBindingSchema = z.strictObject({
+  origin: z.url({ protocol: /^https?$/ }),
+  authentication: z.json(),
+});
+type ProviderBinding = z.output<typeof ProviderBindingSchema>;
 const StoredConnectionSchema = z.strictObject({
   integration: z.string().min(1),
-  name: z.string().min(1),
+  name: LocalNameSchema,
+  revision: z.uuid(),
+  provider: ProviderBindingSchema,
   baseUrl: z.url({ protocol: /^https?$/ }).optional(),
   inputs: JsonObjectSchema.default({}),
   authenticationInput: AuthenticationInputValuesSchema.default({}),
   authorizationState: OAuthAuthorizationStateSchema.optional(),
 });
 type StoredConnection = z.output<typeof StoredConnectionSchema>;
+
+Object.defineProperty(globalThis, "fetch", {
+  value: undefined,
+  configurable: false,
+  writable: false,
+});
 const integrationArgument = () =>
   argument(pathValue({ mustExist: true, type: "either", metavar: "INTEGRATION" }), {
     description: message`Integration file, directory, or .beetl.zip artifact.`,
   });
 const profileOption = () =>
   optional(
-    option("--profile", string({ metavar: "NAME", pattern: /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/ }), {
+    option("--profile", string({ metavar: "NAME", pattern: LocalNamePattern }), {
       description: message`Load a local configuration profile (default: default).`,
     }),
   );
 const connectionOption = () =>
   optional(
-    option("--connection", string({ metavar: "NAME", pattern: /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/ }), {
+    option("--connection", string({ metavar: "NAME", pattern: LocalNamePattern }), {
       description: message`Use a named connection (default: default).`,
     }),
   );
@@ -190,7 +217,7 @@ async function main(args = process.argv.slice(2)): Promise<void> {
     }
     const archive = await createIntegrationArchive(options.integrationPath);
     const outputPath = requestedOutput ?? resolve(archive.filename);
-    await savePrivateFile(outputPath, archive.bytes);
+    await replacePrivateFile(outputPath, archive.bytes);
     console.log(`Packed ${archive.manifest.integration.displayName} to ${outputPath}`);
     return;
   }
@@ -210,7 +237,7 @@ async function main(args = process.argv.slice(2)): Promise<void> {
       integration,
       manifest,
       syncKey,
-      resolve(`.beetl/profiles/${integration.key}/${profile}.json`),
+      join(UserConfigDirectory, "profiles", integration.key, `${profile}.json`),
       options.connection,
     );
     console.log(`Saved profile ${profile} for ${integration.displayName}/${syncKey}`);
@@ -219,7 +246,7 @@ async function main(args = process.argv.slice(2)): Promise<void> {
 
   if (options.command === "connect") {
     const name = options.connection ?? DefaultConnection;
-    const path = resolve(`.beetl/connections/${integration.key}/${name}.json`);
+    const path = join(UserConfigDirectory, "connections", integration.key, `${name}.json`);
     await connectConnection(integration, manifest, name, path, options.baseUrl);
     console.log(`Connected ${integration.displayName} as ${name}`);
     return;
@@ -228,8 +255,11 @@ async function main(args = process.argv.slice(2)): Promise<void> {
   if (options.command === "sync") {
     const syncKey = selectSyncKey(integration, options.syncKey);
     const configuration = await resolveProfile(integration, manifest, syncKey, options.profile);
-    const connectionPath = resolve(
-      `.beetl/connections/${integration.key}/${configuration.connection}.json`,
+    const connectionPath = join(
+      UserConfigDirectory,
+      "connections",
+      integration.key,
+      `${configuration.connection}.json`,
     );
     let connection = await readConnection(
       connectionPath,
@@ -244,18 +274,22 @@ async function main(args = process.argv.slice(2)): Promise<void> {
         connectionPath,
       );
     }
+    assertConnectionProvider(integration, manifest, connection);
     const outputPath = resolve(
       options.outputPath ??
         `${integration.key}-${syncKey}_${new Date().toISOString().replaceAll(":", "-")}.ndjson`,
     );
     const statePath = resolve(
-      options.statePath ?? `.beetl/state/${integration.key}/${syncKey}.json`,
+      options.statePath ??
+        `.beetl/state/${integration.key}/${configuration.profile}/${configuration.revision}/${configuration.connection}/${connection.revision}/${syncKey}.json`,
     );
     const controller = new AbortController();
-    const host = createLocalHost(integration, connection, connectionPath, {
+    const host = createLocalHost(integration, manifest, connection, {
       outputPath,
       statePath,
       signal: controller.signal,
+      onConnectionChanged: (updated) =>
+        replacePrivateFile(connectionPath, `${JSON.stringify(updated, null, 2)}\n`),
     });
     const abort = () => controller.abort(new Error("Interrupted"));
     process.once("SIGINT", abort);
@@ -282,16 +316,26 @@ async function main(args = process.argv.slice(2)): Promise<void> {
 
   if (options.command === "verify") {
     const name = options.connection ?? DefaultConnection;
-    const connectionPath = resolve(`.beetl/connections/${integration.key}/${name}.json`);
+    const connectionPath = join(
+      UserConfigDirectory,
+      "connections",
+      integration.key,
+      `${name}.json`,
+    );
     const connection = await readConnection(connectionPath, integration.key, name);
     if (connection === undefined) {
       throw new Error(`Connection ${JSON.stringify(name)} does not exist; run connect first`);
     }
+    assertConnectionProvider(integration, manifest, connection);
     const controller = new AbortController();
-    const host = createLocalHost(integration, connection, connectionPath, {
+    let verifiedConnection = connection;
+    const host = createLocalHost(integration, manifest, connection, {
       outputPath: resolve(`.beetl/output/${integration.key}/verify.ndjson`),
       statePath: resolve(`.beetl/state/${integration.key}/verify.json`),
       signal: controller.signal,
+      onConnectionChanged: (updated) => {
+        verifiedConnection = updated;
+      },
     });
     const abort = () => controller.abort(new Error("Interrupted"));
     process.once("SIGINT", abort);
@@ -304,6 +348,12 @@ async function main(args = process.argv.slice(2)): Promise<void> {
         },
         host,
       );
+      if (verifiedConnection !== connection) {
+        await replacePrivateFile(
+          connectionPath,
+          `${JSON.stringify(verifiedConnection, null, 2)}\n`,
+        );
+      }
       console.log(`Verified ${integration.displayName} connection ${name}`);
     } finally {
       process.removeListener("SIGINT", abort);
@@ -319,10 +369,11 @@ async function resolveProfile(
   requestedProfile: string | undefined,
 ): Promise<ProfileConfiguration> {
   const profileName = requestedProfile ?? DefaultProfile;
-  const path = resolve(`.beetl/profiles/${integration.key}/${profileName}.json`);
+  const path = join(UserConfigDirectory, "profiles", integration.key, `${profileName}.json`);
   const syncManifest = manifest.syncs.find((sync) => sync.key === syncKey);
   let profile = await readProfile(path);
   if (
+    requestedProfile === undefined &&
     profile === undefined &&
     syncManifest !== undefined &&
     Object.keys(syncManifest.inputs.properties).length > 0
@@ -331,7 +382,17 @@ async function resolveProfile(
     profile = await readProfile(path);
   }
   if (profile === undefined) {
-    return { connection: DefaultConnection, inputs: {} };
+    if (requestedProfile !== undefined) {
+      throw new Error(
+        `Profile ${JSON.stringify(requestedProfile)} does not exist; run configure first`,
+      );
+    }
+    return {
+      profile: profileName,
+      revision: ImplicitProfileRevision,
+      connection: DefaultConnection,
+      inputs: {},
+    };
   }
   if (profile.integration !== integration.key) {
     throw new Error(`Profile belongs to integration ${profile.integration}`);
@@ -339,7 +400,12 @@ async function resolveProfile(
   if (profile.sync !== syncKey) {
     throw new Error(`Profile belongs to sync ${profile.sync}`);
   }
-  return { connection: profile.connection, inputs: profile.inputs };
+  return {
+    profile: profileName,
+    revision: profile.revision,
+    connection: profile.connection,
+    inputs: profile.inputs,
+  };
 }
 
 async function configureProfile(
@@ -363,13 +429,24 @@ async function configureProfile(
   if (!parsedInputs.success) {
     throw new Error(`Invalid sync inputs: ${z.prettifyError(parsedInputs.error)}`);
   }
-  const profile: Profile = {
+  const values = {
     integration: integration.key,
     sync: syncKey,
     connection: requestedConnection ?? existing?.connection ?? DefaultConnection,
     inputs: JsonObjectSchema.parse(inputs),
   };
-  await savePrivateFile(path, `${JSON.stringify(profile, null, 2)}\n`);
+  const profile: Profile = {
+    ...values,
+    revision:
+      existing !== undefined &&
+      existing.integration === values.integration &&
+      existing.sync === values.sync &&
+      existing.connection === values.connection &&
+      isDeepStrictEqual(existing.inputs, values.inputs)
+        ? existing.revision
+        : randomUUID(),
+  };
+  await replacePrivateFile(path, `${JSON.stringify(profile, null, 2)}\n`);
 }
 
 async function promptObject(
@@ -379,10 +456,10 @@ async function promptObject(
   const required = new Set(schema.required ?? []);
   const values: JsonRecord = {};
   for (const [name, field] of Object.entries(schema.properties)) {
-    const current = existing[name] ?? field.default;
+    const current = Object.hasOwn(existing, name) ? existing[name] : field.default;
     const label = field.title ?? name;
-    const value = await promptValue(label, field, current, required.has(name));
-    if (value !== undefined) values[name] = value;
+    const answer = await promptValue(label, field, current, required.has(name));
+    if (answer.kind === "value") values[name] = answer.value;
   }
   return values;
 }
@@ -392,25 +469,32 @@ async function promptValue(
   schema: InputField,
   current: JsonValue | undefined,
   required: boolean,
-): Promise<JsonValue | undefined> {
+): Promise<PromptAnswer> {
   if (schema.type === "object") {
-    console.log(label);
-    return promptObject(
-      schema,
-      current !== null && typeof current === "object" && !Array.isArray(current) ? current : {},
-    );
+    if (
+      !required &&
+      !(await confirm({ message: `Configure ${label}?`, default: current !== undefined }))
+    ) {
+      return { kind: "omit" };
+    }
+    if (required) console.log(label);
+    return {
+      kind: "value",
+      value: await promptObject(
+        schema,
+        current !== null && typeof current === "object" && !Array.isArray(current) ? current : {},
+      ),
+    };
   }
   if (schema["x-beetl-widget"] === "password") {
     while (true) {
-      const answer = (
-        await password({
-          message: current === undefined ? label : `${label} [configured]`,
-          mask: true,
-        })
-      ).trim();
-      if (answer) return answer;
-      if (current !== undefined) return current;
-      if (!required) return undefined;
+      const answer = await password({
+        message: current === undefined ? label : `${label} [configured]`,
+        mask: true,
+      });
+      if (answer !== "") return { kind: "value", value: answer };
+      if (current !== undefined) return { kind: "value", value: current };
+      if (!required) return { kind: "omit" };
       console.error(`${label} is required`);
     }
   }
@@ -428,34 +512,34 @@ async function promptValue(
     while (true) {
       const answer = (await lines.question(`${label}${choices}${shown}: `)).trim();
       if (!answer) {
-        if (current !== undefined) return current;
-        if (!required) return undefined;
+        if (current !== undefined) return { kind: "value", value: current };
+        if (!required) return { kind: "omit" };
         console.error(`${label} is required`);
         continue;
       }
       if (schema.type === "integer" || schema.type === "number") {
         const value = Number(answer);
         if (Number.isFinite(value) && (schema.type !== "integer" || Number.isInteger(value))) {
-          return value;
+          return { kind: "value", value };
         }
         console.error(`${label} must be a ${schema.type}`);
         continue;
       }
       if (schema.type === "boolean") {
-        if (answer === "true") return true;
-        if (answer === "false") return false;
+        if (answer === "true") return { kind: "value", value: true };
+        if (answer === "false") return { kind: "value", value: false };
         console.error(`${label} must be true or false`);
         continue;
       }
       if (schema.type === "array" || schema["x-beetl-widget"] === "json") {
         try {
           const value = z.json().safeParse(JSON.parse(answer));
-          if (value.success) return value.data;
+          if (value.success) return { kind: "value", value: value.data };
         } catch {}
         console.error(`${label} must be valid JSON`);
         continue;
       }
-      return answer;
+      return { kind: "value", value: answer };
     }
   } finally {
     lines.close();
@@ -496,7 +580,13 @@ async function connectConnection(
   ) {
     throw new Error("connect requires an interactive terminal");
   }
-  const existing = await readConnection(path, integration.key, name);
+  const stored = await readConnection(path, integration.key, name);
+  const existing =
+    stored !== undefined &&
+    connectionMatchesProvider(integration, manifest, stored) &&
+    (baseUrl === undefined || baseUrl.origin === stored.provider.origin)
+      ? stored
+      : undefined;
   const inputs = await promptObject(manifest.connection.inputs, existing?.inputs ?? {});
   const authenticationInput = await promptObject(
     manifest.connection.authenticationInput,
@@ -521,30 +611,36 @@ async function connectConnection(
             auth: integration.connection.auth,
             authenticationInput: parsedAuthenticationInput,
             redirectUri: "http://127.0.0.1:53682/oauth/callback",
+            fetch: ProviderFetch,
             signal: controller.signal,
             onAuthorizationUrl: (url) => console.log(`Open this URL to authorize:\n${url}`),
           })
         : undefined;
-    const connection: StoredConnection = {
+    let connection = StoredConnectionSchema.parse({
       integration: integration.key,
       name,
+      revision: randomUUID(),
       ...(configuredBaseUrl === undefined ? {} : { baseUrl: configuredBaseUrl }),
       inputs: JsonObjectSchema.parse(inputs),
       authenticationInput: AuthenticationInputValuesSchema.parse(authenticationInput),
       ...(authorizationState === undefined ? {} : { authorizationState }),
-    };
-    await savePrivateFile(path, `${JSON.stringify(connection, null, 2)}\n`);
+      provider: providerBinding(integration, manifest, configuredBaseUrl, authorizationState),
+    });
     if (manifest.connection.canVerify) {
       await verifyConnection(
         integration,
         { connectionConfig: connection.inputs, signal: controller.signal },
-        createLocalHost(integration, connection, path, {
+        createLocalHost(integration, manifest, connection, {
           outputPath: resolve(`.beetl/output/${integration.key}/connect.ndjson`),
           statePath: resolve(`.beetl/state/${integration.key}/connect.json`),
           signal: controller.signal,
+          onConnectionChanged: (updated) => {
+            connection = updated;
+          },
         }),
       );
     }
+    await replacePrivateFile(path, `${JSON.stringify(connection, null, 2)}\n`);
     return connection;
   } finally {
     process.removeListener("SIGINT", abort);
@@ -553,13 +649,20 @@ async function connectConnection(
 
 function createLocalHost(
   integration: IntegrationDefinition,
+  manifest: IntegrationManifest,
   connection: StoredConnection,
-  connectionPath: string,
-  files: { outputPath: string; statePath: string; signal: AbortSignal },
+  options: {
+    outputPath: string;
+    statePath: string;
+    signal: AbortSignal;
+    onConnectionChanged(connection: StoredConnection): void | Promise<void>;
+  },
 ): LocalHost {
+  const { onConnectionChanged, ...files } = options;
   const auth = integration.connection.auth;
   return new LocalHost({
     baseUrl: connection.baseUrl ?? integration.connection.baseUrl,
+    fetch: ProviderFetch,
     ...(auth === undefined ? {} : { auth }),
     authenticationInput: parseAuthenticationInput(
       auth?.inputs ?? EmptyInputs,
@@ -568,11 +671,14 @@ function createLocalHost(
     ...(connection.authorizationState === undefined
       ? {}
       : { authorizationState: connection.authorizationState }),
-    onAuthorizationStateChanged: (authorizationState) =>
-      savePrivateFile(
-        connectionPath,
-        `${JSON.stringify({ ...connection, authorizationState }, null, 2)}\n`,
-      ),
+    onAuthorizationStateChanged: (authorizationState) => {
+      const updated = {
+        ...connection,
+        authorizationState,
+        provider: providerBinding(integration, manifest, connection.baseUrl, authorizationState),
+      };
+      return onConnectionChanged(updated);
+    },
     ...files,
   });
 }
@@ -586,6 +692,44 @@ function parseAuthenticationInput(
     throw new Error(`Invalid authentication input: ${z.prettifyError(result.error)}`);
   }
   return result.data;
+}
+
+function providerBinding(
+  integration: IntegrationDefinition,
+  manifest: IntegrationManifest,
+  baseUrl: string | undefined,
+  authorizationState: OAuthAuthorizationState | undefined,
+): ProviderBinding {
+  return {
+    origin: resolveProviderUrl(baseUrl ?? integration.connection.baseUrl, authorizationState)
+      .origin,
+    authentication: z.json().parse(manifest.connection.auth),
+  };
+}
+
+function connectionMatchesProvider(
+  integration: IntegrationDefinition,
+  manifest: IntegrationManifest,
+  connection: StoredConnection,
+): boolean {
+  try {
+    return isDeepStrictEqual(
+      connection.provider,
+      providerBinding(integration, manifest, connection.baseUrl, connection.authorizationState),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function assertConnectionProvider(
+  integration: IntegrationDefinition,
+  manifest: IntegrationManifest,
+  connection: StoredConnection,
+): void {
+  if (!connectionMatchesProvider(integration, manifest, connection)) {
+    throw new Error("Connection does not match this provider definition; run connect again");
+  }
 }
 
 async function readConnection(
@@ -616,18 +760,6 @@ async function readConnection(
   return connection.data;
 }
 
-async function savePrivateFile(path: string, value: string | Uint8Array): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporaryPath = `${path}.tmp-${process.pid}`;
-  try {
-    await writeFile(temporaryPath, value, { mode: 0o600 });
-    await rename(temporaryPath, path);
-  } catch (error) {
-    await rm(temporaryPath, { force: true });
-    throw error;
-  }
-}
-
 function selectSyncKey(integration: IntegrationDefinition, requested: string | undefined): string {
   if (requested !== undefined) {
     if (!integration.syncs.some((sync) => sync.key === requested)) {
@@ -651,7 +783,7 @@ function selectSyncKey(integration: IntegrationDefinition, requested: string | u
 
 if (import.meta.main) {
   main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : error);
+    console.error(error);
     process.exitCode = 1;
   });
 }
