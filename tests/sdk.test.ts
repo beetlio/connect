@@ -124,9 +124,10 @@ test("runSync parses every domain boundary and serializes emitted batches", asyn
   assert.deepEqual(result, { batches: 2, records: 2, checkpoint: 3 });
 });
 
-test("pagination yields records and provider cursors without exposing response envelopes", async () => {
+test("pagination yields records, cursors, and response metadata without response envelopes", async () => {
   const requests: string[] = [];
   const next: Array<string | number | undefined> = [];
+  const responses: unknown[] = [];
   const records: unknown[] = [];
   const Item = z.object({ id: z.number() });
   const integration = defineIntegration({
@@ -154,6 +155,7 @@ test("pagination yields records and provider cursors without exposing response e
             pagination: { limit: 2 },
           })) {
             next.push(page.nextPageParam);
+            responses.push(page.response);
             await ctx.emit({ records: page.records });
           }
         },
@@ -171,7 +173,10 @@ test("pagination yields records and provider cursors without exposing response e
         const continued = request.path.includes("after=two");
         return {
           status: 200,
-          headers: [["content-type", "application/json"]],
+          headers: [
+            ["content-type", "application/json"],
+            ["x-page", continued ? "two" : "one"],
+          ],
           body: new TextEncoder().encode(
             JSON.stringify(
               continued
@@ -187,7 +192,75 @@ test("pagination yields records and provider cursors without exposing response e
 
   assert.deepEqual(requests, ["/items?limit=2", "/items?after=two&limit=2"]);
   assert.deepEqual(next, ["two", undefined]);
+  assert.deepEqual(responses, [
+    {
+      status: 200,
+      headers: { "content-type": "application/json", "x-page": "one" },
+    },
+    {
+      status: 200,
+      headers: { "content-type": "application/json", "x-page": "two" },
+    },
+  ]);
   assert.deepEqual(records, [{ id: 1 }, { id: 2 }, { id: 3 }]);
+  assert.deepEqual(result, { batches: 2, records: 3 });
+});
+
+test("next-url pagination follows relative provider URLs", async () => {
+  const requests: string[] = [];
+  const next: Array<string | number | undefined> = [];
+  const Item = z.object({ id: z.number() });
+  const integration = defineIntegration({
+    key: "next-pages",
+    displayName: "Next pages",
+    connection: { baseUrl: "https://api.example.com" },
+    syncs: (defineSync) => [
+      defineSync({
+        key: "items",
+        displayName: "Items",
+        records: Item,
+        async run(ctx) {
+          for await (const page of ctx.paginate({
+            path: "/items?limit=2",
+            records: Item,
+            pagination: {
+              type: "next-url",
+              nextUrlPath: "next",
+              responsePath: "data",
+            },
+          })) {
+            next.push(page.nextPageParam);
+            await ctx.emit({ records: page.records });
+          }
+        },
+      }),
+    ],
+  });
+
+  const result = await runSync(
+    integration,
+    "items",
+    {},
+    syncHost({
+      async request(request) {
+        requests.push(request.path);
+        return {
+          status: 200,
+          headers: [["content-type", "application/json"]],
+          body: new TextEncoder().encode(
+            JSON.stringify(
+              request.path === "/items?limit=2"
+                ? { data: [{ id: 1 }, { id: 2 }], next: "/items/page/two" }
+                : { data: [{ id: 3 }] },
+            ),
+          ),
+        };
+      },
+    }),
+  );
+
+  assert.deepEqual(requests, ["/items?limit=2", "/items/page/two"]);
+  assert.deepEqual(next, ["/items/page/two", undefined]);
   assert.deepEqual(result, { batches: 2, records: 3 });
 });
 

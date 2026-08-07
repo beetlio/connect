@@ -9,6 +9,7 @@ import type {
   PaginationDefinition,
   PaginationOverride,
   PaginationPage,
+  PaginationResponseMetadata,
   RetryDefinition,
   SyncFetchInit,
   SyncDefinition,
@@ -507,6 +508,46 @@ async function* paginateRequests<Records extends z.ZodType>(
 ): AsyncGenerator<PaginationPage<z.output<Records>>, void, void> {
   const pagination = resolvePagination(defaults, options.pagination);
 
+  if (pagination.type === "next-url") {
+    let path = withQuery(options.path, {});
+    const seenPaths = new Set<string>();
+    while (true) {
+      if (seenPaths.has(path)) {
+        throw new Error("Provider repeated a pagination next URL");
+      }
+      seenPaths.add(path);
+      const response = await fetch(path, {
+        ...(options.headers === undefined ? {} : { headers: options.headers }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      });
+      const { body, metadata } = await parsePageResponse(response);
+      const records = parsePageRecords(options.records, body, pagination.responsePath);
+      const candidate = valueAtPath(body, pagination.nextUrlPath);
+      if (
+        candidate !== undefined &&
+        candidate !== null &&
+        (typeof candidate !== "string" || !candidate.trim())
+      ) {
+        throw new Error("Provider returned an invalid pagination next URL");
+      }
+      const nextPageParam =
+        typeof candidate === "string" && candidate.trim() ? withQuery(candidate, {}) : undefined;
+      if (records.length === 0) {
+        if (nextPageParam !== undefined) {
+          throw new Error("Provider returned an empty page with a pagination next URL");
+        }
+        return;
+      }
+      yield {
+        records,
+        ...(nextPageParam === undefined ? {} : { nextPageParam }),
+        response: metadata,
+      };
+      if (nextPageParam === undefined) return;
+      path = nextPageParam;
+    }
+  }
+
   if (pagination.type === "cursor") {
     let cursor = pagination.initialCursor;
     while (true) {
@@ -522,7 +563,7 @@ async function* paginateRequests<Records extends z.ZodType>(
           ...(options.signal === undefined ? {} : { signal: options.signal }),
         },
       );
-      const body = await parsePageResponse(response);
+      const { body, metadata } = await parsePageResponse(response);
       const records = parsePageRecords(options.records, body, pagination.responsePath);
       if (records.length === 0) {
         return;
@@ -539,6 +580,7 @@ async function* paginateRequests<Records extends z.ZodType>(
       yield {
         records,
         ...(hasNext ? { nextPageParam } : {}),
+        response: metadata,
       };
       if (!hasNext) {
         return;
@@ -561,7 +603,7 @@ async function* paginateRequests<Records extends z.ZodType>(
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       },
     );
-    const body = await parsePageResponse(response);
+    const { body, metadata } = await parsePageResponse(response);
     const records = parsePageRecords(options.records, body, pagination.responsePath);
     if (records.length === 0) {
       return;
@@ -572,6 +614,7 @@ async function* paginateRequests<Records extends z.ZodType>(
     yield {
       records,
       ...(hasNext ? { nextPageParam } : {}),
+      response: metadata,
     };
     if (!hasNext) {
       return;
@@ -595,11 +638,19 @@ function resolvePagination(
   return merged;
 }
 
-async function parsePageResponse(response: Response): Promise<unknown> {
+async function parsePageResponse(
+  response: Response,
+): Promise<{ body: unknown; metadata: PaginationResponseMetadata }> {
   if (!response.ok) {
     throw new Error(`Provider returned ${response.status} while paginating`);
   }
-  return (await response.json()) as unknown;
+  return {
+    body: (await response.json()) as unknown,
+    metadata: {
+      status: response.status,
+      headers: Object.fromEntries(response.headers.entries()),
+    },
+  };
 }
 
 function parsePageRecords<Records extends z.ZodType>(
@@ -694,14 +745,25 @@ function validateRetry(retry: RetryDefinition | undefined): void {
 }
 
 function validatePagination(pagination: PaginationDefinition): void {
-  const required =
-    pagination.type === "cursor"
-      ? [pagination.cursorParameter, pagination.cursorPath, pagination.limitParameter]
-      : [pagination.offsetParameter, pagination.limitParameter];
+  let required: readonly string[];
+  switch (pagination.type) {
+    case "cursor":
+      required = [pagination.cursorParameter, pagination.cursorPath, pagination.limitParameter];
+      break;
+    case "offset":
+      required = [pagination.offsetParameter, pagination.limitParameter];
+      break;
+    case "next-url":
+      required = [pagination.nextUrlPath];
+      break;
+    default:
+      throw new Error("Invalid pagination type");
+  }
   if (required.some((value) => !value?.trim())) {
     throw new Error(`Invalid ${pagination.type} pagination configuration`);
   }
   if (
+    pagination.type !== "next-url" &&
     pagination.limit !== undefined &&
     (!Number.isInteger(pagination.limit) || pagination.limit < 1)
   ) {

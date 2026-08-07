@@ -302,8 +302,9 @@ beetl-connect verify . --connection default</code></pre>
 
           <h3>Pagination</h3>
           <p>
-            <code>ctx.paginate()</code> supports cursor and offset pagination. It validates page
-            records before yielding them. Integrations can use <code>ctx.fetch()</code> directly
+            <code>ctx.paginate()</code> supports cursor, offset, and provider-supplied next-URL
+            pagination. It validates page records and includes response status and normalized
+            headers on each yielded page. Integrations can use <code>ctx.fetch()</code> directly
             when a provider requires a different strategy.
           </p>
 

@@ -315,19 +315,32 @@ export interface OffsetPagination {
   readonly increment?: "response-size" | "page";
 }
 
-export type PaginationDefinition = CursorPagination | OffsetPagination;
+export interface NextUrlPagination {
+  readonly type: "next-url";
+  readonly nextUrlPath: string;
+  readonly responsePath?: string;
+}
+
+export type PaginationDefinition = CursorPagination | OffsetPagination | NextUrlPagination;
 
 export type PaginationOverride =
   | ({ readonly type?: "cursor" } & Partial<Omit<CursorPagination, "type">>)
-  | ({ readonly type?: "offset" } & Partial<Omit<OffsetPagination, "type">>);
+  | ({ readonly type?: "offset" } & Partial<Omit<OffsetPagination, "type">>)
+  | ({ readonly type?: "next-url" } & Partial<Omit<NextUrlPagination, "type">>);
 
 type RecordSchema = z.ZodType;
 type CheckpointSchema = z.ZodType;
 type ConfigSchema = z.ZodType<JsonObject>;
 
+export interface PaginationResponseMetadata {
+  readonly status: number;
+  readonly headers: Readonly<Record<string, string>>;
+}
+
 export interface PaginationPage<RecordValue> {
   readonly records: readonly RecordValue[];
   readonly nextPageParam?: string | number;
+  readonly response: PaginationResponseMetadata;
 }
 
 export interface PaginateOptions<Records extends RecordSchema> {

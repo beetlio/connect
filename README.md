@@ -161,10 +161,11 @@ from its latest checkpoint. A sync can instead declare `mode: "snapshot"`; the
 CLI replaces the file selected by `--output` only after the new snapshot
 succeeds. Without `--output`, each run uses a new timestamped filename.
 
-`ctx.paginate()` supports cursor and offset APIs. Integrations can also issue
-requests directly for custom pagination and checkpoint strategies. Retries
-apply to safe HTTP methods by default and can be configured per connection.
-The CLI rejects provider response bodies larger than 16 MiB.
+`ctx.paginate()` supports cursor, offset, and provider-supplied next-URL APIs.
+Each yielded page includes the response status and normalized headers. Integrations can
+also issue requests directly for custom pagination and checkpoint strategies. Retries
+apply to safe HTTP methods by default and can be configured per connection. The CLI
+rejects provider response bodies larger than 16 MiB.
 
 ## Examples
 
