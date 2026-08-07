@@ -9,6 +9,7 @@ import { fixtureDirectory } from "./support.ts";
 
 const CliPath = resolve("dist/cli.js");
 const ProfileRevision = "11111111-1111-4111-8111-111111111111";
+const SecondProfileRevision = "33333333-3333-4333-8333-333333333333";
 const ConnectionRevision = "22222222-2222-4222-8222-222222222222";
 const Provider = {
   origin: "https://api.example.com",
@@ -104,7 +105,10 @@ test("CLI runs source integrations from typed profiles and Deno artifacts", asyn
   assert.equal(unconfigured.status, 1);
   assert.match(unconfigured.stderr, /configure requires an interactive terminal/);
 
-  const profile = join(workingDirectory, "user-config/beetl-connect/profiles/fixture/default.json");
+  const profile = join(
+    workingDirectory,
+    "user-config/beetl-connect/profiles/fixture/items/default.json",
+  );
   const connection = join(
     workingDirectory,
     "user-config/beetl-connect/connections/fixture/primary.json",
@@ -269,6 +273,29 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
   assert.equal(missingProfile.status, 1);
   assert.match(missingProfile.stderr, /Profile "prodution" does not exist/);
 
+  const profiles = join(directory, "user-config/beetl-connect/profiles/multiple");
+  await mkdir(join(profiles, "first"), { recursive: true });
+  await mkdir(join(profiles, "second"), { recursive: true });
+  await writeFile(
+    join(profiles, "first/default.json"),
+    JSON.stringify({
+      integration: "multiple",
+      sync: "first",
+      connection: "default",
+      revision: ProfileRevision,
+      inputs: {},
+    }),
+  );
+  await writeFile(
+    join(profiles, "second/default.json"),
+    JSON.stringify({
+      integration: "multiple",
+      sync: "second",
+      connection: "default",
+      revision: SecondProfileRevision,
+      inputs: {},
+    }),
+  );
   const output = join(directory, "second.ndjson");
   const selected = runCli(directory, "sync", directory, "second", "--output", output);
   assert.equal(selected.status, 0, selected.stderr);
@@ -288,7 +315,7 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
       await readFile(
         join(
           directory,
-          `.beetl/state/multiple/default/implicit/default/${savedConnection.revision}/second.json`,
+          `.beetl/state/multiple/default/${SecondProfileRevision}/default/${savedConnection.revision}/second.json`,
         ),
         "utf8",
       ),
@@ -319,7 +346,7 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
       await readFile(
         join(
           directory,
-          `.beetl/state/multiple/default/implicit/default/${replacedConnection.revision}/second.json`,
+          `.beetl/state/multiple/default/${SecondProfileRevision}/default/${replacedConnection.revision}/second.json`,
         ),
         "utf8",
       ),
@@ -403,12 +430,21 @@ test("dependency bundles require the npm lockfile and portable modules", async (
   );
   await writeFile(join(dependency, "index.js"), 'export const value = "portable";\n');
   await writeFile(join(dependency, "index.d.ts"), "export const value: Uint8Array;\n");
-  await writeFile(join(directory, "shared.ts"), 'export { value } from "runtime-specific";\n');
+  await writeFile(
+    join(integrationDirectory, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { baseUrl: ".", paths: { "@shared": ["../shared.ts"] } },
+    }),
+  );
+  await writeFile(
+    join(directory, "shared.ts"),
+    'export { value } from "./node_modules/runtime-specific/index.js";\n',
+  );
   await writeFile(
     join(integrationDirectory, "integration.ts"),
     `
       import { defineIntegration, z } from "@beetlio/connect";
-      import { value } from "../shared.ts";
+      import { value } from "@shared";
       export default defineIntegration({
         key: "runtime-specific",
         displayName: "Runtime specific",

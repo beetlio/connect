@@ -39,7 +39,7 @@ inspects the emitted NDJSON.
 
 ## Install
 
-Requires Node.js 24 or newer. Install the CLI globally:
+Requires Node.js 24.2 or newer. Install the CLI globally:
 
 ```sh
 npm install --global @beetlio/connect
@@ -224,7 +224,7 @@ directory at `connections/wikidata/default.json`:
 }
 ```
 
-Then provision `profiles/wikidata/default.json` in the same directory:
+Then provision `profiles/wikidata/entities/default.json` in the same directory:
 
 ```json
 {

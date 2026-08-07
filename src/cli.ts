@@ -235,7 +235,7 @@ async function main(args = process.argv.slice(2)): Promise<void> {
       integration,
       manifest,
       syncKey,
-      join(UserConfigDirectory, "profiles", integration.key, `${profile}.json`),
+      join(UserConfigDirectory, "profiles", integration.key, syncKey, `${profile}.json`),
       options.connection,
     );
     console.log(`Saved profile ${profile} for ${integration.displayName}/${syncKey}`);
@@ -326,14 +326,12 @@ async function main(args = process.argv.slice(2)): Promise<void> {
     }
     assertConnectionProvider(integration, manifest, connection);
     const controller = new AbortController();
-    let verifiedConnection = connection;
     const host = createLocalHost(integration, manifest, connection, {
       outputPath: resolve(`.beetl/output/${integration.key}/verify.ndjson`),
       statePath: resolve(`.beetl/state/${integration.key}/verify.json`),
       signal: controller.signal,
-      onConnectionChanged: (updated) => {
-        verifiedConnection = updated;
-      },
+      onConnectionChanged: (updated) =>
+        replacePrivateFile(connectionPath, `${JSON.stringify(updated, null, 2)}\n`),
     });
     const abort = () => controller.abort(new Error("Interrupted"));
     process.once("SIGINT", abort);
@@ -346,12 +344,6 @@ async function main(args = process.argv.slice(2)): Promise<void> {
         },
         host,
       );
-      if (verifiedConnection !== connection) {
-        await replacePrivateFile(
-          connectionPath,
-          `${JSON.stringify(verifiedConnection, null, 2)}\n`,
-        );
-      }
       console.log(`Verified ${integration.displayName} connection ${name}`);
     } finally {
       process.removeListener("SIGINT", abort);
@@ -367,7 +359,13 @@ async function resolveProfile(
   requestedProfile: string | undefined,
 ): Promise<ProfileConfiguration> {
   const profileName = requestedProfile ?? DefaultProfile;
-  const path = join(UserConfigDirectory, "profiles", integration.key, `${profileName}.json`);
+  const path = join(
+    UserConfigDirectory,
+    "profiles",
+    integration.key,
+    syncKey,
+    `${profileName}.json`,
+  );
   const syncManifest = manifest.syncs.find((sync) => sync.key === syncKey);
   let profile = await readProfile(path);
   if (
@@ -483,6 +481,13 @@ async function promptValue(
         current !== null && typeof current === "object" && !Array.isArray(current) ? current : {},
       ),
     };
+  }
+  if (
+    !required &&
+    current !== undefined &&
+    !(await confirm({ message: `Keep ${label}?`, default: true }))
+  ) {
+    return { kind: "omit" };
   }
   if (schema["x-beetl-widget"] === "password") {
     while (true) {

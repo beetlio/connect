@@ -383,6 +383,26 @@ function assertSize(name: string, bytes: Uint8Array, maximum: number): void {
 
 async function validateLockedDependencies(entryPath: string, metafile: Metafile): Promise<void> {
   const workingDirectory = dirname(entryPath);
+  const directPackageRoots = new Set<string>();
+  const sdkDirectory = dirname(SdkEntry);
+  for (const [input, metadata] of Object.entries(metafile.inputs)) {
+    const inputPath = resolve(workingDirectory, input);
+    const sdkRelative = relative(sdkDirectory, inputPath);
+    const isSdk =
+      sdkRelative !== ".." &&
+      !sdkRelative.startsWith("../") &&
+      !sdkRelative.startsWith("..\\") &&
+      !isAbsolute(sdkRelative);
+    if (isSdk || inputPath.replaceAll("\\", "/").split("/").includes("node_modules")) continue;
+    for (const imported of metadata.imports) {
+      const importedPath = resolve(workingDirectory, imported.path);
+      if (!importedPath.replaceAll("\\", "/").split("/").includes("node_modules")) continue;
+      const root = await findPackageRoot(importedPath);
+      if (root !== undefined) directPackageRoots.add(root);
+    }
+  }
+  if (directPackageRoots.size === 0) return;
+
   let packageDirectory: string | undefined;
   let packageManifest: z.infer<typeof ProjectPackageSchema> | undefined;
   for (let directory = workingDirectory; ; directory = dirname(directory)) {
@@ -397,40 +417,17 @@ async function validateLockedDependencies(entryPath: string, metafile: Metafile)
     }
     if (dirname(directory) === directory) break;
   }
-
-  const directDependencies = new Set<string>();
-  const sdkDirectory = dirname(SdkEntry);
-  for (const [input, metadata] of Object.entries(metafile.inputs)) {
-    const inputPath = resolve(workingDirectory, input);
-    const sdkRelative = relative(sdkDirectory, inputPath);
-    const isSdk =
-      sdkRelative !== ".." &&
-      !sdkRelative.startsWith("../") &&
-      !sdkRelative.startsWith("..\\") &&
-      !isAbsolute(sdkRelative);
-    if (isSdk || inputPath.replaceAll("\\", "/").split("/").includes("node_modules")) continue;
-    for (const imported of metadata.imports) {
-      const specifier = imported.original;
-      if (
-        specifier === undefined ||
-        specifier === "@beetlio/connect" ||
-        specifier.startsWith(".") ||
-        specifier.startsWith("/") ||
-        specifier.includes(":")
-      ) {
-        continue;
-      }
-      const segments = specifier.split("/");
-      directDependencies.add(
-        specifier.startsWith("@") ? segments.slice(0, 2).join("/") : segments[0]!,
-      );
-    }
-  }
-  if (directDependencies.size === 0) return;
   if (packageDirectory === undefined || packageManifest === undefined) {
     throw new Error("Integrations with npm dependencies require a package.json");
   }
 
+  const directDependencies = new Set<string>();
+  for (const root of directPackageRoots) {
+    const dependency = NpmPackageSchema.parse(
+      JSON.parse(await readFile(join(root, "package.json"), "utf8")),
+    ).name;
+    if (dependency !== undefined) directDependencies.add(dependency);
+  }
   const declared = {
     ...packageManifest.dependencies,
     ...packageManifest.optionalDependencies,
