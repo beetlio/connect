@@ -59,6 +59,51 @@ test("authentication stays on secure origins and supports declarative fields", a
   assert.equal(account, "acct_123");
 });
 
+test("token exchange authentication caches tokens and refreshes after a 401", async () => {
+  let exchanges = 0;
+  let rejectFirstToken = false;
+  const host = new LocalHost({
+    origin: "https://api.example.com",
+    auth: auth.tokenExchange({
+      credentials: credential.object({
+        clientId: credential.string(),
+        apiKey: credential.secret(),
+      }),
+      tokenUrl: "/login",
+      headers: { "x-client-id": "clientId", "x-api-key": "apiKey" },
+    }),
+    credentials: { clientId: "client-id", apiKey: "secret" },
+    outputPath: "unused",
+    statePath: "unused",
+    fetch: async (input, init) => {
+      if (String(input) === "https://api.example.com/login") {
+        exchanges += 1;
+        const headers = new Headers(init?.headers);
+        assert.equal(init?.method, "POST");
+        assert.equal(headers.get("x-client-id"), "client-id");
+        assert.equal(headers.get("x-api-key"), "secret");
+        return Response.json({
+          token: `token-${exchanges}`,
+          expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+        });
+      }
+      const authorization = new Headers(init?.headers).get("authorization");
+      if (rejectFirstToken && authorization === "Bearer token-1") {
+        return new Response(null, { status: 401 });
+      }
+      assert.equal(authorization, `Bearer token-${exchanges}`);
+      return new Response(null, { status: 204 });
+    },
+  });
+
+  assert.equal((await host.request(Request)).status, 204);
+  assert.equal((await host.request(Request)).status, 204);
+  assert.equal(exchanges, 1);
+  rejectFirstToken = true;
+  assert.equal((await host.request(Request)).status, 204);
+  assert.equal(exchanges, 2);
+});
+
 test("retry policy retries transient responses and can be disabled", async () => {
   let calls = 0;
   const host = new LocalHost({

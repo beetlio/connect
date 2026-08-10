@@ -46,7 +46,7 @@ export type InputField = InputObjectSchema | InputValueSchema;
 
 export interface IntegrationManifest {
   readonly manifestVersion: 1;
-  readonly hostProtocolVersion: 1;
+  readonly hostProtocolVersion: 1 | 2;
   readonly integration: {
     readonly key: string;
     readonly displayName: string;
@@ -88,7 +88,7 @@ export function createIntegrationManifest(integration: IntegrationDefinition): I
   }
   return {
     manifestVersion: 1,
-    hostProtocolVersion: 1,
+    hostProtocolVersion: authentication?.type === "token_exchange" ? 2 : 1,
     integration: {
       key: integration.key,
       displayName: integration.displayName,

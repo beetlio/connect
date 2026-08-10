@@ -355,10 +355,29 @@ export function validateIntegration(integration: IntegrationDefinition): void {
   ) {
     throw new Error("Custom authentication must inject at least one header or query parameter");
   }
+  if (auth.type === "token_exchange") {
+    if (Object.keys(auth.headers).length === 0) {
+      throw new Error("Token exchange authentication must inject at least one header");
+    }
+    if (
+      !auth.tokenUrl.startsWith("/") ||
+      auth.tokenUrl.startsWith("//") ||
+      auth.tokenUrl.includes("\\")
+    ) {
+      throw new Error("Token exchange URL must be a relative-origin path beginning with /");
+    }
+    if (
+      [auth.tokenPath, auth.expiresAtPath].some(
+        (path) => !path.trim() || path.split(".").some((segment) => !segment),
+      )
+    ) {
+      throw new Error("Token exchange response paths cannot be empty");
+    }
+  }
   const headerNames =
     auth.type === "api_key" && auth.in === "header"
       ? [auth.name]
-      : auth.type === "custom"
+      : auth.type === "custom" || auth.type === "token_exchange"
         ? Object.keys(auth.headers)
         : [];
   for (const name of headerNames) {
@@ -538,7 +557,8 @@ async function* paginateRequests<Records extends z.ZodType>(
       const response = await fetchPage(path);
       const { body, metadata } = await parsePageResponse(response);
       const records = await parsePageRecords(options.records, body, pagination.responsePath);
-      const candidate = valueAtPath(body, pagination.nextUrlPath);
+      const hasMore = parseHasMore(body, pagination.hasMorePath);
+      const candidate = hasMore === false ? undefined : valueAtPath(body, pagination.nextUrlPath);
       if (
         candidate !== undefined &&
         candidate !== null &&
@@ -548,6 +568,9 @@ async function* paginateRequests<Records extends z.ZodType>(
       }
       const nextPageParam =
         typeof candidate === "string" && candidate.trim() ? withQuery(candidate, {}) : undefined;
+      if (hasMore === true && nextPageParam === undefined) {
+        throw new Error("Provider returned has-more=true without a pagination next URL");
+      }
       if (records.length === 0 && nextPageParam === undefined) return;
       yield {
         records,
@@ -573,7 +596,8 @@ async function* paginateRequests<Records extends z.ZodType>(
       );
       const { body, metadata } = await parsePageResponse(response);
       const records = await parsePageRecords(options.records, body, pagination.responsePath);
-      const candidate = valueAtPath(body, pagination.cursorPath);
+      const hasMore = parseHasMore(body, pagination.hasMorePath);
+      const candidate = hasMore === false ? undefined : valueAtPath(body, pagination.cursorPath);
       let nextPageParam: string | number | undefined;
       if (candidate !== undefined && candidate !== null) {
         if (!(
@@ -588,6 +612,9 @@ async function* paginateRequests<Records extends z.ZodType>(
           throw new Error("Provider repeated a pagination cursor");
         }
         seenCursors.add(key);
+      }
+      if (hasMore === true && nextPageParam === undefined) {
+        throw new Error("Provider returned has-more=true without a pagination cursor");
       }
       if (records.length === 0 && nextPageParam === undefined) return;
       yield {
@@ -612,12 +639,17 @@ async function* paginateRequests<Records extends z.ZodType>(
     );
     const { body, metadata } = await parsePageResponse(response);
     const records = await parsePageRecords(options.records, body, pagination.responsePath);
-    if (records.length === 0) {
+    const hasMore = parseHasMore(body, pagination.hasMorePath);
+    if (records.length === 0 && hasMore !== true) {
       return;
+    }
+    if (records.length === 0 && pagination.increment !== "page") {
+      throw new Error("Provider returned has-more=true without records to advance the offset");
     }
 
     const nextPageParam = pagination.increment === "page" ? offset + 1 : offset + records.length;
-    const hasNext = pagination.limit === undefined || records.length >= pagination.limit;
+    const hasNext =
+      hasMore ?? (pagination.limit === undefined || records.length >= pagination.limit);
     yield {
       records,
       ...(hasNext ? { nextPageParam } : {}),
@@ -648,11 +680,26 @@ function resolvePagination(
 async function parsePageResponse(
   response: Response,
 ): Promise<{ body: unknown; metadata: PaginationResponseMetadata }> {
+  const text = await response.text();
   if (!response.ok) {
-    throw new Error(`Provider returned ${response.status} while paginating`);
+    const requestId =
+      response.headers.get("x-request-id") ??
+      response.headers.get("request-id") ??
+      response.headers.get("x-correlation-id") ??
+      response.headers.get("trace-id");
+    const detail = text.replace(/\s+/g, " ").trim().slice(0, 1_000);
+    throw new Error(
+      `Provider returned ${response.status} while paginating${requestId ? ` [${requestId}]` : ""}${detail ? ` (${detail})` : ""}`,
+    );
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(text) as unknown;
+  } catch (error) {
+    throw new Error("Provider returned invalid JSON while paginating", { cause: error });
   }
   return {
-    body: (await response.json()) as unknown,
+    body,
     metadata: {
       status: response.status,
       headers: Object.fromEntries(response.headers.entries()),
@@ -685,6 +732,15 @@ function valueAtPath(value: unknown, path: string): unknown {
   return current;
 }
 
+function parseHasMore(body: unknown, path: string | undefined): boolean | undefined {
+  if (path === undefined) return undefined;
+  const value = valueAtPath(body, path);
+  if (typeof value !== "boolean") {
+    throw new Error("Provider returned an invalid has-more value");
+  }
+  return value;
+}
+
 function withQuery(path: string, values: Readonly<Record<string, string>>): string {
   if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\")) {
     throw new Error("ctx.paginate requires a relative-origin path beginning with /");
@@ -708,6 +764,7 @@ function credentialReferences(auth: AuthDefinition): readonly string[] {
   if (auth.type === "oauth2_authorization_code") {
     return ["clientId", ...(auth.usesClientSecret ? ["clientSecret"] : [])];
   }
+  if (auth.type === "token_exchange") return Object.values(auth.headers);
   return [...Object.values(auth.headers), ...Object.values(auth.query)];
 }
 
@@ -775,6 +832,9 @@ function validatePagination(pagination: PaginationDefinition): void {
   }
   if (pagination.responsePath !== undefined && !pagination.responsePath.trim()) {
     throw new Error("Pagination responsePath cannot be empty");
+  }
+  if (pagination.hasMorePath !== undefined && !pagination.hasMorePath.trim()) {
+    throw new Error("Pagination hasMorePath cannot be empty");
   }
   if (
     pagination.type === "cursor" &&

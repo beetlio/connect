@@ -147,6 +147,7 @@ test("pagination yields records, cursors, and response metadata without response
         type: "cursor",
         cursorParameter: "after",
         cursorPath: "paging.next",
+        hasMorePath: "paging.has_more",
         limitParameter: "limit",
         responsePath: "data",
       },
@@ -189,10 +190,13 @@ test("pagination yields records, cursors, and response metadata without response
           body: new TextEncoder().encode(
             JSON.stringify(
               third
-                ? { data: [{ id: 3 }], paging: {} }
+                ? { data: [{ id: 3 }], paging: { next: "stale", has_more: false } }
                 : second
-                  ? { data: [{ id: 1 }, { id: 2 }], paging: { next: "three" } }
-                  : { data: [], paging: { next: "two" } },
+                  ? {
+                      data: [{ id: 1 }, { id: 2 }],
+                      paging: { next: "three", has_more: true },
+                    }
+                  : { data: [], paging: { next: "two", has_more: true } },
             ),
           ),
         };
@@ -234,12 +238,34 @@ test("pagination yields records, cursors, and response metadata without response
           return {
             status: 200,
             headers: [["content-type", "application/json"]],
-            body: new TextEncoder().encode(JSON.stringify({ data: [], paging: { next: true } })),
+            body: new TextEncoder().encode(
+              JSON.stringify({ data: [], paging: { next: true, has_more: true } }),
+            ),
           };
         },
       }),
     ),
     /invalid pagination cursor/,
+  );
+
+  await assert.rejects(
+    runSync(
+      integration,
+      "items",
+      {},
+      syncHost({
+        async request() {
+          return {
+            status: 200,
+            headers: [["content-type", "application/json"]],
+            body: new TextEncoder().encode(
+              JSON.stringify({ data: [], paging: { has_more: true } }),
+            ),
+          };
+        },
+      }),
+    ),
+    /has-more=true without a pagination cursor/,
   );
 
   const cursors = ["A", "B", "A"];
@@ -254,7 +280,7 @@ test("pagination yields records, cursors, and response metadata without response
             status: 200,
             headers: [["content-type", "application/json"]],
             body: new TextEncoder().encode(
-              JSON.stringify({ data: [], paging: { next: cursors.shift() } }),
+              JSON.stringify({ data: [], paging: { next: cursors.shift(), has_more: true } }),
             ),
           };
         },
@@ -284,6 +310,7 @@ test("next-url pagination follows relative URLs across empty pages", async () =>
             pagination: {
               type: "next-url",
               nextUrlPath: "next",
+              hasMorePath: "has_more",
               responsePath: "data",
             },
           })) {
@@ -308,8 +335,8 @@ test("next-url pagination follows relative URLs across empty pages", async () =>
           body: new TextEncoder().encode(
             JSON.stringify(
               request.path === "/items?limit=2"
-                ? { data: [], next: "/items/page/two" }
-                : { data: [{ id: 3 }] },
+                ? { data: [], next: "/items/page/two", has_more: true }
+                : { data: [{ id: 3 }], next: "/items/stale", has_more: false },
             ),
           ),
         };
@@ -320,6 +347,86 @@ test("next-url pagination follows relative URLs across empty pages", async () =>
   assert.deepEqual(requests, ["/items?limit=2", "/items/page/two"]);
   assert.deepEqual(next, ["/items/page/two", undefined]);
   assert.deepEqual(result, { batches: 2, records: 1 });
+});
+
+test("hasMorePath controls offset pagination independently of page length", async () => {
+  const requests: string[] = [];
+  const Item = z.object({ id: z.number() });
+  const integration = defineIntegration({
+    key: "has-more-pages",
+    displayName: "Has more pages",
+    connection: { origin: "https://api.example.com" },
+    syncs: (defineSync) => [
+      defineSync({
+        key: "items",
+        displayName: "Items",
+        records: Item,
+        async run(ctx) {
+          for await (const page of ctx.paginate({
+            path: "/items",
+            records: Item,
+            pagination: {
+              type: "offset",
+              offsetParameter: "page",
+              limitParameter: "size",
+              limit: 2,
+              increment: "page",
+              responsePath: "data",
+              hasMorePath: "paging.has_more",
+            },
+          })) {
+            await ctx.emit({ records: page.records });
+          }
+        },
+      }),
+    ],
+  });
+
+  const result = await runSync(
+    integration,
+    "items",
+    {},
+    syncHost({
+      async request(request) {
+        requests.push(request.path);
+        const second = request.path.includes("page=1");
+        return {
+          status: 200,
+          headers: [["content-type", "application/json"]],
+          body: new TextEncoder().encode(
+            JSON.stringify(
+              second
+                ? { data: [{ id: 2 }, { id: 3 }], paging: { has_more: false } }
+                : { data: [{ id: 1 }], paging: { has_more: true } },
+            ),
+          ),
+        };
+      },
+    }),
+  );
+
+  assert.deepEqual(requests, ["/items?page=0&size=2", "/items?page=1&size=2"]);
+  assert.deepEqual(result, { batches: 2, records: 3 });
+
+  await assert.rejects(
+    runSync(
+      integration,
+      "items",
+      {},
+      syncHost({
+        async request() {
+          return {
+            status: 200,
+            headers: [["content-type", "application/json"]],
+            body: new TextEncoder().encode(
+              JSON.stringify({ data: [], paging: { has_more: "yes" } }),
+            ),
+          };
+        },
+      }),
+    ),
+    /invalid has-more value/,
+  );
 });
 
 test("connection verification can recover from caught request failures", async () => {
@@ -444,6 +551,26 @@ test("integration contracts enforce authentication and input invariants", () => 
       ),
     /initialDelayMs cannot exceed maxDelayMs/,
   );
+  assert.throws(
+    () =>
+      validateIntegration(
+        defineIntegration({
+          key: "pagination",
+          displayName: "Pagination",
+          connection: {
+            origin: "https://example.com",
+            pagination: {
+              type: "offset",
+              offsetParameter: "page",
+              limitParameter: "size",
+              hasMorePath: "",
+            },
+          },
+          syncs: [],
+        }),
+      ),
+    /hasMorePath cannot be empty/,
+  );
   const authenticatedHttp = defineIntegration({
     key: "authenticated-http",
     displayName: "Authenticated HTTP",
@@ -564,5 +691,45 @@ test("integration contracts enforce authentication and input invariants", () => 
         }),
       ),
     /query parameter names cannot be empty/,
+  );
+  const tokenExchange = auth.tokenExchange({
+    credentials: credential.object({ apiKey: credential.secret() }),
+    tokenUrl: "/login",
+    headers: { "x-api-key": "apiKey" },
+  });
+  const tokenExchangeManifest = createIntegrationManifest(
+    defineIntegration({
+      key: "token-exchange",
+      displayName: "Token exchange",
+      connection: { origin: "https://example.com", auth: tokenExchange },
+      syncs: [],
+    }),
+  );
+  assert.equal(tokenExchangeManifest.hostProtocolVersion, 2);
+  assert.deepEqual(tokenExchangeManifest.connection.auth, {
+    type: "token_exchange",
+    tokenUrl: "/login",
+    headers: { "x-api-key": "apiKey" },
+    tokenPath: "token",
+    expiresAtPath: "expires_at",
+  });
+  assert.throws(
+    () =>
+      validateIntegration(
+        defineIntegration({
+          key: "invalid-token-exchange",
+          displayName: "Invalid token exchange",
+          connection: {
+            origin: "https://example.com",
+            auth: auth.tokenExchange({
+              credentials: credential.object({ apiKey: credential.secret() }),
+              tokenUrl: "https://elsewhere.example/login",
+              headers: { "x-api-key": "apiKey" },
+            }),
+          },
+          syncs: [],
+        }),
+      ),
+    /relative-origin path/,
   );
 });

@@ -31,7 +31,7 @@ inspects the emitted NDJSON.
 
 - Builds and runs TypeScript API integrations from one CLI
 - Validates provider responses and output records with Zod
-- Bearer, basic, API-key, custom, and OAuth 2.0 authentication
+- Bearer, basic, API-key, token-exchange, custom, and OAuth 2.0 authentication
 - Cursor and offset pagination helpers
 - Managed retries, incremental checkpoints, and atomic snapshots
 - Self-contained, Deno-compatible `.beetl.zip` artifacts
@@ -152,6 +152,10 @@ the integration. For OAuth, it then opens the authorization flow and stores the
 provider-issued access token, refresh token, and other declared token fields as
 authorization state. Integration code receives none of these secrets.
 
+`auth.tokenExchange()` supports APIs that exchange long-lived credentials for a
+short-lived bearer token. The host caches the token until its declared expiration and
+automatically exchanges it again before expiry or after a 401 response.
+
 ```sh
 beetl-connect connect .
 beetl-connect configure . repositories
@@ -182,10 +186,11 @@ files are retained, and `--state` can select one explicitly.
 
 `ctx.paginate()` supports cursor, offset, and provider-supplied next-URL APIs.
 Each yielded page includes the response status and normalized headers. Integrations can
-also issue requests directly for custom pagination and checkpoint strategies. Retries
-apply to safe HTTP methods by default and can be configured per connection. The CLI
-rejects malformed or repeated continuations, follows continuations across empty pages,
-limits pagination to 10,000 pages, and rejects provider response bodies larger than 16 MiB.
+optionally set `hasMorePath` when a response boolean explicitly controls whether pagination
+continues. They can also issue requests directly for custom pagination and checkpoint strategies.
+Retries apply to safe HTTP methods by default and can be configured per connection. The CLI rejects
+malformed or repeated continuations, follows continuations across empty pages, limits pagination to
+10,000 pages, and rejects provider response bodies larger than 16 MiB.
 
 ## Examples
 

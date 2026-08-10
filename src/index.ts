@@ -387,6 +387,13 @@ export type AuthManifest =
       tokenFields: Readonly<Record<string, string>>;
     }
   | {
+      type: "token_exchange";
+      tokenUrl: string;
+      headers: Readonly<Record<string, string>>;
+      tokenPath: string;
+      expiresAtPath: string;
+    }
+  | {
       type: "custom";
       headers: Readonly<Record<string, string>>;
       query: Readonly<Record<string, string>>;
@@ -462,6 +469,23 @@ export const auth = {
     };
   },
 
+  tokenExchange<const Shape extends CredentialShape>(options: {
+    credentials: CredentialObject<Shape>;
+    tokenUrl: string;
+    headers: Readonly<Record<string, string>>;
+    tokenPath?: string;
+    expiresAtPath?: string;
+  }): AuthDefinition {
+    return {
+      type: "token_exchange",
+      credentials: options.credentials,
+      tokenUrl: options.tokenUrl,
+      headers: options.headers,
+      tokenPath: options.tokenPath ?? "token",
+      expiresAtPath: options.expiresAtPath ?? "expires_at",
+    };
+  },
+
   custom<const Shape extends CredentialShape>(options: {
     credentials: CredentialObject<Shape>;
     headers?: Readonly<Record<string, string>>;
@@ -480,6 +504,7 @@ export interface CursorPagination {
   readonly type: "cursor";
   readonly cursorParameter: string;
   readonly cursorPath: string;
+  readonly hasMorePath?: string;
   readonly limitParameter: string;
   readonly limit?: number;
   readonly responsePath?: string;
@@ -489,6 +514,7 @@ export interface CursorPagination {
 export interface OffsetPagination {
   readonly type: "offset";
   readonly offsetParameter: string;
+  readonly hasMorePath?: string;
   readonly limitParameter: string;
   readonly limit?: number;
   readonly responsePath?: string;
@@ -499,6 +525,7 @@ export interface OffsetPagination {
 export interface NextUrlPagination {
   readonly type: "next-url";
   readonly nextUrlPath: string;
+  readonly hasMorePath?: string;
   readonly responsePath?: string;
 }
 

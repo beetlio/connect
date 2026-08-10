@@ -37,8 +37,10 @@ export class LocalHost implements SyncHost {
   readonly #auth: AuthDefinition | { readonly type: "none" };
   readonly #credentials: Readonly<Record<string, string>>;
   #authorizationState: OAuthAuthorizationState | undefined;
+  #tokenExchangeState: { readonly accessToken: string; readonly expiresAt: number } | undefined;
   #authorizationVersion = 0;
   #refreshing: Promise<boolean> | undefined;
+  #exchanging: Promise<boolean> | undefined;
   readonly #outputPath: string;
   readonly #statePath: string;
   #snapshotPath: string | undefined;
@@ -69,6 +71,7 @@ export class LocalHost implements SyncHost {
 
     for (let attempt = 1; ; attempt += 1) {
       requestSignal?.throwIfAborted();
+      await this.#exchangeToken(requestSignal);
       const authorizationVersion = this.#authorizationVersion;
       const url = new URL(request.path, this.#origin);
       if (url.origin !== this.#origin.origin) {
@@ -106,7 +109,7 @@ export class LocalHost implements SyncHost {
         response.status === 401 &&
         !refreshed &&
         (authorizationVersion !== this.#authorizationVersion ||
-          (await this.#refreshOAuth(requestSignal)))
+          (await this.#refreshAuthentication(requestSignal)))
       ) {
         refreshed = true;
         attempt -= 1;
@@ -212,6 +215,12 @@ export class LocalHost implements SyncHost {
       headers.set("authorization", `Bearer ${accessToken}`);
       return;
     }
+    if (this.#auth.type === "token_exchange") {
+      const accessToken = this.#tokenExchangeState?.accessToken;
+      if (accessToken === undefined) throw new Error("Authentication token exchange failed");
+      headers.set("authorization", `Bearer ${accessToken}`);
+      return;
+    }
     if (this.#auth.type === "basic") {
       const value = Buffer.from(
         `${this.#credential("username")}:${this.#credential("password")}`,
@@ -244,6 +253,78 @@ export class LocalHost implements SyncHost {
     return value;
   }
 
+  async #refreshAuthentication(waiterSignal: AbortSignal | undefined): Promise<boolean> {
+    if (this.#auth.type === "token_exchange") {
+      return this.#exchangeToken(waiterSignal, true);
+    }
+    return this.#refreshOAuth(waiterSignal);
+  }
+
+  async #exchangeToken(waiterSignal: AbortSignal | undefined, force = false): Promise<boolean> {
+    if (this.#auth.type !== "token_exchange") return false;
+    if (
+      !force &&
+      this.#tokenExchangeState !== undefined &&
+      this.#tokenExchangeState.expiresAt > Date.now() + 30_000
+    ) {
+      return false;
+    }
+    waiterSignal?.throwIfAborted();
+    const exchanging = (this.#exchanging ??= this.#performTokenExchange(this.#signal).finally(
+      () => {
+        this.#exchanging = undefined;
+      },
+    ));
+    return waitForShared(exchanging, waiterSignal);
+  }
+
+  async #performTokenExchange(signal: AbortSignal | undefined): Promise<boolean> {
+    if (this.#auth.type !== "token_exchange") return false;
+    const url = new URL(this.#auth.tokenUrl, this.#origin);
+    if (url.origin !== this.#origin.origin) {
+      throw new Error("Token exchange escaped the configured provider origin");
+    }
+    const headers = new Headers({ accept: "application/json", "content-type": "application/json" });
+    for (const [name, field] of Object.entries(this.#auth.headers)) {
+      headers.set(name, this.#credential(field));
+    }
+    const response = await this.#fetch(url, {
+      method: "POST",
+      headers,
+      redirect: "manual",
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const responseBody = await readResponseBody(response);
+    if (!response.ok) {
+      const detail = new TextDecoder()
+        .decode(responseBody)
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 1_000);
+      throw new Error(
+        `Token exchange failed with ${response.status}${detail ? ` (${detail})` : ""}`,
+      );
+    }
+    let body: unknown;
+    try {
+      body = JSON.parse(new TextDecoder().decode(responseBody)) as unknown;
+    } catch (error) {
+      throw new Error("Token exchange returned invalid JSON", { cause: error });
+    }
+    const accessToken = valueAtPath(body, this.#auth.tokenPath);
+    const expiresAtValue = valueAtPath(body, this.#auth.expiresAtPath);
+    const expiresAt = typeof expiresAtValue === "string" ? Date.parse(expiresAtValue) : NaN;
+    if (typeof accessToken !== "string" || !accessToken || !Number.isFinite(expiresAt)) {
+      throw new Error("Token exchange response is missing a valid token or expiration time");
+    }
+    if (expiresAt <= Date.now()) {
+      throw new Error("Token exchange returned an expired token");
+    }
+    this.#tokenExchangeState = { accessToken, expiresAt };
+    this.#authorizationVersion += 1;
+    return true;
+  }
+
   async #refreshOAuth(waiterSignal: AbortSignal | undefined): Promise<boolean> {
     if (
       this.#auth.type !== "oauth2_authorization_code" ||
@@ -255,20 +336,7 @@ export class LocalHost implements SyncHost {
     const refreshing = (this.#refreshing ??= this.#performOAuthRefresh(this.#signal).finally(() => {
       this.#refreshing = undefined;
     }));
-    if (waiterSignal === undefined) return refreshing;
-    return new Promise<boolean>((resolve, reject) => {
-      const settle = (action: () => void) => {
-        waiterSignal.removeEventListener("abort", abort);
-        action();
-      };
-      const abort = () => settle(() => reject(waiterSignal.reason));
-      waiterSignal.addEventListener("abort", abort, { once: true });
-      if (waiterSignal.aborted) abort();
-      void refreshing.then(
-        (refreshed) => settle(() => resolve(refreshed)),
-        (error: unknown) => settle(() => reject(error)),
-      );
-    });
+    return waitForShared(refreshing, waiterSignal);
   }
 
   async #performOAuthRefresh(signal: AbortSignal | undefined): Promise<boolean> {
@@ -331,6 +399,35 @@ export async function replacePrivateFile(path: string, value: string | Uint8Arra
 }
 
 class ResponseTooLargeError extends Error {}
+
+function valueAtPath(value: unknown, path: string): unknown {
+  let current = value;
+  for (const segment of path.split(".")) {
+    if (typeof current !== "object" || current === null) return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+function waitForShared<Value>(
+  promise: Promise<Value>,
+  signal: AbortSignal | undefined,
+): Promise<Value> {
+  if (signal === undefined) return promise;
+  return new Promise<Value>((resolve, reject) => {
+    const settle = (action: () => void) => {
+      signal.removeEventListener("abort", abort);
+      action();
+    };
+    const abort = () => settle(() => reject(signal.reason));
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    void promise.then(
+      (value) => settle(() => resolve(value)),
+      (error: unknown) => settle(() => reject(error)),
+    );
+  });
+}
 
 async function readResponseBody(response: Response): Promise<Uint8Array> {
   if (response.body === null) return new Uint8Array();

@@ -258,6 +258,11 @@ head -n 1 repositories.ndjson</code></pre>
                   <td>Maps multiple credentials to headers or query parameters</td>
                 </tr>
                 <tr>
+                  <td>Token exchange</td>
+                  <td><code>auth.tokenExchange(...)</code></td>
+                  <td>Exchanges credentials for a cached, expiring bearer token</td>
+                </tr>
+                <tr>
                   <td>OAuth 2.0</td>
                   <td><code>auth.oauth2AuthorizationCode(...)</code></td>
                   <td>Uses an access token and can refresh after a 401</td>
@@ -305,10 +310,11 @@ beetl-connect verify . --connection default</code></pre>
           <p>
             <code>ctx.paginate()</code> supports cursor, offset, and provider-supplied next-URL
             pagination. It validates page records and includes response status and normalized
-            headers on each yielded page. Continuations are followed across empty pages; malformed
-            or repeated continuations fail the sync, and a run is limited to 10,000 pages.
-            Integrations can use <code>ctx.fetch()</code> directly when a provider requires a
-            different strategy.
+            headers on each yielded page. An optional <code>hasMorePath</code> points to a response
+            boolean that explicitly controls whether pagination continues. Continuations are
+            followed across empty pages; malformed or repeated continuations fail the sync, and a
+            run is limited to 10,000 pages. Integrations can use <code>ctx.fetch()</code> directly
+            when a provider requires a different strategy.
           </p>
 
           <h3>Retries</h3>
