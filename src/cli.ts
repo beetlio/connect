@@ -615,7 +615,7 @@ async function connectConnection(
         ? await authorizeOAuth({
             auth: integration.connection.auth,
             credentials: parsedCredentials,
-            redirectUri: "http://127.0.0.1:53682/oauth/callback",
+            redirectUri: "http://localhost:53682/oauth/callback",
             fetch: ProviderFetch,
             signal: controller.signal,
             onAuthorizationUrl: (url) => console.log(`Open this URL to authorize:\n${url}`),
