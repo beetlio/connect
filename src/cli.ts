@@ -400,7 +400,11 @@ async function resolveProfile(
     profile: profileName,
     revision: profile.revision,
     connection: profile.connection,
-    inputs: profile.inputs,
+    inputs: Object.fromEntries(
+      Object.entries(profile.inputs).filter(([name]) =>
+        Object.hasOwn(syncManifest?.inputs.properties ?? {}, name),
+      ),
+    ),
   };
 }
 

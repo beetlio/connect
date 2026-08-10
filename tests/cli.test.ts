@@ -122,7 +122,7 @@ test("CLI runs source integrations from typed profiles and Deno artifacts", asyn
       sync: "items",
       connection: "primary",
       revision: ProfileRevision,
-      inputs: {},
+      inputs: { removed: "stale" },
     }),
   );
   await writeFile(
