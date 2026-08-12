@@ -8,24 +8,23 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Build API integrations in TypeScript and run them from your terminal. Connect
-checks integration code, manages local configuration and authentication, fetches
+validates integration code, manages local configuration and authentication, fetches
 and validates records, and writes NDJSON.
 
 [Documentation](https://beetlio.github.io/connect/) · [Examples](examples/) · [Contributing](CONTRIBUTING.md)
 
-The demo checks the included Wikidata integration, fetches five records, and
+The demo runs the included Wikidata integration, fetches five records, and
 inspects the emitted NDJSON.
 
 [![Watch @beetlio/connect sync Wikidata](https://asciinema.org/a/1262370.svg)](https://asciinema.org/a/1262370)
 
 > [!WARNING]
-> This project is experimental and currently at `0.0.0`. APIs and local storage
+> This project is experimental and currently at `0.1.0`. APIs and local storage
 > formats may change.
 
 > [!IMPORTANT]
-> Integrations are executable code. Only check, pack, or run integrations you
-> trust. Artifact digests detect corruption; they do not identify or verify an
-> integration's author.
+> Integrations are executable code. Only configure, pack, or run integrations you
+> trust. Hosted builds must treat uploaded source packages as untrusted.
 
 ## What it does
 
@@ -34,7 +33,7 @@ inspects the emitted NDJSON.
 - Bearer, basic, API-key, token-exchange, custom, and OAuth 2.0 authentication
 - Cursor and offset pagination helpers
 - Managed retries, incremental checkpoints, and atomic snapshots
-- Self-contained, Deno-compatible `.beetl.zip` artifacts
+- Standard npm `.tgz` packages for hosted builds
 - NDJSON output that works with tools such as `jq`, DuckDB, and data pipelines
 
 ## Install
@@ -94,11 +93,11 @@ export default defineIntegration({
 });
 ```
 
-Check it, then run it. The first sync prompts for the declared input and saves a
-local profile:
+Configure it, then run it. Calling `sync` first opens the same configuration
+flow when the default profile or connection is missing:
 
 ```sh
-beetl-connect check .
+beetl-connect configure . repositories
 beetl-connect sync . repositories --output repositories.ndjson
 head -n 1 repositories.ndjson
 ```
@@ -106,61 +105,80 @@ head -n 1 repositories.ndjson
 Paths passed to `ctx.fetch()` must be relative to the configured API origin and
 begin with `/`. Connect keeps credentials and OAuth authorization state
 outside integration code and adds authentication when it sends each request.
+Await request promises; requests still running when the integration returns are
+cancelled. Emits and logs already submitted before return are settled in order.
 
 ## Commands
 
-| Command                                                                  | Purpose                                             |
-| ------------------------------------------------------------------------ | --------------------------------------------------- |
-| `pack <integration>`                                                     | Build a Deno-compatible `.beetl.zip` artifact       |
-| `check <integration>`                                                    | Type-check and validate an integration              |
-| `configure <integration> [key] [--profile <name>] [--connection <name>]` | Configure sync inputs and select a named connection |
-| `connect <integration> [--connection <name>] [--origin <url>]`           | Create or reauthorize a named connection            |
-| `verify <integration> [--connection <name>]`                             | Verify a named connection                           |
-| `sync <integration> [key]`                                               | Run one sync and write NDJSON records               |
+| Command                                                                                                                     | Purpose                                                    |
+| --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `configure <integration> [key] [--inputs <json>] [--profile <name>] [--connection <name>] [--origin <url>] [--reauthorize]` | Configure connection and sync inputs, authenticate, verify |
+| `sync <integration> [key]`                                                                                                  | Validate and run one sync                                  |
+| `pack <directory>`                                                                                                          | Create an npm package for a hosted build                   |
 
 Run `beetl-connect <command> --help` for command-specific options. `pack`
-accepts an entry file or a directory containing `integration.ts`. It type-checks
-source with the bundled TypeScript compiler and bundles local imports and
-installed npm dependencies into neutral ESM. Dependencies must be declared in
-`dependencies` and pinned by a current npm v3 `package-lock.json`; other lockfile
-formats are not supported yet.
+accepts a self-contained npm application containing `integration.ts`, `package.json`,
+and the committed `package-lock.json`. Its `package.json` must contain an explicit
+`files` allowlist so local state, output, and environment files are not uploaded by
+accident. Connect uses `npm pack --ignore-scripts`, adds the lockfile to the resulting
+`.tgz`, rejects npm-selected files outside that allowlist and private runtime paths at
+any depth, and prints the included files. Package metadata, README, and license files
+remain implicit. Registry dependencies and npm aliases are supported. Local paths,
+workspaces, Git repositories, and remote tarballs are not reproducible registry
+dependencies and are rejected by `pack`. Dependency declarations must exactly match
+the lockfile root.
 
-`check`, `configure`, `connect`, `verify`, and `sync` also accept a packed
-`.beetl.zip`. Artifacts contain the bundle, manifest, Deno runtime declaration,
-license notices, SHA-256 integrity metadata, and inline source maps without
-source contents. They run without the integration source, npm, or installed
-dependencies. Neutral bundling rejects Node built-ins and other unresolved imports.
+```json
+{ "files": ["integration.ts", "src", "icon.png"] }
+```
 
-Artifact hashes detect corruption, not provenance. A hosted platform must accept
-source workspaces, install their committed npm graph with lifecycle scripts disabled
-inside an untrusted build sandbox, and record the artifact digest it produced. It
-must not treat an uploaded `.beetl.zip` and its self-declared hashes as trusted.
+The npm package is transport, not a trusted build artifact: `pack` does not compile
+or execute the integration. A hosted platform must safely unpack it inside an
+untrusted build job, enforce package limits, run `npm ci --ignore-scripts`, validate
+the exact upload, and produce the immutable Node.js 24.2 runtime bundle and manifest
+itself. Runtime jobs execute that artifact in gVisor on an isolated node pool.
+`sync` uses the same Node.js target for local development.
 
 Connection and sync configuration must use `input.object()` and the non-secret
 `input.*` field helpers. Authentication uses the separate `credential.*` helpers.
 Each descriptor directly owns its parser and manifest representation; ordinary Zod
-schemas remain available for records and checkpoints. Provider traffic must use
-`ctx.fetch()`. The local CLI is not a sandbox, so only run integrations you trust.
+schemas remain available for records and checkpoints. Use `ctx.fetch()` for managed
+authentication, retries, and origin enforcement. Hosted jobs may make direct external
+requests, but those requests receive none of the connection's managed credentials.
+The local CLI is not a sandbox, so only run integrations you trust.
+
+Hosted v1 likewise treats uploaded integrations as tenant-admin-approved executable
+code. gVisor isolates the workload from platform infrastructure; it does not prevent
+integration code or an npm dependency from forwarding fetched data to another external
+service. Third-party marketplace integrations require a separate egress policy and are
+outside the first release.
 
 Local commands use the `default` profile unless `--profile <name>` is supplied.
-Profiles contain only sync inputs and a named connection reference. If the
-selected profile is missing and the sync declares inputs, the CLI configures it
-interactively before continuing. An explicitly requested missing profile is an error.
+Profiles contain only sync inputs and a named connection reference. `configure`
+collects connection and sync inputs in one object, prompts separately for masked
+credentials, authenticates, and verifies before saving either object:
 
-`connect` collects connection inputs and credentials declared by
-the integration. For OAuth, it then opens the authorization flow and stores the
-provider-issued access token, refresh token, and other declared token fields as
-authorization state. Integration code receives none of these secrets.
+```sh
+beetl-connect configure . repositories \
+  --inputs '{"connection":{},"sync":{"user":"octocat"}}'
+```
+
+Existing credentials and OAuth state are retained. Use `--reauthorize` to collect
+credentials and authorize again. Provider-issued access tokens, refresh tokens,
+and other authorization state remain unavailable to integration code. If the
+default profile or connection is missing, `sync` enters the same configuration
+flow. An explicitly requested missing profile is an error.
+
+The local OAuth authorization-code flow uses
+`http://localhost:53682/oauth/callback`; register that redirect URI with the provider.
+It uses PKCE and either a public client or `client_secret_post`. Hosted authorization
+does not use this loopback address: the platform owns its public callback URL, performs
+the OAuth exchange, and stores the resulting authorization state. Redirect addresses
+therefore do not belong in uploaded integration source.
 
 `auth.tokenExchange()` supports APIs that exchange long-lived credentials for a
 short-lived bearer token. The host caches the token until its declared expiration and
 automatically exchanges it again before expiry or after a 401 response.
-
-```sh
-beetl-connect connect .
-beetl-connect configure . repositories
-beetl-connect sync . repositories
-```
 
 Profiles and named connections are stored with owner-only permissions in the
 operating system's user configuration directory: `$XDG_CONFIG_HOME/beetl-connect`
@@ -168,7 +186,7 @@ on Linux, `~/Library/Preferences/beetl-connect` on macOS, and
 `%APPDATA%\beetl-connect\Config` on Windows. Connections include credentials
 and OAuth authorization state where applicable. Each connection binds
 those secrets to the provider origin and authentication definition; a mismatch
-requires reconnecting. Files are not encrypted, so treat the local user account
+requires configuring again. Files are not encrypted, so treat the local user account
 as trusted. Incremental sync state remains in the workspace under `.beetl/state`.
 
 ## Output and state
@@ -177,12 +195,16 @@ Append syncs are the default: each run writes a new NDJSON file and can resume
 from its latest checkpoint. A sync can instead declare `mode: "snapshot"`; the
 CLI replaces the file selected by `--output` only after the new snapshot
 succeeds. Without `--output`, each run uses a new timestamped filename.
-Profiles and connections carry revisions. `configure` preserves a profile
-revision when nothing changed, while changed inputs and explicit `connect`
-operations create new revisions. Automatic OAuth refresh preserves the
+Profiles and connections carry revisions. `configure` preserves revisions when
+nothing changed, while changed inputs and `--reauthorize` create new revisions.
+Automatic OAuth refresh preserves the
 connection revision. Default checkpoint paths include both revisions so changed
 filters or credentials cannot silently reuse older state. Existing checkpoint
 files are retained, and `--state` can select one explicitly.
+Only one local process may use a state path at a time. Configuration and OAuth-backed
+syncs also lock their named connection so authorization refresh cannot race. A
+concurrent operation fails instead of waiting. If a process is forcibly killed, remove
+the adjacent `.lock` file only after confirming that no operation still uses it.
 
 `ctx.paginate()` supports cursor, offset, and provider-supplied next-URL APIs.
 Each yielded page includes the response status and normalized headers. Integrations can
@@ -209,58 +231,19 @@ when adapting the public example.
 Configure and run the Wikidata example interactively:
 
 ```sh
+beetl-connect configure examples/wikidata entities
 beetl-connect sync examples/wikidata entities
 ```
-
-For automation, provision the named connection under the user configuration
-directory at `connections/wikidata/default.json`:
-
-```json
-{
-  "integration": "wikidata",
-  "name": "default",
-  "revision": "22222222-2222-4222-8222-222222222222",
-  "provider": {
-    "origin": "https://www.wikidata.org",
-    "authentication": { "type": "none" }
-  },
-  "inputs": { "userAgent": "my-wikidata-sync/1.0 (me@example.com)" },
-  "credentials": {}
-}
-```
-
-Then provision `profiles/wikidata/entities/default.json` in the same directory:
-
-```json
-{
-  "integration": "wikidata",
-  "sync": "entities",
-  "connection": "default",
-  "revision": "11111111-1111-4111-8111-111111111111",
-  "inputs": { "search": "open source", "language": "en", "maxResults": 25 }
-}
-```
-
-When provisioning these files directly, generate a new UUID revision whenever
-their inputs or authorization change. `configure` and `connect` do this automatically.
 
 ```sh
+beetl-connect configure examples/wikidata entities \
+  --inputs '{"connection":{"userAgent":"my-wikidata-sync/1.0 (me@example.com)"},"sync":{"search":"open source","language":"en","maxResults":25}}'
 beetl-connect sync examples/wikidata entities
-beetl-connect pack examples/wikidata --output wikidata.beetl.zip
+beetl-connect pack examples/wikidata --output wikidata.tgz
 ```
 
 Replace the example email with your contact information. The command writes a
 timestamped NDJSON snapshot to the current directory.
-
-## Using Connect from another application
-
-The CLI is the primary interface. Applications that need to execute the same
-Deno-compatible artifacts with their own authentication, request, and persistence services
-can implement the optional `SyncHost` interface from `@beetlio/connect/host`. See
-the runnable [custom host example](examples/custom-host/host.ts). `SyncHost` is a
-capability boundary, not a sandbox: custom executors must prevent integration
-code from reaching providers directly. The production boundary belongs in an
-isolated runtime with provider egress allowed only through the trusted host.
 
 ## Development
 

@@ -7,6 +7,10 @@
     "moduleResolution": "NodeNext",
     "noEmit": true,
     "noUncheckedIndexedAccess": true,
+    "paths": {
+      "@beetlio/connect": ["./src/index.ts"],
+      "@beetlio/connect/host": ["./src/host.ts"]
+    },
     "strict": true,
     "target": "ES2024",
     "types": ["node"]

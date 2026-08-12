@@ -63,6 +63,10 @@ export class LocalHost implements SyncHost {
     this.#onAuthorizationStateChanged = options.onAuthorizationStateChanged ?? (() => undefined);
   }
 
+  async settleAuthentication(): Promise<void> {
+    await Promise.all([this.#refreshing, this.#exchanging]);
+  }
+
   async request(request: ProviderRequest, signal?: AbortSignal): Promise<ProviderResponse> {
     const requestSignal =
       this.#signal && signal ? AbortSignal.any([this.#signal, signal]) : (this.#signal ?? signal);

@@ -1,13 +1,13 @@
-import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire, setSourceMapsSupport } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { isDeepStrictEqual } from "node:util";
+import { promisify } from "node:util";
 
-import { build, formatMessages, type Metafile } from "esbuild";
-import { unzipSync, zipSync, type Zippable } from "fflate";
+import { build, formatMessages } from "esbuild";
+import { create as createTar, extract as extractTar } from "tar";
 import ts from "typescript";
 import { z } from "zod";
 
@@ -18,135 +18,259 @@ import {
 } from "./index.ts";
 import { validateIntegration } from "./host.ts";
 
-const Package = z
-  .object({ version: z.string() })
-  .parse(createRequire(import.meta.url)("../package.json"));
 const SdkEntry = fileURLToPath(new URL("./index.js", import.meta.url));
 const SdkTypesEntry = fileURLToPath(new URL("./index.d.ts", import.meta.url));
-const Epoch = new Date(1980, 0, 1);
+const SdkDirectory = dirname(SdkEntry);
+const NodeTypesDirectory = dirname(
+  dirname(createRequire(import.meta.url).resolve("@types/node/package.json")),
+);
 const Encoder = new TextEncoder();
-const Decoder = new TextDecoder();
 const Limits = {
   archive: 25 * 1024 * 1024,
   expanded: 50 * 1024 * 1024,
   bundle: 15 * 1024 * 1024,
-  artifact: 64 * 1024,
   manifest: 1024 * 1024,
-  licenses: 4 * 1024 * 1024,
   icon: 512 * 1024,
 } as const;
-setSourceMapsSupport(true);
-
-const ArtifactFileSchema = z.strictObject({
-  bytes: z.int().nonnegative(),
-  sha256: z.string().regex(/^[a-f0-9]{64}$/),
-});
-const ArtifactMetadataSchema = z.strictObject({
-  artifactVersion: z.literal(1),
-  sdkVersion: z.string().min(1),
-  runtime: z.literal("deno"),
-  files: z.record(z.string(), ArtifactFileSchema),
-});
-const NpmPackageSchema = z.object({
-  name: z.string().optional(),
-  version: z.string().optional(),
-  license: z.string().optional(),
-});
-const DependencyMapSchema = z.record(z.string(), z.string()).default({});
-const ProjectPackageSchema = NpmPackageSchema.extend({
-  dependencies: DependencyMapSchema,
-  optionalDependencies: DependencyMapSchema,
+const NpmPackResultSchema = z
+  .array(
+    z.object({
+      filename: z.string().min(1),
+      size: z.number().nonnegative(),
+      unpackedSize: z.number().nonnegative(),
+      files: z.array(z.object({ path: z.string().min(1) })),
+    }),
+  )
+  .length(1);
+const PackageDefinitionSchema = z.object({
+  files: z.array(z.string().min(1)).min(1).optional(),
+  dependencies: z.record(z.string(), z.string()).optional(),
+  devDependencies: z.record(z.string(), z.string()).optional(),
+  optionalDependencies: z.record(z.string(), z.string()).optional(),
+  peerDependencies: z.record(z.string(), z.string()).optional(),
+  bundledDependencies: z.unknown().optional(),
+  bundleDependencies: z.unknown().optional(),
+  workspaces: z.unknown().optional(),
 });
 const PackageLockSchema = z.object({
   lockfileVersion: z.literal(3),
-  packages: z.record(
-    z.string(),
-    z.object({
-      version: z.string().optional(),
-      dependencies: DependencyMapSchema,
-      optionalDependencies: DependencyMapSchema,
-    }),
-  ),
+  packages: z.record(z.string(), z.unknown()).refine((packages) => Object.hasOwn(packages, ""), {
+    error: "root package is missing",
+  }),
 });
-type ArtifactFile = z.infer<typeof ArtifactFileSchema>;
-type ArtifactMetadata = z.infer<typeof ArtifactMetadataSchema>;
+const DependencyFields = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+] as const;
+const RegistryDependencyPattern =
+  /^(?:npm:(?:@[^/\\:@]+\/[^/\\:@]+|[^/\\:@]+)(?:@[^:/\\]+)?|[^:/\\]*)$/;
+const ExecFile = promisify(execFile);
+setSourceMapsSupport(true);
 
 interface BuiltIntegration {
-  readonly entryPath: string;
   readonly integration: IntegrationDefinition;
   readonly manifest: IntegrationManifest;
-  readonly bundle: Uint8Array;
-  readonly licenses: Uint8Array;
-  readonly icon?: { readonly name: "icon.png" | "icon.webp"; readonly bytes: Uint8Array };
 }
 
-interface IntegrationArchive {
+interface PackedIntegration {
   readonly bytes: Uint8Array;
   readonly filename: string;
-  readonly manifest: IntegrationManifest;
+  readonly files: readonly string[];
 }
 
-export async function loadIntegration(inputPath: string): Promise<BuiltIntegration> {
-  if (inputPath.endsWith(".beetl.zip")) {
-    return loadArchive(resolve(inputPath));
-  }
+export function loadIntegration(inputPath: string): Promise<BuiltIntegration> {
   return buildIntegration(inputPath);
 }
 
-export async function createIntegrationArchive(inputPath: string): Promise<IntegrationArchive> {
-  if (inputPath.endsWith(".beetl.zip")) {
-    throw new Error("pack requires integration source, not an existing artifact");
+export async function packIntegration(inputDirectory: string): Promise<PackedIntegration> {
+  const directory = await realpath(resolve(inputDirectory));
+  if (!(await stat(directory)).isDirectory()) {
+    throw new Error("pack requires an integration package directory");
   }
-  const built = await buildIntegration(inputPath);
-  const files: Record<string, Uint8Array> = {
-    "integration.mjs": built.bundle,
-    "LICENSES.txt": built.licenses,
-    "manifest.json": Encoder.encode(`${JSON.stringify(built.manifest)}\n`),
-  };
-  if (built.icon !== undefined) {
-    files[built.icon.name] = built.icon.bytes;
+  let packageSource: string;
+  let lockfile: Uint8Array;
+  try {
+    const [definition, locked] = await Promise.all([
+      readFile(join(directory, "package.json"), "utf8"),
+      readFile(join(directory, "package-lock.json")),
+    ]);
+    packageSource = definition;
+    lockfile = new Uint8Array(locked);
+  } catch (error) {
+    throw new Error("Integration packages require package.json and package-lock.json", {
+      cause: error,
+    });
   }
-  const artifact: ArtifactMetadata = {
-    artifactVersion: 1,
-    sdkVersion: Package.version,
-    runtime: "deno",
-    files: Object.fromEntries(
-      Object.keys(files)
-        .sort()
-        .map((name) => [name, fileMetadata(files[name]!)]),
-    ),
-  };
-  files["artifact.json"] = Encoder.encode(`${JSON.stringify(artifact)}\n`);
-  const zippable: Zippable = Object.fromEntries(
-    Object.keys(files)
-      .sort()
-      .map((name) => [name, [files[name]!, { mtime: Epoch }]]),
-  );
-  const bytes = zipSync(zippable, { level: 9, mtime: Epoch });
-  assertSize("archive", bytes, Limits.archive);
-  return {
-    bytes,
-    filename: `${built.integration.key}.beetl.zip`,
-    manifest: built.manifest,
-  };
+  assertSize("package-lock.json", lockfile, Limits.expanded);
+  let packageDefinition: z.output<typeof PackageDefinitionSchema>;
+  let lockedDefinition: z.output<typeof PackageDefinitionSchema>;
+  try {
+    packageDefinition = PackageDefinitionSchema.parse(JSON.parse(packageSource));
+    const packageLock = PackageLockSchema.parse(JSON.parse(new TextDecoder().decode(lockfile)));
+    lockedDefinition = PackageDefinitionSchema.parse(packageLock.packages[""]);
+  } catch (error) {
+    throw new Error("Integration package metadata is invalid", { cause: error });
+  }
+  if (packageDefinition.workspaces !== undefined) {
+    throw new Error("Integration packages cannot declare npm workspaces");
+  }
+  if (packageDefinition.files === undefined) {
+    throw new Error('Integration package.json requires an explicit "files" allowlist');
+  }
+  for (const path of packageDefinition.files) {
+    if (
+      path === "." ||
+      path.startsWith(".") ||
+      path.includes("\\") ||
+      path.split("/").includes("..") ||
+      /[*?\[\]{}!]/.test(path) ||
+      isAbsolute(path)
+    ) {
+      throw new Error(`Integration package files entry ${JSON.stringify(path)} is too broad`);
+    }
+  }
+  const declaredFiles = packageDefinition.files.map((path) => path.replace(/\/+$/, ""));
+  if (
+    packageDefinition.bundledDependencies !== undefined ||
+    packageDefinition.bundleDependencies !== undefined
+  ) {
+    throw new Error("Integration packages cannot bundle node_modules");
+  }
+  for (const field of DependencyFields) {
+    const dependencies = packageDefinition[field] ?? {};
+    for (const [name, specifier] of Object.entries(dependencies)) {
+      if (!RegistryDependencyPattern.test(specifier)) {
+        throw new Error(
+          `Integration dependency ${JSON.stringify(name)} must resolve from the npm registry`,
+        );
+      }
+    }
+    const locked = lockedDefinition[field] ?? {};
+    if (
+      Object.keys(dependencies).length !== Object.keys(locked).length ||
+      Object.entries(dependencies).some(([name, specifier]) => locked[name] !== specifier)
+    ) {
+      throw new Error(`package-lock.json ${field} are out of sync with package.json`);
+    }
+  }
+
+  const destination = await mkdtemp(join(tmpdir(), "beetl-connect-pack-"));
+  try {
+    let stdout: string;
+    try {
+      const npm =
+        process.platform === "win32"
+          ? [process.execPath, join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")]
+          : ["npm"];
+      const result = await ExecFile(
+        npm[0]!,
+        [
+          ...npm.slice(1),
+          "pack",
+          "--json",
+          "--ignore-scripts",
+          "--cache",
+          join(destination, "cache"),
+          "--pack-destination",
+          destination,
+        ],
+        { cwd: directory, encoding: "utf8", maxBuffer: 5 * 1024 * 1024, windowsHide: true },
+      );
+      stdout = result.stdout;
+    } catch (error) {
+      throw new Error("Could not pack integration with npm", { cause: error });
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(stdout);
+    } catch (error) {
+      throw new Error("npm returned an invalid pack result", { cause: error });
+    }
+    const parsed = NpmPackResultSchema.safeParse(value);
+    if (!parsed.success) {
+      throw new Error(`Invalid npm pack result: ${z.prettifyError(parsed.error)}`);
+    }
+    const packed = parsed.data[0]!;
+    if (packed.size > Limits.archive) {
+      throw new Error("Integration package exceeds 25 MiB");
+    }
+    const files = new Set(packed.files.map(({ path }) => path));
+    if (!files.has("integration.ts")) {
+      throw new Error("npm package must include integration.ts");
+    }
+    const privateFile = [...files].find((path) => {
+      const segments = path.split("/");
+      return (
+        segments.some(
+          (segment) =>
+            segment.startsWith(".env") || segment === ".beetl" || segment === "node_modules",
+        ) || path.endsWith(".ndjson")
+      );
+    });
+    if (privateFile !== undefined) {
+      throw new Error(`Integration package contains private runtime file ${privateFile}`);
+    }
+    const undeclaredFile = [...files].find(
+      (path) =>
+        path !== "package.json" &&
+        !/^(?:readme|licen[cs]e)(?:\..*)?$/i.test(path) &&
+        !declaredFiles.some((declared) => path === declared || path.startsWith(`${declared}/`)),
+    );
+    if (undeclaredFile !== undefined) {
+      throw new Error(`npm included ${undeclaredFile} outside the package files allowlist`);
+    }
+    if (packed.unpackedSize + lockfile.byteLength > Limits.expanded) {
+      throw new Error("Integration package expands beyond 50 MiB");
+    }
+    if (basename(packed.filename) !== packed.filename) {
+      throw new Error("npm returned an invalid package filename");
+    }
+    const archive = join(destination, packed.filename);
+    const unpacked = join(destination, "unpacked");
+    await mkdir(unpacked);
+    await extractTar({ cwd: unpacked, file: archive, strict: true });
+    await writeFile(join(unpacked, "package", "package-lock.json"), lockfile);
+    await createTar(
+      {
+        cwd: unpacked,
+        file: archive,
+        gzip: true,
+        mtime: new Date(0),
+        portable: true,
+        strict: true,
+      },
+      ["package"],
+    );
+    const bytes = new Uint8Array(await readFile(archive));
+    assertSize("integration package", bytes, Limits.archive);
+    return {
+      bytes,
+      filename: packed.filename,
+      files: [...new Set([...files, "package-lock.json"])].sort(),
+    };
+  } finally {
+    await rm(destination, { recursive: true, force: true });
+  }
 }
 
 async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
   const entryPath = await resolveIntegrationEntry(inputPath);
+  const workingDirectory = dirname(entryPath);
   let output;
   try {
     output = await build({
-      absWorkingDir: dirname(entryPath),
+      absWorkingDir: workingDirectory,
       entryPoints: [basename(entryPath)],
       outfile: "integration.mjs",
       bundle: true,
       format: "esm",
-      platform: "neutral",
-      target: "es2024",
+      platform: "node",
+      target: "node24.2",
       mainFields: ["module", "main"],
       sourcemap: "inline",
       sourcesContent: false,
-      legalComments: "external",
       metafile: true,
       write: false,
       logLevel: "silent",
@@ -155,9 +279,7 @@ async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
         {
           name: "beetl-connect-imports",
           setup(builder) {
-            builder.onResolve({ filter: /^@beetlio\/connect$/ }, () => ({
-              path: SdkEntry,
-            }));
+            builder.onResolve({ filter: /^@beetlio\/connect$/ }, () => ({ path: SdkEntry }));
           },
         },
       ],
@@ -167,98 +289,26 @@ async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
   }
 
   const bundle = output.outputFiles.find((file) => file.path.endsWith("integration.mjs"))?.contents;
-  const legalComments = output.outputFiles.find((file) =>
-    file.path.endsWith(".LEGAL.txt"),
-  )?.contents;
   if (!bundle) throw new Error("Bundler did not produce integration.mjs");
-  await validateLockedDependencies(entryPath, output.metafile);
   assertSize("integration.mjs", bundle, Limits.bundle);
   await typeCheckIntegration(entryPath);
   const integration = await importBundle(bundle, inputPath);
   validateIntegration(integration);
   const manifest = createIntegrationManifest(integration);
   assertSize("manifest.json", Encoder.encode(JSON.stringify(manifest)), Limits.manifest);
-  const icon = await readIntegrationIcon(entryPath, integration.icon);
-  const licenses = await collectLicenseNotices(
-    dirname(entryPath),
-    Object.keys(output.metafile.inputs),
-    legalComments,
-  );
-  assertSize("LICENSES.txt", licenses, Limits.licenses);
-  return {
-    entryPath,
-    integration,
-    manifest,
-    bundle,
-    licenses,
-    ...(icon === undefined ? {} : { icon }),
-  };
-}
+  await validateIntegrationIcon(entryPath, integration.icon);
 
-async function loadArchive(path: string): Promise<BuiltIntegration> {
-  const archive = new Uint8Array(await readFile(path));
-  assertSize("archive", archive, Limits.archive);
-  let expanded = 0;
-  const names = new Set<string>();
-  const allowed = new Set([
-    "artifact.json",
-    "manifest.json",
-    "integration.mjs",
-    "LICENSES.txt",
-    "icon.png",
-    "icon.webp",
-  ]);
-  const files = unzipSync(archive, {
-    filter(file) {
-      if (!allowed.has(file.name) || names.has(file.name)) {
-        throw new Error(`Unexpected artifact entry ${JSON.stringify(file.name)}`);
-      }
-      names.add(file.name);
-      expanded += file.originalSize;
-      if (expanded > Limits.expanded) throw new Error("Artifact expands beyond 50 MiB");
-      return true;
-    },
-  });
-  for (const required of ["artifact.json", "manifest.json", "integration.mjs", "LICENSES.txt"]) {
-    if (!files[required]) throw new Error(`Artifact is missing ${required}`);
+  for (const input of Object.keys(output.metafile.inputs)) {
+    if (input.startsWith("<")) continue;
+    const path = resolve(workingDirectory, input);
+    if (pathWithin(SdkDirectory, path) || path.replaceAll("\\", "/").includes("/node_modules/")) {
+      continue;
+    }
+    if (!pathWithin(workingDirectory, path)) {
+      throw new Error(`Integration source imports outside its package directory: ${path}`);
+    }
   }
-  assertSize("artifact.json", files["artifact.json"]!, Limits.artifact);
-  assertSize("manifest.json", files["manifest.json"]!, Limits.manifest);
-  assertSize("integration.mjs", files["integration.mjs"]!, Limits.bundle);
-  assertSize("LICENSES.txt", files["LICENSES.txt"]!, Limits.licenses);
-  if (files["icon.png"]) assertSize("icon.png", files["icon.png"], Limits.icon);
-  if (files["icon.webp"]) assertSize("icon.webp", files["icon.webp"], Limits.icon);
-  let metadata: unknown;
-  let manifest: unknown;
-  try {
-    metadata = JSON.parse(Decoder.decode(files["artifact.json"]!));
-  } catch (error) {
-    throw new Error("artifact.json is not valid JSON", { cause: error });
-  }
-  const artifact = ArtifactMetadataSchema.safeParse(metadata);
-  if (!artifact.success) {
-    throw new Error(`Invalid artifact metadata: ${z.prettifyError(artifact.error)}`);
-  }
-  validateArtifactMetadata(artifact.data, files);
-  try {
-    manifest = JSON.parse(Decoder.decode(files["manifest.json"]!));
-  } catch (error) {
-    throw new Error("manifest.json is not valid JSON", { cause: error });
-  }
-  const integration = await importBundle(files["integration.mjs"]!, path);
-  validateIntegration(integration);
-  const inspectedManifest = createIntegrationManifest(integration);
-  validateArchiveIcon(inspectedManifest.integration.icon, files);
-  if (!isDeepStrictEqual(manifest, inspectedManifest)) {
-    throw new Error("Artifact manifest does not match its integration bundle");
-  }
-  return {
-    entryPath: path,
-    integration,
-    manifest: inspectedManifest,
-    bundle: files["integration.mjs"]!,
-    licenses: files["LICENSES.txt"]!,
-  };
+  return { integration, manifest };
 }
 
 async function importBundle(bundle: Uint8Array, source: string): Promise<IntegrationDefinition> {
@@ -283,96 +333,46 @@ async function resolveIntegrationEntry(inputPath: string): Promise<string> {
   return (await stat(path)).isDirectory() ? join(path, "integration.ts") : path;
 }
 
-function validateArtifactMetadata(
-  artifact: ArtifactMetadata,
-  files: Readonly<Record<string, Uint8Array>>,
-): void {
-  const expected = Object.keys(files)
-    .filter((name) => name !== "artifact.json")
-    .sort();
-  const actual = Object.keys(artifact.files).sort();
-  if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])) {
-    throw new Error("Artifact file list does not match artifact.json");
-  }
-  for (const name of expected) {
-    const actual = fileMetadata(files[name]!);
-    const declared = artifact.files[name];
-    if (!declared || declared.bytes !== actual.bytes || declared.sha256 !== actual.sha256) {
-      throw new Error(`Artifact digest mismatch for ${name}`);
-    }
-  }
+function pathWithin(directory: string, path: string): boolean {
+  const child = relative(directory, path);
+  return (
+    child !== ".." && !child.startsWith("../") && !child.startsWith("..\\") && !isAbsolute(child)
+  );
 }
 
-function validateIconName(icon: string): "icon.png" | "icon.webp" {
-  if (icon !== "icon.png" && icon !== "icon.webp") {
+async function validateIntegrationIcon(entryPath: string, declared: string | undefined) {
+  if (declared === undefined) return;
+  if (declared !== "icon.png" && declared !== "icon.webp") {
     throw new Error("Integration icon must be icon.png or icon.webp beside integration.ts");
   }
-  return icon;
-}
-
-function validateArchiveIcon(
-  expected: string | undefined,
-  files: Readonly<Record<string, Uint8Array>>,
-): void {
-  for (const name of ["icon.png", "icon.webp"] as const) {
-    const bytes = files[name];
-    if (bytes !== undefined && name !== expected) {
-      throw new Error(`Artifact contains undeclared ${name}`);
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await readFile(join(dirname(entryPath), declared)));
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      throw new Error(`Integration declares missing ${declared}`);
     }
+    throw error;
   }
-  if (expected !== undefined) {
-    const name = validateIconName(expected);
-    const bytes = files[name];
-    if (bytes === undefined) throw new Error(`Artifact is missing ${name}`);
-    validateIcon(name, bytes);
-  }
-}
-
-function validateIcon(name: "icon.png" | "icon.webp", bytes: Uint8Array): void {
+  assertSize(declared, bytes, Limits.icon);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoder = new TextDecoder();
   const valid =
-    name === "icon.png"
+    declared === "icon.png"
       ? bytes.length >= 33 &&
         [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every(
           (byte, index) => bytes[index] === byte,
         ) &&
         view.getUint32(8) === 13 &&
-        Decoder.decode(bytes.subarray(12, 16)) === "IHDR" &&
+        decoder.decode(bytes.subarray(12, 16)) === "IHDR" &&
         view.getUint32(16) > 0 &&
         view.getUint32(20) > 0
       : bytes.length >= 20 &&
-        Decoder.decode(bytes.subarray(0, 4)) === "RIFF" &&
+        decoder.decode(bytes.subarray(0, 4)) === "RIFF" &&
         view.getUint32(4, true) + 8 === bytes.length &&
-        Decoder.decode(bytes.subarray(8, 12)) === "WEBP" &&
-        ["VP8 ", "VP8L", "VP8X"].includes(Decoder.decode(bytes.subarray(12, 16)));
-  if (!valid) throw new Error(`${name} does not contain a valid ${name.slice(5)} image`);
-}
-
-async function readIntegrationIcon(
-  entryPath: string,
-  declared: string | undefined,
-): Promise<BuiltIntegration["icon"]> {
-  if (declared === undefined) return undefined;
-  const name = validateIconName(declared);
-  let bytes: Uint8Array;
-  try {
-    bytes = new Uint8Array(await readFile(join(dirname(entryPath), name)));
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      throw new Error(`Integration declares missing ${name}`);
-    }
-    throw error;
-  }
-  assertSize(name, bytes, Limits.icon);
-  validateIcon(name, bytes);
-  return { name, bytes };
-}
-
-function fileMetadata(bytes: Uint8Array): ArtifactFile {
-  return {
-    bytes: bytes.byteLength,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
-  };
+        decoder.decode(bytes.subarray(8, 12)) === "WEBP" &&
+        ["VP8 ", "VP8L", "VP8X"].includes(decoder.decode(bytes.subarray(12, 16)));
+  if (!valid) throw new Error(`${declared} does not contain a valid ${declared.slice(5)} image`);
 }
 
 function assertSize(name: string, bytes: Uint8Array, maximum: number): void {
@@ -381,202 +381,10 @@ function assertSize(name: string, bytes: Uint8Array, maximum: number): void {
   }
 }
 
-async function validateLockedDependencies(entryPath: string, metafile: Metafile): Promise<void> {
-  const workingDirectory = dirname(entryPath);
-  const directPackageRoots = new Set<string>();
-  const sdkDirectory = dirname(SdkEntry);
-  for (const [input, metadata] of Object.entries(metafile.inputs)) {
-    const inputPath = resolve(workingDirectory, input);
-    const sdkRelative = relative(sdkDirectory, inputPath);
-    const isSdk =
-      sdkRelative !== ".." &&
-      !sdkRelative.startsWith("../") &&
-      !sdkRelative.startsWith("..\\") &&
-      !isAbsolute(sdkRelative);
-    if (isSdk || inputPath.replaceAll("\\", "/").split("/").includes("node_modules")) continue;
-    for (const imported of metadata.imports) {
-      const importedPath = resolve(workingDirectory, imported.path);
-      if (!importedPath.replaceAll("\\", "/").split("/").includes("node_modules")) continue;
-      const root = await findPackageRoot(importedPath);
-      if (root !== undefined) directPackageRoots.add(root);
-    }
-  }
-  if (directPackageRoots.size === 0) return;
-
-  let packageDirectory: string | undefined;
-  let packageManifest: z.infer<typeof ProjectPackageSchema> | undefined;
-  for (let directory = workingDirectory; ; directory = dirname(directory)) {
-    try {
-      packageManifest = ProjectPackageSchema.parse(
-        JSON.parse(await readFile(join(directory, "package.json"), "utf8")),
-      );
-      packageDirectory = directory;
-      break;
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-    }
-    if (dirname(directory) === directory) break;
-  }
-  if (packageDirectory === undefined || packageManifest === undefined) {
-    throw new Error("Integrations with npm dependencies require a package.json");
-  }
-
-  const directDependencies = new Set<string>();
-  for (const root of directPackageRoots) {
-    const parent = basename(dirname(root));
-    directDependencies.add(parent.startsWith("@") ? `${parent}/${basename(root)}` : basename(root));
-  }
-  const declared = {
-    ...packageManifest.dependencies,
-    ...packageManifest.optionalDependencies,
-  };
-  for (const dependency of directDependencies) {
-    if (declared[dependency] === undefined) {
-      throw new Error(
-        `Dependency ${JSON.stringify(dependency)} must be declared in package.json dependencies`,
-      );
-    }
-  }
-
-  let lockDirectory: string | undefined;
-  for (let directory = packageDirectory; ; directory = dirname(directory)) {
-    try {
-      await stat(join(directory, "package-lock.json"));
-      lockDirectory = directory;
-      break;
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-    }
-    if (dirname(directory) === directory) break;
-  }
-  if (lockDirectory === undefined) {
-    throw new Error("Integrations with npm dependencies require a committed package-lock.json");
-  }
-
-  let lockValue: unknown;
-  try {
-    lockValue = JSON.parse(await readFile(join(lockDirectory, "package-lock.json"), "utf8"));
-  } catch (error) {
-    throw new Error(`Could not parse ${join(lockDirectory, "package-lock.json")}`, {
-      cause: error,
-    });
-  }
-  const parsedLock = PackageLockSchema.safeParse(lockValue);
-  if (!parsedLock.success) {
-    throw new Error(`Invalid package-lock.json: ${z.prettifyError(parsedLock.error)}`);
-  }
-  const lock = parsedLock.data;
-  const projectKey = relative(lockDirectory, packageDirectory).replaceAll("\\", "/");
-  const lockedProject = lock.packages[projectKey];
-  if (lockedProject === undefined) {
-    throw new Error("package-lock.json does not contain this integration package");
-  }
-  const lockedDeclarations = {
-    ...lockedProject.dependencies,
-    ...lockedProject.optionalDependencies,
-  };
-  for (const dependency of directDependencies) {
-    if (lockedDeclarations[dependency] !== declared[dependency]) {
-      throw new Error(
-        `package-lock.json is out of date for dependency ${JSON.stringify(dependency)}`,
-      );
-    }
-  }
-
-  const packageRoots = new Set<string>();
-  for (const input of Object.keys(metafile.inputs)) {
-    const inputPath = resolve(workingDirectory, input);
-    const lockedRelative = relative(lockDirectory, inputPath);
-    if (
-      lockedRelative === ".." ||
-      lockedRelative.startsWith("../") ||
-      lockedRelative.startsWith("..\\") ||
-      isAbsolute(lockedRelative) ||
-      !lockedRelative.replaceAll("\\", "/").split("/").includes("node_modules")
-    ) {
-      continue;
-    }
-    const root = await findPackageRoot(inputPath);
-    if (root !== undefined) packageRoots.add(root);
-  }
-  for (const root of packageRoots) {
-    const key = relative(lockDirectory, root).replaceAll("\\", "/");
-    const installed = NpmPackageSchema.parse(
-      JSON.parse(await readFile(join(root, "package.json"), "utf8")),
-    );
-    const locked = lock.packages[key];
-    if (installed.version === undefined || locked?.version !== installed.version) {
-      throw new Error(
-        `Installed dependency ${installed.name ?? key} is not pinned at this version in package-lock.json`,
-      );
-    }
-  }
-}
-
-async function collectLicenseNotices(
-  workingDirectory: string,
-  inputs: readonly string[],
-  legalComments: Uint8Array | undefined,
-): Promise<Uint8Array> {
-  const roots = new Set<string>();
-  for (const input of inputs) {
-    if (input.startsWith("<")) continue;
-    const root = await findPackageRoot(resolve(workingDirectory, input));
-    if (root !== undefined) roots.add(root);
-  }
-
-  const packages = await Promise.all(
-    [...roots].map(async (root) => {
-      const metadata = NpmPackageSchema.parse(
-        JSON.parse(await readFile(join(root, "package.json"), "utf8")),
-      );
-      const name = metadata.name ?? basename(root);
-      const version = metadata.version ?? "unknown";
-      const license = metadata.license ?? "unspecified";
-      const filenames = (await readdir(root))
-        .filter((file) => /^(licen[cs]e|copying|notice)(\..*)?$/i.test(file))
-        .sort();
-      const texts = await Promise.all(filenames.map((file) => readFile(join(root, file), "utf8")));
-      return {
-        key: `${name}@${version}`,
-        text: `${name}@${version}\nDeclared license: ${license}${
-          texts.length === 0 ? "" : `\n\n${texts.map((text) => text.trim()).join("\n\n")}`
-        }`,
-      };
-    }),
-  );
-  const sections = packages
-    .sort(({ key: left }, { key: right }) => (left < right ? -1 : left > right ? 1 : 0))
-    .map(({ text }) => text);
-  const comments = legalComments === undefined ? "" : Decoder.decode(legalComments).trim();
-  if (comments) sections.push(`Bundled legal comments\n\n${comments}`);
-  const text = sections.join("\n\n---\n\n");
-  return Encoder.encode(text.endsWith("\n") ? text : `${text}\n`);
-}
-
-async function findPackageRoot(inputPath: string): Promise<string | undefined> {
-  let directory = dirname(inputPath);
-  while (true) {
-    try {
-      const metadata = NpmPackageSchema.parse(
-        JSON.parse(await readFile(join(directory, "package.json"), "utf8")),
-      );
-      if (metadata.name !== undefined) return directory;
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-        throw error;
-      }
-    }
-    const parent = dirname(directory);
-    if (parent === directory) return undefined;
-    directory = parent;
-  }
-}
-
 async function typeCheckIntegration(entryPath: string): Promise<void> {
-  const configPath = ts.findConfigFile(dirname(entryPath), ts.sys.fileExists);
+  const configPath = join(dirname(entryPath), "tsconfig.json");
   let configured: ts.CompilerOptions = {};
-  if (configPath !== undefined) {
+  if (ts.sys.fileExists(configPath)) {
     const read = ts.readConfigFile(configPath, ts.sys.readFile);
     if (read.error !== undefined) throw typeScriptError([read.error], dirname(entryPath));
     const parsed = ts.parseJsonConfigFileContent(
@@ -602,7 +410,8 @@ async function typeCheckIntegration(entryPath: string): Promise<void> {
     noUncheckedIndexedAccess: true,
     skipLibCheck: true,
     strict: true,
-    types: [],
+    types: ["node"],
+    typeRoots: [NodeTypesDirectory, ...(configured.typeRoots ?? [])],
     paths: {
       ...configured.paths,
       "@beetlio/connect": [SdkTypesEntry],

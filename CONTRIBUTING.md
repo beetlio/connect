@@ -5,7 +5,7 @@ small changes that prove a concrete integration or host requirement.
 
 ## Setup
 
-Use Node.js 24 or newer:
+Use Node.js 24.2 or newer:
 
 ```fish
 npm install
@@ -20,9 +20,9 @@ npm run build
 3. Validate external data with Zod and keep credentials outside sync contexts.
 4. Update the README when CLI behavior or public APIs change.
 
-The CLI uses strict TypeScript, ES modules, and Node.js built-ins. Integration
-artifacts are neutral ESM and cannot use Node-only modules. Avoid new dependencies
-when the standard library or existing packages cover the change.
+The CLI and hosted integration runtime use strict TypeScript, ES modules, and
+Node.js 24.2. Avoid new dependencies when the standard library or existing
+packages cover the change.
 
 ## Verify
 

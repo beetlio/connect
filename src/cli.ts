@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, open, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { isDeepStrictEqual } from "node:util";
 
@@ -11,22 +11,19 @@ import { object, or } from "@optique/core/constructs";
 import { message } from "@optique/core/message";
 import { optional } from "@optique/core/modifiers";
 import { argument, command, constant, option } from "@optique/core/primitives";
-import { string, url } from "@optique/core/valueparser";
+import { json, string, url } from "@optique/core/valueparser";
 import { run } from "@optique/run";
 import { path as pathValue } from "@optique/run/valueparser";
-import confirm from "@inquirer/confirm";
 import password from "@inquirer/password";
 import envPaths from "env-paths";
 import { z } from "zod";
 
-import { createIntegrationArchive, loadIntegration } from "./artifact.ts";
+import { loadIntegration, packIntegration } from "./artifact.ts";
 import type {
-  InputField,
   InputObjectSchema,
   IntegrationDefinition,
   IntegrationManifest,
   JsonObject,
-  JsonValue,
 } from "./index.ts";
 import { runSync, verifyConnection } from "./host.ts";
 import { LocalHost, replacePrivateFile, resolveProviderOrigin } from "./local-host.ts";
@@ -39,21 +36,25 @@ interface ProfileConfiguration {
   readonly inputs: JsonObject;
 }
 
-type JsonRecord = Record<string, JsonValue>;
-type PromptAnswer =
-  { readonly kind: "omit" } | { readonly kind: "value"; readonly value: JsonValue };
-
 const Package = z
   .object({ version: z.string() })
   .parse(createRequire(import.meta.url)("../package.json"));
 const DefaultProfile = "default";
 const DefaultConnection = "default";
-const ImplicitProfileRevision = "implicit";
+const LocalOAuthRedirectUri = "http://localhost:53682/oauth/callback";
 const LocalNamePattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const UserConfigDirectory = envPaths("beetl-connect", { suffix: "" }).config;
+if (!isAbsolute(UserConfigDirectory)) {
+  throw new Error("The operating-system user configuration directory must be absolute");
+}
 const ProviderFetch = globalThis.fetch.bind(globalThis);
 const EmptyInputs = z.strictObject({});
 const JsonObjectSchema = z.record(z.string(), z.json());
+const ConfigurationInputsSchema = z.strictObject({
+  connection: JsonObjectSchema.optional(),
+  sync: JsonObjectSchema.optional(),
+});
+type ConfigurationInputs = z.output<typeof ConfigurationInputsSchema>;
 const CredentialValuesSchema = z.record(z.string(), z.string());
 const LocalNameSchema = z.string().regex(LocalNamePattern);
 const ProfileSchema = z.strictObject({
@@ -94,11 +95,11 @@ type StoredConnection = z.output<typeof StoredConnectionSchema>;
 
 const integrationArgument = () =>
   argument(pathValue({ mustExist: true, type: "either", metavar: "INTEGRATION" }), {
-    description: message`Integration file, directory, or .beetl.zip artifact.`,
+    description: message`Integration source file or directory.`,
   });
 const sourceIntegrationArgument = () =>
-  argument(pathValue({ mustExist: true, type: "either", metavar: "INTEGRATION" }), {
-    description: message`Integration source file or directory.`,
+  argument(pathValue({ mustExist: true, type: "directory", metavar: "INTEGRATION" }), {
+    description: message`Integration npm package directory.`,
   });
 const profileOption = () =>
   optional(
@@ -112,6 +113,12 @@ const connectionOption = () =>
       description: message`Use a named connection (default: default).`,
     }),
   );
+const inputsOption = () =>
+  optional(
+    option("--inputs", json({ rootType: "object", metavar: "JSON" }), {
+      description: message`Connection and sync inputs as one JSON object.`,
+    }),
+  );
 
 const Cli = or(
   command(
@@ -121,19 +128,11 @@ const Cli = or(
       integrationPath: sourceIntegrationArgument(),
       outputPath: optional(
         option("--output", pathValue({ metavar: "PATH" }), {
-          description: message`Artifact output path.`,
+          description: message`npm package output path.`,
         }),
       ),
     }),
-    { brief: message`Build a Deno-compatible .beetl.zip artifact.` },
-  ),
-  command(
-    "check",
-    object({
-      command: constant("check"),
-      integrationPath: integrationArgument(),
-    }),
-    { brief: message`Type-check and validate trusted integration code.` },
+    { brief: message`Create an npm package for a hosted build.` },
   ),
   command(
     "configure",
@@ -147,31 +146,19 @@ const Cli = or(
       ),
       profile: profileOption(),
       connection: connectionOption(),
-    }),
-    { brief: message`Interactively create a local configuration profile.` },
-  ),
-  command(
-    "connect",
-    object({
-      command: constant("connect"),
-      integrationPath: integrationArgument(),
       origin: optional(
         option("--origin", url({ allowedProtocols: ["http:", "https:"], metavar: "URL" }), {
           description: message`Override the provider origin.`,
         }),
       ),
-      connection: connectionOption(),
+      inputs: inputsOption(),
+      reauthorize: optional(
+        option("--reauthorize", {
+          description: message`Collect credentials and authorize again.`,
+        }),
+      ),
     }),
-    { brief: message`Create or reauthorize a local connection.` },
-  ),
-  command(
-    "verify",
-    object({
-      command: constant("verify"),
-      integrationPath: integrationArgument(),
-      connection: connectionOption(),
-    }),
-    { brief: message`Verify an integration connection.` },
+    { brief: message`Configure and verify a local sync.` },
   ),
   command(
     "sync",
@@ -208,145 +195,123 @@ async function main(args = process.argv.slice(2)): Promise<void> {
     version: Package.version,
   });
   if (options.command === "pack") {
-    const requestedOutput =
-      options.outputPath === undefined ? undefined : resolve(options.outputPath);
-    if (requestedOutput !== undefined && !requestedOutput.endsWith(".beetl.zip")) {
-      throw new Error("Artifact output must end with .beetl.zip");
-    }
-    const archive = await createIntegrationArchive(options.integrationPath);
-    const outputPath = requestedOutput ?? resolve(archive.filename);
-    await replacePrivateFile(outputPath, archive.bytes);
-    console.log(`Packed ${archive.manifest.integration.displayName} to ${outputPath}`);
+    const packed = await packIntegration(options.integrationPath);
+    const outputPath = resolve(options.outputPath ?? packed.filename);
+    await replacePrivateFile(outputPath, packed.bytes);
+    console.log(`Packed integration to ${outputPath}`);
+    console.log(`Included files: ${packed.files.join(", ")}`);
     return;
   }
   const { integration, manifest } = await loadIntegration(options.integrationPath);
 
-  if (options.command === "check") {
-    console.log(
-      `${integration.displayName}: ${integration.syncs.map((sync) => sync.key).join(", ")}`,
-    );
-    return;
-  }
-
   if (options.command === "configure") {
     const syncKey = selectSyncKey(integration, options.syncKey);
     const profile = options.profile ?? DefaultProfile;
-    await configureProfile(
+    const connection = await configureIntegration(
       integration,
       manifest,
       syncKey,
-      join(UserConfigDirectory, "profiles", integration.key, syncKey, `${profile}.json`),
+      profile,
       options.connection,
+      options.origin,
+      options.inputs === undefined ? undefined : ConfigurationInputsSchema.parse(options.inputs),
+      options.reauthorize ?? false,
     );
-    console.log(`Saved profile ${profile} for ${integration.displayName}/${syncKey}`);
-    return;
-  }
-
-  if (options.command === "connect") {
-    const name = options.connection ?? DefaultConnection;
-    const path = join(UserConfigDirectory, "connections", integration.key, `${name}.json`);
-    await connectConnection(integration, manifest, name, path, options.origin);
-    console.log(`Connected ${integration.displayName} as ${name}`);
+    console.log(`Configured ${integration.displayName}/${syncKey} with connection ${connection}`);
     return;
   }
 
   if (options.command === "sync") {
     const syncKey = selectSyncKey(integration, options.syncKey);
-    const configuration = await resolveProfile(integration, manifest, syncKey, options.profile);
-    const connectionPath = join(
+    let configuration = await resolveProfile(integration, manifest, syncKey, options.profile);
+    let connectionPath = join(
       UserConfigDirectory,
       "connections",
       integration.key,
       `${configuration.connection}.json`,
     );
-    let connection = await readConnection(
-      connectionPath,
-      integration.key,
-      configuration.connection,
-    );
-    if (connection === undefined) {
-      connection = await connectConnection(
+    if (
+      (await readConnection(connectionPath, integration.key, configuration.connection)) ===
+      undefined
+    ) {
+      await configureIntegration(
         integration,
         manifest,
-        configuration.connection,
-        connectionPath,
-      );
-    }
-    assertConnectionProvider(integration, manifest, connection);
-    const outputPath = resolve(
-      options.outputPath ??
-        `${integration.key}-${syncKey}_${new Date().toISOString().replaceAll(":", "-")}.ndjson`,
-    );
-    const statePath = resolve(
-      options.statePath ??
-        `.beetl/state/${integration.key}/${configuration.profile}/${configuration.revision}/${configuration.connection}/${connection.revision}/${syncKey}.json`,
-    );
-    const controller = new AbortController();
-    const host = createLocalHost(integration, manifest, connection, {
-      outputPath,
-      statePath,
-      signal: controller.signal,
-      onConnectionChanged: (updated) =>
-        replacePrivateFile(connectionPath, `${JSON.stringify(updated, null, 2)}\n`),
-    });
-    const abort = () => controller.abort(new Error("Interrupted"));
-    process.once("SIGINT", abort);
-    try {
-      const result = await runSync(
-        integration,
         syncKey,
-        {
-          connectionConfig: connection.inputs,
-          syncConfig: configuration.inputs,
-          checkpoint: await host.loadCheckpoint(),
-          signal: controller.signal,
-        },
-        host,
+        configuration.profile,
+        configuration.connection,
       );
-      console.log(
-        `Emitted ${result.records} records in ${result.batches} batches to ${outputPath}`,
+      configuration = await resolveProfile(integration, manifest, syncKey, options.profile);
+      connectionPath = join(
+        UserConfigDirectory,
+        "connections",
+        integration.key,
+        `${configuration.connection}.json`,
       );
-    } finally {
-      process.removeListener("SIGINT", abort);
     }
-    return;
-  }
-
-  if (options.command === "verify") {
-    const name = options.connection ?? DefaultConnection;
-    const connectionPath = join(
-      UserConfigDirectory,
-      "connections",
-      integration.key,
-      `${name}.json`,
-    );
-    const connection = await readConnection(connectionPath, integration.key, name);
-    if (connection === undefined) {
-      throw new Error(`Connection ${JSON.stringify(name)} does not exist; run connect first`);
-    }
-    assertConnectionProvider(integration, manifest, connection);
-    const controller = new AbortController();
-    const host = createLocalHost(integration, manifest, connection, {
-      outputPath: resolve(`.beetl/output/${integration.key}/verify.ndjson`),
-      statePath: resolve(`.beetl/state/${integration.key}/verify.json`),
-      signal: controller.signal,
-      onConnectionChanged: (updated) =>
-        replacePrivateFile(connectionPath, `${JSON.stringify(updated, null, 2)}\n`),
-    });
-    const abort = () => controller.abort(new Error("Interrupted"));
-    process.once("SIGINT", abort);
-    try {
-      await verifyConnection(
-        integration,
-        {
-          connectionConfig: connection.inputs,
-          signal: controller.signal,
-        },
-        host,
+    const runConfiguredSync = async () => {
+      const connection = await readConnection(
+        connectionPath,
+        integration.key,
+        configuration.connection,
       );
-      console.log(`Verified ${integration.displayName} connection ${name}`);
-    } finally {
-      process.removeListener("SIGINT", abort);
+      if (connection === undefined) throw new Error("Configuration did not create a connection");
+      assertConnectionProvider(integration, manifest, connection);
+      const outputPath = resolve(
+        options.outputPath ??
+          `${integration.key}-${syncKey}_${new Date().toISOString().replaceAll(":", "-")}.ndjson`,
+      );
+      const statePath = resolve(
+        options.statePath ??
+          `.beetl/state/${integration.key}/${configuration.profile}/${configuration.revision}/${configuration.connection}/${connection.revision}/${syncKey}.json`,
+      );
+      await withFileLock(
+        `${statePath}.lock`,
+        `Sync state is already in use: ${statePath}`,
+        async () => {
+          const controller = new AbortController();
+          const abort = () => controller.abort(new Error("Interrupted"));
+          process.once("SIGINT", abort);
+          try {
+            const host = createLocalHost(integration, manifest, connection, {
+              outputPath,
+              statePath,
+              signal: controller.signal,
+              onConnectionChanged: (updated) =>
+                replacePrivateFile(connectionPath, `${JSON.stringify(updated, null, 2)}\n`),
+            });
+            try {
+              const result = await runSync(
+                integration,
+                syncKey,
+                {
+                  connectionConfig: connection.inputs,
+                  syncConfig: configuration.inputs,
+                  checkpoint: await host.loadCheckpoint(),
+                  signal: controller.signal,
+                },
+                host,
+              );
+              console.log(
+                `Emitted ${result.records} records in ${result.batches} batches to ${outputPath}`,
+              );
+            } finally {
+              await host.settleAuthentication();
+            }
+          } finally {
+            process.removeListener("SIGINT", abort);
+          }
+        },
+      );
+    };
+    if (integration.connection.auth?.type === "oauth2_authorization_code") {
+      await withFileLock(
+        `${connectionPath}.lock`,
+        `Connection ${JSON.stringify(configuration.connection)} is already in use`,
+        runConfiguredSync,
+      );
+    } else {
+      await runConfiguredSync();
     }
     return;
   }
@@ -366,15 +331,9 @@ async function resolveProfile(
     syncKey,
     `${profileName}.json`,
   );
-  const syncManifest = manifest.syncs.find((sync) => sync.key === syncKey);
   let profile = await readProfile(path);
-  if (
-    requestedProfile === undefined &&
-    profile === undefined &&
-    syncManifest !== undefined &&
-    Object.keys(syncManifest.inputs.properties).length > 0
-  ) {
-    await configureProfile(integration, manifest, syncKey, path);
+  if (requestedProfile === undefined && profile === undefined) {
+    await configureIntegration(integration, manifest, syncKey, profileName);
     profile = await readProfile(path);
   }
   if (profile === undefined) {
@@ -383,12 +342,7 @@ async function resolveProfile(
         `Profile ${JSON.stringify(requestedProfile)} does not exist; run configure first`,
       );
     }
-    return {
-      profile: profileName,
-      revision: ImplicitProfileRevision,
-      connection: DefaultConnection,
-      inputs: {},
-    };
+    throw new Error(`Profile ${JSON.stringify(profileName)} was not created by configure`);
   }
   if (profile.integration !== integration.key) {
     throw new Error(`Profile belongs to integration ${profile.integration}`);
@@ -400,157 +354,288 @@ async function resolveProfile(
     profile: profileName,
     revision: profile.revision,
     connection: profile.connection,
-    inputs: Object.fromEntries(
-      Object.entries(profile.inputs).filter(([name]) =>
-        Object.hasOwn(syncManifest?.inputs.properties ?? {}, name),
-      ),
-    ),
+    inputs: profile.inputs,
   };
 }
 
-async function configureProfile(
+async function configureIntegration(
   integration: IntegrationDefinition,
   manifest: IntegrationManifest,
   syncKey: string,
-  path: string,
+  profileName: string,
   requestedConnection?: string,
-): Promise<void> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error("configure requires an interactive terminal");
+  origin?: URL,
+  requestedInputs?: ConfigurationInputs,
+  reauthorize = false,
+): Promise<string> {
+  const profilePath = join(
+    UserConfigDirectory,
+    "profiles",
+    integration.key,
+    syncKey,
+    `${profileName}.json`,
+  );
+  const existingProfile = await readProfile(profilePath);
+  if (existingProfile !== undefined && existingProfile.integration !== integration.key) {
+    throw new Error(`Profile belongs to integration ${existingProfile.integration}`);
   }
-  const existing = await readProfile(path);
+  if (existingProfile !== undefined && existingProfile.sync !== syncKey) {
+    throw new Error(`Profile belongs to sync ${existingProfile.sync}`);
+  }
   const sync = integration.syncs.find((candidate) => candidate.key === syncKey);
   const syncManifest = manifest.syncs.find((candidate) => candidate.key === syncKey);
   if (sync === undefined || syncManifest === undefined) {
     throw new Error(`Unknown sync ${JSON.stringify(syncKey)}`);
   }
-  const inputs = await promptObject(syncManifest.inputs, existing?.inputs ?? {});
-  const parsedInputs = (sync.inputs?.schema ?? EmptyInputs).safeParse(inputs);
-  if (!parsedInputs.success) {
-    throw new Error(`Invalid sync inputs: ${z.prettifyError(parsedInputs.error)}`);
-  }
-  const values = {
-    integration: integration.key,
-    sync: syncKey,
-    connection: requestedConnection ?? existing?.connection ?? DefaultConnection,
-    inputs: JsonObjectSchema.parse(parsedInputs.data),
-  };
-  const profile: Profile = {
-    ...values,
-    revision:
-      existing !== undefined &&
-      existing.integration === values.integration &&
-      existing.sync === values.sync &&
-      existing.connection === values.connection &&
-      isDeepStrictEqual(existing.inputs, values.inputs)
-        ? existing.revision
-        : randomUUID(),
-  };
-  await replacePrivateFile(path, `${JSON.stringify(profile, null, 2)}\n`);
+
+  const connectionName = requestedConnection ?? existingProfile?.connection ?? DefaultConnection;
+  const connectionPath = join(
+    UserConfigDirectory,
+    "connections",
+    integration.key,
+    `${connectionName}.json`,
+  );
+  return withFileLock(
+    `${connectionPath}.lock`,
+    `Connection ${JSON.stringify(connectionName)} is already in use`,
+    async () => {
+      const requestedOrigin =
+        origin === undefined ? undefined : resolveProviderOrigin(origin.href).origin;
+      const stored = await readConnection(connectionPath, integration.key, connectionName);
+      const existingConnection =
+        stored !== undefined &&
+        connectionMatchesProvider(integration, manifest, stored) &&
+        (requestedOrigin === undefined || requestedOrigin === stored.provider.origin)
+          ? stored
+          : undefined;
+      const currentInputs = {
+        connection: existingConnection?.inputs ?? {},
+        sync: existingProfile?.inputs ?? {},
+      };
+      const inputs =
+        requestedInputs === undefined
+          ? Object.keys(manifest.connection.inputs.properties).length === 0 &&
+            Object.keys(syncManifest.inputs.properties).length === 0
+            ? currentInputs
+            : await promptConfigurationInputs(currentInputs)
+          : {
+              connection: requestedInputs.connection ?? currentInputs.connection,
+              sync: requestedInputs.sync ?? currentInputs.sync,
+            };
+      const parsedConnectionInputs = (
+        integration.connection.inputs?.schema ?? EmptyInputs
+      ).safeParse(inputs.connection);
+      if (!parsedConnectionInputs.success) {
+        throw new Error(
+          `Invalid connection inputs: ${z.prettifyError(parsedConnectionInputs.error)}`,
+        );
+      }
+      const parsedSyncInputs = (sync.inputs?.schema ?? EmptyInputs).safeParse(inputs.sync);
+      if (!parsedSyncInputs.success) {
+        throw new Error(`Invalid sync inputs: ${z.prettifyError(parsedSyncInputs.error)}`);
+      }
+
+      const credentials =
+        existingConnection !== undefined && !reauthorize
+          ? existingConnection.credentials
+          : await promptCredentials(
+              manifest.connection.credentials,
+              existingConnection?.credentials ?? {},
+            );
+      const parsedCredentials = parseCredentials(
+        integration.connection.auth?.credentials.schema ?? EmptyInputs,
+        credentials,
+      );
+      const controller = new AbortController();
+      const abort = () => controller.abort(new Error("Interrupted"));
+      process.once("SIGINT", abort);
+      try {
+        const configuredOrigin = requestedOrigin ?? existingConnection?.origin;
+        const authorizationState =
+          integration.connection.auth?.type === "oauth2_authorization_code"
+            ? existingConnection?.authorizationState !== undefined && !reauthorize
+              ? existingConnection.authorizationState
+              : await authorizeOAuth({
+                  auth: integration.connection.auth,
+                  credentials: parsedCredentials,
+                  redirectUri: LocalOAuthRedirectUri,
+                  fetch: ProviderFetch,
+                  signal: controller.signal,
+                  onAuthorizationUrl: (url) => console.log(`Open this URL to authorize:\n${url}`),
+                })
+            : undefined;
+        const connectionInputs = JsonObjectSchema.parse(parsedConnectionInputs.data);
+        const credentialValues = CredentialValuesSchema.parse(parsedCredentials);
+        const provider = providerBinding(
+          integration,
+          manifest,
+          configuredOrigin,
+          authorizationState,
+        );
+        const connectionValues = {
+          integration: integration.key,
+          name: connectionName,
+          ...(configuredOrigin === undefined ? {} : { origin: configuredOrigin }),
+          inputs: connectionInputs,
+          credentials: credentialValues,
+          ...(authorizationState === undefined ? {} : { authorizationState }),
+          provider,
+        };
+        let connectionRevision: string = randomUUID();
+        if (existingConnection !== undefined && !reauthorize) {
+          const { revision, ...existingValues } = existingConnection;
+          if (isDeepStrictEqual(existingValues, connectionValues)) connectionRevision = revision;
+        }
+        let connection = StoredConnectionSchema.parse({
+          ...connectionValues,
+          revision: connectionRevision,
+        });
+        if (manifest.connection.canVerify) {
+          const host = createLocalHost(integration, manifest, connection, {
+            outputPath: resolve(`.beetl/output/${integration.key}/configure.ndjson`),
+            statePath: resolve(`.beetl/state/${integration.key}/configure.json`),
+            signal: controller.signal,
+            onConnectionChanged: async (updated) => {
+              connection = updated;
+              if (existingConnection !== undefined && !reauthorize) {
+                await replacePrivateFile(
+                  connectionPath,
+                  `${JSON.stringify(
+                    {
+                      ...existingConnection,
+                      authorizationState: updated.authorizationState,
+                      provider: providerBinding(
+                        integration,
+                        manifest,
+                        existingConnection.origin,
+                        updated.authorizationState,
+                      ),
+                    },
+                    null,
+                    2,
+                  )}\n`,
+                );
+              }
+            },
+          });
+          try {
+            await verifyConnection(
+              integration,
+              { connectionConfig: connection.inputs, signal: controller.signal },
+              host,
+            );
+          } finally {
+            await host.settleAuthentication();
+          }
+        }
+
+        const syncInputs = JsonObjectSchema.parse(parsedSyncInputs.data);
+        const profileValues = {
+          integration: integration.key,
+          sync: syncKey,
+          connection: connectionName,
+          inputs: syncInputs,
+        };
+        let profileRevision: string = randomUUID();
+        if (existingProfile !== undefined) {
+          const { revision, ...existingValues } = existingProfile;
+          if (isDeepStrictEqual(existingValues, profileValues)) profileRevision = revision;
+        }
+        const profile: Profile = { ...profileValues, revision: profileRevision };
+        await replacePrivateFile(connectionPath, `${JSON.stringify(connection, null, 2)}\n`);
+        await replacePrivateFile(profilePath, `${JSON.stringify(profile, null, 2)}\n`);
+        return connectionName;
+      } finally {
+        process.removeListener("SIGINT", abort);
+      }
+    },
+  );
 }
 
-async function promptObject(
-  schema: InputObjectSchema,
-  existing: Readonly<Record<string, JsonValue | undefined>>,
-): Promise<JsonRecord> {
-  const required = new Set(schema.required ?? []);
-  const values: JsonRecord = {};
-  for (const [name, field] of Object.entries(schema.properties)) {
-    const current = Object.hasOwn(existing, name) ? existing[name] : field.default;
-    const label = field.title ?? name;
-    const answer = await promptValue(label, field, current, required.has(name));
-    if (answer.kind === "value") values[name] = answer.value;
+async function withFileLock<Value>(
+  path: string,
+  inUseMessage: string,
+  action: () => Promise<Value>,
+): Promise<Value> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const lock = await open(path, "wx", 0o600).catch((error: unknown) => {
+    if (error instanceof Error && "code" in error && error.code === "EEXIST") {
+      throw new Error(inUseMessage, { cause: error });
+    }
+    throw error;
+  });
+  try {
+    return await action();
+  } finally {
+    try {
+      await lock.close();
+    } finally {
+      await rm(path, { force: true });
+    }
   }
-  return values;
 }
 
-async function promptValue(
-  label: string,
-  schema: InputField,
-  current: JsonValue | undefined,
-  required: boolean,
-): Promise<PromptAnswer> {
-  if (schema.type === "object") {
-    if (
-      !required &&
-      !(await confirm({ message: `Configure ${label}?`, default: current !== undefined }))
-    ) {
-      return { kind: "omit" };
-    }
-    if (required) console.log(label);
-    return {
-      kind: "value",
-      value: await promptObject(
-        schema,
-        current !== null && typeof current === "object" && !Array.isArray(current) ? current : {},
-      ),
-    };
+async function promptConfigurationInputs(current: {
+  connection: JsonObject;
+  sync: JsonObject;
+}): Promise<{ connection: JsonObject; sync: JsonObject }> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error("configuration inputs require an interactive terminal or --inputs");
   }
-  if (
-    !required &&
-    current !== undefined &&
-    !(await confirm({ message: `Keep ${label}?`, default: true }))
-  ) {
-    return { kind: "omit" };
-  }
-  if (schema["x-beetl-widget"] === "password") {
-    while (true) {
-      const answer = await password({
-        message: current === undefined ? label : `${label} [configured]`,
-        mask: true,
-      });
-      if (answer !== "") return { kind: "value", value: answer };
-      if (current !== undefined) return { kind: "value", value: current };
-      if (!required) return { kind: "omit" };
-      console.error(`${label} is required`);
-    }
-  }
-  const choices = Array.isArray(schema.enum)
-    ? ` (${schema.enum.join("/")})`
-    : schema.type === "boolean"
-      ? " (true/false)"
-      : "";
-  const shown =
-    current === undefined
-      ? ""
-      : ` [${typeof current === "string" ? current : JSON.stringify(current)}]`;
   const lines = createInterface({ input: process.stdin, output: process.stdout });
   try {
     while (true) {
-      const answer = (await lines.question(`${label}${choices}${shown}: `)).trim();
-      if (!answer) {
-        if (current !== undefined) return { kind: "value", value: current };
-        if (!required) return { kind: "omit" };
-        console.error(`${label} is required`);
-        continue;
-      }
-      if (schema.type === "integer" || schema.type === "number") {
-        const value = Number(answer);
-        if (Number.isFinite(value) && (schema.type !== "integer" || Number.isInteger(value))) {
-          return { kind: "value", value };
+      const answer = await lines.question(`Inputs [${JSON.stringify(current)}]: `);
+      if (!answer.trim()) return current;
+      try {
+        const parsed = ConfigurationInputsSchema.safeParse(JSON.parse(answer));
+        if (parsed.success) {
+          return {
+            connection: parsed.data.connection ?? current.connection,
+            sync: parsed.data.sync ?? current.sync,
+          };
         }
-        console.error(`${label} must be a ${schema.type}`);
-        continue;
-      }
-      if (schema.type === "boolean") {
-        if (answer === "true") return { kind: "value", value: true };
-        if (answer === "false") return { kind: "value", value: false };
-        console.error(`${label} must be true or false`);
-        continue;
-      }
-      if (schema.type === "array" || schema["x-beetl-widget"] === "json") {
-        try {
-          const value = z.json().safeParse(JSON.parse(answer));
-          if (value.success) return { kind: "value", value: value.data };
-        } catch {}
-        console.error(`${label} must be valid JSON`);
-        continue;
-      }
-      return { kind: "value", value: answer };
+      } catch {}
+      console.error("Inputs must contain connection and sync JSON objects");
     }
   } finally {
     lines.close();
   }
+}
+
+async function promptCredentials(
+  schema: InputObjectSchema,
+  existing: Readonly<Record<string, string>>,
+): Promise<Readonly<Record<string, string>>> {
+  if (
+    Object.keys(schema.properties).length > 0 &&
+    (!process.stdin.isTTY || !process.stdout.isTTY)
+  ) {
+    throw new Error("credentials require an interactive terminal");
+  }
+  const values: Record<string, string> = {};
+  for (const [name, field] of Object.entries(schema.properties)) {
+    const current = existing[name];
+    const label = field.title ?? name;
+    let answer: string;
+    if ("x-beetl-widget" in field && field["x-beetl-widget"] === "password") {
+      answer = await password({
+        message: current === undefined ? label : `${label} [configured]`,
+        mask: true,
+      });
+    } else {
+      const lines = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        answer = await lines.question(
+          current === undefined ? `${label}: ` : `${label} [configured]: `,
+        );
+      } finally {
+        lines.close();
+      }
+    }
+    values[name] = answer === "" && current !== undefined ? current : answer;
+  }
+  return values;
 }
 
 async function readProfile(path: string): Promise<Profile | undefined> {
@@ -571,89 +656,6 @@ async function readProfile(path: string): Promise<Profile | undefined> {
   if (!profile.success)
     throw new Error(`Invalid profile ${path}: ${z.prettifyError(profile.error)}`);
   return profile.data;
-}
-
-async function connectConnection(
-  integration: IntegrationDefinition,
-  manifest: IntegrationManifest,
-  name: string,
-  path: string,
-  origin?: URL,
-): Promise<StoredConnection> {
-  const requestedOrigin =
-    origin === undefined ? undefined : resolveProviderOrigin(origin.href).origin;
-  if (
-    (!process.stdin.isTTY || !process.stdout.isTTY) &&
-    (Object.keys(manifest.connection.inputs.properties).length > 0 ||
-      Object.keys(manifest.connection.credentials.properties).length > 0)
-  ) {
-    throw new Error("connect requires an interactive terminal");
-  }
-  const stored = await readConnection(path, integration.key, name);
-  const existing =
-    stored !== undefined &&
-    connectionMatchesProvider(integration, manifest, stored) &&
-    (requestedOrigin === undefined || requestedOrigin === stored.provider.origin)
-      ? stored
-      : undefined;
-  const inputs = await promptObject(manifest.connection.inputs, existing?.inputs ?? {});
-  const credentials = await promptObject(
-    manifest.connection.credentials,
-    existing?.credentials ?? {},
-  );
-  const parsedInputs = (integration.connection.inputs?.schema ?? EmptyInputs).safeParse(inputs);
-  if (!parsedInputs.success) {
-    throw new Error(`Invalid connection inputs: ${z.prettifyError(parsedInputs.error)}`);
-  }
-  const parsedCredentials = parseCredentials(
-    integration.connection.auth?.credentials.schema ?? EmptyInputs,
-    credentials,
-  );
-  const controller = new AbortController();
-  const abort = () => controller.abort(new Error("Interrupted"));
-  process.once("SIGINT", abort);
-  try {
-    const configuredOrigin = requestedOrigin ?? existing?.origin;
-    const authorizationState =
-      integration.connection.auth?.type === "oauth2_authorization_code"
-        ? await authorizeOAuth({
-            auth: integration.connection.auth,
-            credentials: parsedCredentials,
-            redirectUri: "http://localhost:53682/oauth/callback",
-            fetch: ProviderFetch,
-            signal: controller.signal,
-            onAuthorizationUrl: (url) => console.log(`Open this URL to authorize:\n${url}`),
-          })
-        : undefined;
-    let connection = StoredConnectionSchema.parse({
-      integration: integration.key,
-      name,
-      revision: randomUUID(),
-      ...(configuredOrigin === undefined ? {} : { origin: configuredOrigin }),
-      inputs: JsonObjectSchema.parse(parsedInputs.data),
-      credentials: CredentialValuesSchema.parse(parsedCredentials),
-      ...(authorizationState === undefined ? {} : { authorizationState }),
-      provider: providerBinding(integration, manifest, configuredOrigin, authorizationState),
-    });
-    if (manifest.connection.canVerify) {
-      await verifyConnection(
-        integration,
-        { connectionConfig: connection.inputs, signal: controller.signal },
-        createLocalHost(integration, manifest, connection, {
-          outputPath: resolve(`.beetl/output/${integration.key}/connect.ndjson`),
-          statePath: resolve(`.beetl/state/${integration.key}/connect.json`),
-          signal: controller.signal,
-          onConnectionChanged: (updated) => {
-            connection = updated;
-          },
-        }),
-      );
-    }
-    await replacePrivateFile(path, `${JSON.stringify(connection, null, 2)}\n`);
-    return connection;
-  } finally {
-    process.removeListener("SIGINT", abort);
-  }
 }
 
 function createLocalHost(
@@ -731,7 +733,7 @@ function assertConnectionProvider(
   connection: StoredConnection,
 ): void {
   if (!connectionMatchesProvider(integration, manifest, connection)) {
-    throw new Error("Connection does not match this provider definition; run connect again");
+    throw new Error("Connection does not match this provider definition; run configure again");
   }
 }
 

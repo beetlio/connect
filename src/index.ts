@@ -87,7 +87,27 @@ function metadata(options: {
   };
 }
 
+function assertBounds(
+  kind: "number" | "integer" | "length",
+  minimum: number | undefined,
+  maximum: number | undefined,
+): void {
+  const label = kind === "number" ? "Number" : kind === "integer" ? "Integer" : "Length";
+  const valid = (value: number) =>
+    Number.isFinite(value) &&
+    (kind === "number" || (Number.isInteger(value) && (kind === "integer" || value >= 0)));
+  if ([minimum, maximum].some((value) => value !== undefined && !valid(value))) {
+    throw new Error(
+      `${label} bounds must be ${kind === "length" ? "non-negative integers" : `finite ${kind}s`}`,
+    );
+  }
+  if (minimum !== undefined && maximum !== undefined && minimum > maximum) {
+    throw new Error(`${label} minimum cannot exceed maximum`);
+  }
+}
+
 function stringSchema(options: Omit<StringInputOptions, "default">): z.ZodType<string> {
+  assertBounds("length", options.minLength, options.maxLength);
   let schema = z.string();
   if (options.minLength !== undefined) schema = schema.min(options.minLength);
   if (options.maxLength !== undefined) schema = schema.max(options.maxLength);
@@ -150,6 +170,7 @@ export const input = {
   text: (options: StringInputOptions = {}) => stringInput(options, "textarea"),
 
   integer(options: NumberInputOptions = {}): ConfigurationField<z.ZodType<number>> {
+    assertBounds("integer", options.min, options.max);
     let schema = z.number().int();
     if (options.min !== undefined) schema = schema.min(options.min);
     if (options.max !== undefined) schema = schema.max(options.max);
@@ -166,6 +187,7 @@ export const input = {
   },
 
   number(options: NumberInputOptions = {}): ConfigurationField<z.ZodType<number>> {
+    assertBounds("number", options.min, options.max);
     let schema = z.number();
     if (options.min !== undefined) schema = schema.min(options.min);
     if (options.max !== undefined) schema = schema.max(options.max);
@@ -208,6 +230,7 @@ export const input = {
       readonly default?: readonly Options[number]["value"][];
     } = {},
   ): ConfigurationField<z.ZodType<Options[number]["value"][]>> {
+    assertBounds("length", details.minItems, details.maxItems);
     let schema = z.array(z.enum(options.map(({ value }) => value) as [string, ...string[]]));
     if (details.minItems !== undefined) schema = schema.min(details.minItems);
     if (details.maxItems !== undefined) schema = schema.max(details.maxItems);
@@ -263,6 +286,7 @@ export const input = {
     if (item.kind !== "configuration" || item.optional) {
       throw new Error("Configuration arrays require a non-optional input.* field");
     }
+    assertBounds("length", options.minItems, options.maxItems);
     let arraySchema = z.array(item.schema);
     if (options.minItems !== undefined) arraySchema = arraySchema.min(options.minItems);
     if (options.maxItems !== undefined) arraySchema = arraySchema.max(options.maxItems);

@@ -447,7 +447,14 @@ test("connection verification can recover from caught request failures", async (
         assert.equal(response.status, 204);
       },
     },
-    syncs: [],
+    syncs: [
+      defineSync({
+        key: "items",
+        displayName: "Items",
+        records: z.object({ id: z.string() }),
+        async run() {},
+      }),
+    ],
   });
 
   const host = syncHost({
@@ -501,6 +508,54 @@ test("sync operations stay ordered, tracked, and closed after the run", async ()
   await assert.rejects(emitAfterRun(), /Sync context is closed/);
 });
 
+test("sync settles logs and cancels abandoned requests", async () => {
+  const logs: string[] = [];
+  let requestAborted = false;
+  const integration = defineIntegration({
+    key: "capability-lifecycle",
+    displayName: "Capability lifecycle",
+    connection: { origin: "https://api.example.com" },
+    syncs: [
+      defineSync({
+        key: "items",
+        displayName: "Items",
+        records: z.string(),
+        async run(ctx) {
+          void ctx.fetch("/abandoned");
+          void ctx.log.info("first");
+          void ctx.log.info("second");
+        },
+      }),
+    ],
+  });
+
+  await runSync(
+    integration,
+    "items",
+    {},
+    syncHost({
+      request(_request, signal) {
+        return new Promise((_resolve, reject) =>
+          signal?.addEventListener(
+            "abort",
+            () => {
+              requestAborted = true;
+              reject(signal.reason);
+            },
+            { once: true },
+          ),
+        );
+      },
+      async log(entry) {
+        logs.push(entry.message);
+      },
+    }),
+  );
+
+  assert.deepEqual(logs, ["first", "second"]);
+  assert.equal(requestAborted, true);
+});
+
 test("records must be JSON values before they cross the host boundary", async () => {
   let emitted = false;
   const integration = defineIntegration({
@@ -535,7 +590,26 @@ test("integration contracts enforce authentication and input invariants", () => 
     () => input.optional(input.string({ default: "value" })),
     /cannot also be optional/,
   );
+  assert.throws(
+    () =>
+      validateIntegration(
+        defineIntegration({
+          key: "empty",
+          displayName: "Empty",
+          connection: { origin: "https://example.com" },
+          syncs: [],
+        }),
+      ),
+    /at least one sync/,
+  );
   assert.throws(() => input.integer({ min: 1, default: 0 }), /Invalid input default/);
+  assert.throws(() => input.number({ min: Number.POSITIVE_INFINITY }), /finite numbers/);
+  assert.throws(() => input.integer({ min: 1.5 }), /finite integers/);
+  assert.throws(() => input.array(input.string(), { minItems: -1 }), /non-negative integers/);
+  assert.throws(
+    () => input.string({ minLength: 2, maxLength: 1 }),
+    /minimum cannot exceed maximum/,
+  );
   assert.throws(
     () =>
       validateIntegration(
@@ -575,13 +649,34 @@ test("integration contracts enforce authentication and input invariants", () => 
     key: "authenticated-http",
     displayName: "Authenticated HTTP",
     connection: { origin: "http://example.com", auth: auth.bearer() },
-    syncs: [],
+    syncs: [
+      defineSync({
+        key: "items",
+        displayName: "Items",
+        records: z.object({ id: z.string() }),
+        async run() {},
+      }),
+    ],
   });
   assert.throws(() => validateIntegration(authenticatedHttp), /must use HTTPS or loopback HTTP/);
   assert.doesNotThrow(() =>
     validateIntegration({
       ...authenticatedHttp,
       connection: { ...authenticatedHttp.connection, origin: "http://[::1]:8080" },
+    }),
+  );
+  assert.doesNotThrow(() =>
+    validateIntegration({
+      ...authenticatedHttp,
+      connection: {
+        origin: "http://127.0.0.1:8080",
+        auth: auth.oauth2AuthorizationCode({
+          issuer: "http://127.0.0.1:8080",
+          authorizationUrl: "http://127.0.0.1:8080/authorize",
+          tokenUrl: "http://127.0.0.1:8080/token",
+          scopes: ["items.read"],
+        }),
+      },
     }),
   );
 
@@ -705,7 +800,6 @@ test("integration contracts enforce authentication and input invariants", () => 
       syncs: [],
     }),
   );
-  assert.equal(tokenExchangeManifest.hostProtocolVersion, 2);
   assert.deepEqual(tokenExchangeManifest.connection.auth, {
     type: "token_exchange",
     tokenUrl: "/login",

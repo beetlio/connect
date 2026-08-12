@@ -28,7 +28,7 @@
           ><img src="./beetl-logo.svg" alt="" />@beetlio/connect</a
         >
         <span class="docs-label">Documentation</span>
-        <span class="version">v0.0.0</span>
+        <span class="version">v0.1.0</span>
         <nav aria-label="Project links">
           <a href="https://github.com/beetlio/connect">GitHub</a>
           <a href="https://github.com/beetlio/connect/blob/main/CONTRIBUTING.md">Contributing</a>
@@ -87,7 +87,7 @@
           <div class="notice warning">
             <strong>Experimental</strong>
             <p>
-              The project is currently version 0.0.0. Public APIs and local storage formats may
+              The project is currently version 0.1.0. Public APIs and local storage formats may
               change.
             </p>
           </div>
@@ -114,10 +114,10 @@
           <h2>From API to NDJSON</h2>
           <p>
             Define an API's inputs, authentication, record schema, and sync behavior in one
-            <code>integration.ts</code> file. The CLI checks it, runs it, persists checkpoints, and
-            writes the records.
+            <code>integration.ts</code> file. The CLI validates it, runs it, persists checkpoints,
+            and writes the records.
           </p>
-          <pre><code>beetl-connect check .
+          <pre><code>beetl-connect configure .
 beetl-connect sync . --output records.ndjson
 beetl-connect pack .</code></pre>
         </section>
@@ -186,7 +186,9 @@ export default defineIntegration({
           <h3>Provider request boundary</h3>
           <p>
             Paths passed to <code>ctx.fetch()</code> must be relative to the configured origin and
-            begin with <code>/</code>. Absolute and scheme-relative URLs are rejected.
+            begin with <code>/</code>. Absolute and scheme-relative URLs are rejected. Request
+            promises must be awaited; requests still running when the integration returns are
+            cancelled. Emits and logs already submitted before return are settled in order.
           </p>
 
           <h3>Runtime validation</h3>
@@ -199,12 +201,12 @@ export default defineIntegration({
         </section>
 
         <section id="running">
-          <h2>Check and run it</h2>
+          <h2>Configure and run it</h2>
           <p>
-            Check the integration before running it. The first sync prompts for declared inputs and
-            saves them in the local <code>default</code> profile.
+            Configure the integration, then run it. Calling <code>sync</code> first opens the same
+            configuration flow when the default profile or connection is missing.
           </p>
-          <pre><code>beetl-connect check .
+          <pre><code>beetl-connect configure . repositories
 beetl-connect sync . repositories --output repositories.ndjson
 head -n 1 repositories.ndjson</code></pre>
           <p>
@@ -281,12 +283,22 @@ head -n 1 repositories.ndjson</code></pre>
 
           <h3>Named connections</h3>
           <p>
-            <code>connect</code> prompts for the connection inputs and credentials declared by the
-            integration. For OAuth, the provider callback produces separate authorization state
-            containing access and refresh tokens. Integration code sees none of these secrets.
+            <code>configure</code> collects connection and sync inputs as one JSON object and
+            prompts separately for credentials so secret fields remain masked. It authenticates and
+            verifies before saving either object. Existing credentials and OAuth state are retained
+            unless <code>--reauthorize</code> is supplied. Integration code sees none of these
+            secrets.
           </p>
-          <pre><code>beetl-connect connect . --connection default
-beetl-connect verify . --connection default</code></pre>
+          <pre><code>beetl-connect configure . repositories --connection default \
+  --inputs '{"connection":{},"sync":{"user":"octocat"}}'</code></pre>
+          <p>
+            The local authorization-code flow uses
+            <code>http://localhost:53682/oauth/callback</code>; register that redirect URI with the
+            provider. It uses PKCE and either a public client or <code>client_secret_post</code>.
+            Hosted authorization does not use the loopback address: the platform owns its public
+            callback, exchanges the code, and stores the resulting authorization state. Redirect
+            addresses therefore do not belong in uploaded integration source.
+          </p>
         </section>
 
         <section id="syncs">
@@ -344,34 +356,14 @@ beetl-connect verify . --connection default</code></pre>
               </thead>
               <tbody>
                 <tr>
-                  <td><code>pack &lt;integration&gt;</code></td>
-                  <td>Build a self-contained, Deno-compatible <code>.beetl.zip</code> artifact.</td>
-                </tr>
-                <tr>
-                  <td><code>check &lt;integration&gt;</code></td>
-                  <td>Type-check and validate an integration.</td>
-                </tr>
-                <tr>
                   <td>
                     <code
                       >configure &lt;integration&gt; [key] [--profile &lt;name&gt;] [--connection
-                      &lt;name&gt;]</code
+                      &lt;name&gt;] [--origin &lt;url&gt;] [--inputs &lt;json&gt;]
+                      [--reauthorize]</code
                     >
                   </td>
-                  <td>Configure sync inputs and select a named connection.</td>
-                </tr>
-                <tr>
-                  <td>
-                    <code
-                      >connect &lt;integration&gt; [--connection &lt;name&gt;] [--origin
-                      &lt;url&gt;]</code
-                    >
-                  </td>
-                  <td>Create or reauthorize a named connection.</td>
-                </tr>
-                <tr>
-                  <td><code>verify &lt;integration&gt; [--connection &lt;name&gt;]</code></td>
-                  <td>Run the integration's verification function for a named connection.</td>
+                  <td>Configure inputs, authenticate, and verify.</td>
                 </tr>
                 <tr>
                   <td><code>sync &lt;integration&gt; [key]</code></td>
@@ -379,6 +371,10 @@ beetl-connect verify . --connection default</code></pre>
                     Run one sync and write NDJSON records. The key is optional for a single-sync
                     integration.
                   </td>
+                </tr>
+                <tr>
+                  <td><code>pack &lt;integration&gt;</code></td>
+                  <td>Create an npm package for a hosted build.</td>
                 </tr>
               </tbody>
             </table>
@@ -404,7 +400,15 @@ beetl-connect verify . --connection default</code></pre>
                 </tr>
                 <tr>
                   <td><code>--origin url</code></td>
-                  <td>Override the provider origin for <code>connect</code></td>
+                  <td>Override the provider origin for <code>configure</code></td>
+                </tr>
+                <tr>
+                  <td><code>--inputs json</code></td>
+                  <td>Provide <code>connection</code> and <code>sync</code> input objects</td>
+                </tr>
+                <tr>
+                  <td><code>--reauthorize</code></td>
+                  <td>Collect credentials and authorize again</td>
                 </tr>
                 <tr>
                   <td><code>--output path</code></td>
@@ -421,27 +425,39 @@ beetl-connect verify . --connection default</code></pre>
           <div class="notice info">
             <strong>Trusted code</strong>
             <p>
-              Integrations are executable code. Only check, pack, or run integrations you trust.
-              Artifact digests detect corruption; they do not verify the author.
+              Integrations are executable code. Only configure, pack, or run integrations you trust.
+              Hosted builds must treat uploaded source packages as untrusted.
             </p>
           </div>
           <p>
-            <code>pack</code> accepts an entry file or directory containing
-            <code>integration.ts</code>. It type-checks source with the bundled TypeScript compiler
-            and bundles local imports and installed npm dependencies into neutral ESM. Dependencies
-            must be declared and pinned by an npm v3 <code>package-lock.json</code>. Connect never
-            installs packages or runs dependency lifecycle scripts. Other commands also accept a
-            packed <code>.beetl.zip</code>. An artifact contains the bundle, manifest, Deno runtime
-            declaration, license notices, integrity metadata, and inline source maps without source
-            contents. Neutral bundling rejects Node built-ins and other unresolved imports. Provider
-            traffic must use <code>ctx.fetch()</code>. These checks improve compatibility but are
-            not a sandbox.
+            <code>pack</code> accepts a self-contained npm application containing
+            <code>integration.ts</code>, <code>package.json</code>, and the committed
+            <code>package-lock.json</code>. It uses <code>npm pack --ignore-scripts</code> for npm's
+            standard file selection, then adds the lockfile to the resulting <code>.tgz</code>.
+            <code>package.json</code> must contain an explicit <code>files</code> allowlist. Connect
+            rejects npm-selected files outside it and private runtime paths at any depth, then
+            prints the included files. Package metadata, README, and license files remain implicit.
+            Registry dependencies and npm aliases are supported; <code>pack</code> rejects local
+            paths, workspaces, Git repositories, and remote tarballs. Dependency declarations must
+            exactly match the lockfile root.
+          </p>
+          <pre><code>{ "files": ["integration.ts", "src", "icon.png"] }</code></pre>
+          <p>
+            The npm package is transport, not a trusted build artifact: <code>pack</code> does not
+            compile or execute the integration. A hosted platform must safely unpack it in an
+            untrusted build job, enforce package limits, run <code>npm ci --ignore-scripts</code>,
+            validate the exact upload, and produce the immutable Node.js 24.2 runtime bundle and
+            manifest. Runtime jobs execute that artifact in gVisor on an isolated node pool. Local
+            <code>sync</code> uses the same Node.js target. Use <code>ctx.fetch()</code> for managed
+            authentication, retries, and origin enforcement; direct external requests receive none
+            of the connection's managed credentials.
           </p>
           <p>
-            Artifact hashes detect corruption, not provenance. A hosted platform must accept source
-            workspaces, install their committed npm graph with lifecycle scripts disabled in an
-            untrusted build sandbox, and record the artifact digest it produced. It must not trust
-            an uploaded artifact merely because its self-declared hashes match.
+            Hosted v1 treats uploaded integrations as tenant-admin-approved executable code. gVisor
+            isolates workloads from platform infrastructure, but it does not prevent integration
+            code or an npm dependency from forwarding fetched data elsewhere. Third-party
+            marketplace integrations require a separate egress policy and are outside the first
+            release.
           </p>
           <p>
             Profiles and named connections are stored with owner-only permissions in the operating
@@ -452,7 +468,11 @@ beetl-connect verify . --connection default</code></pre>
             origin and authentication definition. Connections are not encrypted. Profiles and
             connections carry revisions; changed inputs and explicit reauthorization create new
             revisions, while automatic OAuth refresh preserves them. Sync checkpoints remain under
-            <code>.beetl/state</code> and are isolated by those revisions.
+            <code>.beetl/state</code> and are isolated by those revisions. Only one local process
+            may use a state path at a time. Configuration and OAuth-backed syncs also lock their
+            named connection so authorization refresh cannot race. Concurrent operations fail
+            instead of waiting. If a process is forcibly killed, remove its adjacent
+            <code>.lock</code> file only after confirming no operation still uses it.
           </p>
         </section>
 
@@ -515,39 +535,13 @@ beetl-connect verify . --connection default</code></pre>
           </p>
           <p>
             Local commands use the <code>default</code> profile. If it does not exist, the CLI
-            prompts for the declared inputs before continuing.
+            prompts for one JSON object containing the declared inputs before continuing.
           </p>
           <pre><code>beetl-connect sync examples/wikidata entities</code></pre>
-          <p>
-            Automation can provision <code>connections/wikidata/default.json</code> under the
-            operating system's user configuration directory with this shape:
-          </p>
-          <pre><code>{
-  "integration": "wikidata",
-  "name": "default",
-  "revision": "22222222-2222-4222-8222-222222222222",
-  "provider": {
-    "origin": "https://www.wikidata.org",
-    "authentication": { "type": "none" }
-  },
-  "inputs": { "userAgent": "my-wikidata-sync/1.0 (me@example.com)" },
-  "credentials": {}
-}</code></pre>
-          <p>
-            The profile at <code>profiles/wikidata/entities/default.json</code> in the same
-            directory then selects that connection and contains only sync inputs:
-          </p>
-          <pre><code>{
-  "integration": "wikidata",
-  "sync": "entities",
-  "connection": "default",
-  "revision": "11111111-1111-4111-8111-111111111111",
-  "inputs": { "search": "open source", "language": "en", "maxResults": 25 }
-}</code></pre>
-          <p>
-            Generate a new UUID revision whenever directly provisioned inputs or authorization
-            change. <code>configure</code> and <code>connect</code> manage revisions automatically.
-          </p>
+          <p>For automation, supply the same validated input object non-interactively:</p>
+          <pre><code>beetl-connect configure examples/wikidata entities \
+  --inputs '{"connection":{"userAgent":"my-wikidata-sync/1.0 (me@example.com)"},"sync":{"search":"open source","language":"en","maxResults":25}}'
+beetl-connect sync examples/wikidata entities</code></pre>
 
           <h3>Output record</h3>
           <pre><code>{
@@ -578,20 +572,6 @@ beetl-connect verify . --connection default</code></pre>
             Connect is a standalone local CLI and integration toolkit. It supports named
             connections. Local connection files are owner-readable but are not encrypted, and there
             is no registry or sandbox for untrusted integrations.
-          </p>
-
-          <h2>Advanced: custom hosts</h2>
-          <p>
-            The CLI is the primary interface. Applications that need to execute Deno-compatible
-            artifacts with their own authentication, request, and persistence services can implement
-            the optional
-            <code>SyncHost</code> interface from <code>@beetlio/connect/host</code>. See the
-            runnable
-            <a href="https://github.com/beetlio/connect/blob/main/examples/custom-host/host.ts"
-              >custom host example</a
-            >. <code>SyncHost</code> is a capability boundary, not a sandbox. Custom executors must
-            prevent integration code from reaching providers directly; production isolation and
-            provider-egress enforcement belong outside the integration runtime.
           </p>
 
           <h2>Development commands</h2>
@@ -627,7 +607,7 @@ npm test</code></pre>
 
     <footer>
       <div><strong>@beetlio/connect</strong><span>A Beetl project · Apache License 2.0</span></div>
-      <p>Documentation for the experimental 0.0.0 release.</p>
+      <p>Documentation for the experimental 0.1.0 release.</p>
     </footer>
   </body>
 </html>

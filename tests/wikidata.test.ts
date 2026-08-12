@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { runSync, verifyConnection } from "@beetlio/connect/host";
-import wikidata from "../examples/wikidata/integration.ts";
+import { loadIntegration } from "../dist/artifact.js";
 import { LocalHost } from "../src/local-host.ts";
 import { fixtureDirectory, fixtureServer } from "./support.ts";
 
@@ -16,6 +16,7 @@ const hit = (id: string, label: string) => ({
 });
 
 test("Wikidata example identifies the client and follows continuation", async (t) => {
+  const { integration: wikidata } = await loadIntegration("examples/wikidata");
   const requests: Array<{ url: URL; userAgent: string }> = [];
   const origin = await fixtureServer(t, (request, response) => {
     const url = new URL(request.url ?? "/", "http://fixture");

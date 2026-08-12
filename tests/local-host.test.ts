@@ -199,8 +199,13 @@ test("OAuth refresh is single-flight and isolated from waiter cancellation", asy
   await refreshStarted;
   const active = host.request(Request);
   controller.abort(new Error("request cancelled"));
+  let settled = false;
+  const settlement = host.settleAuthentication().then(() => void (settled = true));
+  await Promise.resolve();
+  assert.equal(settled, false);
   releaseRefresh();
 
+  await settlement;
   assert.match(String(await cancelled), /request cancelled/);
   assert.equal((await active).status, 204);
   assert.equal(refreshes, 1);

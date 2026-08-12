@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
-import { unzipSync, zipSync } from "fflate";
 import { fixtureDirectory } from "./support.ts";
 
 const CliPath = resolve("dist/cli.js");
-const ProfileRevision = "11111111-1111-4111-8111-111111111111";
-const SecondProfileRevision = "33333333-3333-4333-8333-333333333333";
 const ConnectionRevision = "22222222-2222-4222-8222-222222222222";
 const Provider = {
   origin: "https://api.example.com",
@@ -25,7 +22,7 @@ function runCli(cwd: string, ...args: string[]) {
   return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
 }
 
-test("CLI runs source integrations from typed profiles and Deno artifacts", async (t) => {
+test("CLI configures source integrations and creates source packages", async (t) => {
   const directory = await fixtureDirectory(t, "beetl-cli");
   const workingDirectory = join(directory, "workspace");
   const dependency = join(directory, "node_modules/fixture-dependency");
@@ -37,6 +34,7 @@ test("CLI runs source integrations from typed profiles and Deno artifacts", asyn
     JSON.stringify({
       name: "fixture-integration",
       version: "1.0.0",
+      files: ["integration.ts"],
       dependencies: { "fixture-dependency": "1.0.0" },
     }),
   );
@@ -85,7 +83,7 @@ test("CLI runs source integrations from typed profiles and Deno artifacts", asyn
           displayName: "Items",
           records: z.object({ id: z.string() }),
           inputs: input.object({
-            label: input.string({ default: "profile" }),
+            label: input.string({ pattern: "^ x $" }),
           }),
           async run(ctx) {
             await ctx.emit({ records: [{
@@ -97,13 +95,19 @@ test("CLI runs source integrations from typed profiles and Deno artifacts", asyn
     `,
   );
 
-  const check = runCli(workingDirectory, "check", directory);
-  assert.equal(check.status, 0, check.stderr);
-  assert.match(check.stdout, /Fixture: items/);
+  const help = runCli(workingDirectory, "--help");
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /beetl-connect pack/);
+  assert.match(help.stdout, /beetl-connect configure/);
+  assert.match(help.stdout, /beetl-connect sync/);
+  assert.doesNotMatch(help.stdout, /beetl-connect (?:check|connect|verify)/);
 
   const unconfigured = runCli(workingDirectory, "sync", directory, "--output", sourceOutput);
   assert.equal(unconfigured.status, 1);
-  assert.match(unconfigured.stderr, /configure requires an interactive terminal/);
+  assert.match(
+    unconfigured.stderr,
+    /configuration inputs require an interactive terminal or --inputs/,
+  );
 
   const profile = join(
     workingDirectory,
@@ -113,61 +117,50 @@ test("CLI runs source integrations from typed profiles and Deno artifacts", asyn
     workingDirectory,
     "user-config/beetl-connect/connections/fixture/primary.json",
   );
-  await mkdir(dirname(profile), { recursive: true });
-  await mkdir(dirname(connection), { recursive: true });
-  await writeFile(
-    profile,
-    JSON.stringify({
-      integration: "fixture",
-      sync: "items",
-      connection: "primary",
-      revision: ProfileRevision,
-      inputs: { removed: "stale" },
-    }),
+  const configured = runCli(
+    workingDirectory,
+    "configure",
+    directory,
+    "items",
+    "--connection",
+    "primary",
+    "--inputs",
+    '{"connection":{"prefix":"configured"},"sync":{"label":" x "}}',
   );
-  await writeFile(
-    connection,
-    JSON.stringify({
-      integration: "fixture",
-      name: "primary",
-      revision: ConnectionRevision,
-      provider: Provider,
-      inputs: { prefix: 42 },
-      credentials: {},
-    }),
+  assert.equal(configured.status, 0, configured.stderr);
+  const savedProfile = JSON.parse(await readFile(profile, "utf8"));
+  const savedConnection = JSON.parse(await readFile(connection, "utf8"));
+  assert.deepEqual(savedProfile.inputs, { label: " x " });
+  assert.deepEqual(savedConnection.inputs, {
+    prefix: "configured",
+  });
+  const unchanged = runCli(
+    workingDirectory,
+    "configure",
+    directory,
+    "items",
+    "--connection",
+    "primary",
+    "--inputs",
+    '{"connection":{"prefix":"configured"},"sync":{"label":" x "}}',
   );
-  const invalidConnection = runCli(workingDirectory, "sync", directory, "--output", sourceOutput);
-  assert.equal(invalidConnection.status, 1);
-  assert.match(invalidConnection.stderr, /Invalid connection config/);
-
-  await writeFile(
-    connection,
-    JSON.stringify({
-      integration: "fixture",
-      name: "primary",
-      revision: ConnectionRevision,
-      provider: { ...Provider, origin: "https://other.example.com" },
-      inputs: { prefix: "configured" },
-      credentials: {},
-    }),
+  assert.equal(unchanged.status, 0, unchanged.stderr);
+  assert.equal(JSON.parse(await readFile(profile, "utf8")).revision, savedProfile.revision);
+  assert.equal(JSON.parse(await readFile(connection, "utf8")).revision, savedConnection.revision);
+  const sourceState = join(directory, "source-state.json");
+  await writeFile(`${sourceState}.lock`, "held");
+  const locked = runCli(
+    workingDirectory,
+    "sync",
+    directory,
+    "--output",
+    sourceOutput,
+    "--state",
+    sourceState,
   );
-  const wrongProvider = runCli(workingDirectory, "verify", directory, "--connection", "primary");
-  assert.equal(wrongProvider.status, 1);
-  assert.match(wrongProvider.stderr, /does not match this provider definition/);
-
-  await writeFile(
-    connection,
-    JSON.stringify({
-      integration: "fixture",
-      name: "primary",
-      revision: ConnectionRevision,
-      provider: Provider,
-      inputs: { prefix: "configured" },
-      credentials: {},
-    }),
-  );
-  const verified = runCli(workingDirectory, "verify", directory, "--connection", "primary");
-  assert.equal(verified.status, 0, verified.stderr);
+  assert.equal(locked.status, 1);
+  assert.match(locked.stderr, /Sync state is already in use/);
+  await rm(`${sourceState}.lock`);
   const sourceSync = runCli(
     workingDirectory,
     "sync",
@@ -175,55 +168,73 @@ test("CLI runs source integrations from typed profiles and Deno artifacts", asyn
     "--output",
     sourceOutput,
     "--state",
-    join(directory, "source-state.json"),
+    sourceState,
   );
   assert.equal(sourceSync.status, 0, sourceSync.stderr);
+  await assert.rejects(access(`${sourceState}.lock`));
   assert.deepEqual(JSON.parse((await readFile(sourceOutput, "utf8")).trim()), {
-    id: "configured-bundled-profile",
+    id: "configured-bundled- x ",
   });
 
-  const artifact = join(directory, "fixture.beetl.zip");
-  const artifactCopy = join(directory, "fixture-copy.beetl.zip");
-  assert.equal(runCli(workingDirectory, "pack", directory, "--output", artifact).status, 0);
-  assert.equal(runCli(workingDirectory, "pack", directory, "--output", artifactCopy).status, 0);
-  assert.deepEqual(await readFile(artifact), await readFile(artifactCopy));
-
-  const files = unzipSync(new Uint8Array(await readFile(artifact)));
-  assert.deepEqual(Object.keys(files).sort(), [
-    "LICENSES.txt",
-    "artifact.json",
-    "integration.mjs",
-    "manifest.json",
-  ]);
-  assert.equal(runCli(workingDirectory, "check", artifact).status, 0);
-  const metadata = JSON.parse(new TextDecoder().decode(files["artifact.json"]!));
-  assert.equal(metadata.runtime, "deno");
-  const repack = runCli(workingDirectory, "pack", artifact);
-  assert.equal(repack.status, 1);
-  assert.match(repack.stderr, /pack requires integration source/);
-
-  const artifactOutput = join(directory, "artifact.ndjson");
-  const artifactSync = runCli(
-    workingDirectory,
-    "sync",
-    artifact,
-    "--output",
-    artifactOutput,
-    "--state",
-    join(directory, "artifact-state.json"),
+  const sourcePackage = join(directory, "fixture.tgz");
+  const sourcePackageCopy = join(directory, "fixture-copy.tgz");
+  const packed = runCli(workingDirectory, "pack", directory, "--output", sourcePackage);
+  assert.equal(packed.status, 0, packed.stderr);
+  assert.match(packed.stdout, /Included files: integration\.ts, package-lock\.json, package\.json/);
+  assert.equal(
+    runCli(workingDirectory, "pack", directory, "--output", sourcePackageCopy).status,
+    0,
   );
-  assert.equal(artifactSync.status, 0, artifactSync.stderr);
-  assert.deepEqual(JSON.parse((await readFile(artifactOutput, "utf8")).trim()), {
-    id: "configured-bundled-profile",
-  });
+  assert.deepEqual(await readFile(sourcePackage), await readFile(sourcePackageCopy));
+  assert.deepEqual((await readFile(sourcePackage)).subarray(0, 3), Buffer.from([0x1f, 0x8b, 0x08]));
+});
 
-  const bundle = files["integration.mjs"]!;
-  bundle[0] = (bundle[0] ?? 0) ^ 1;
-  const tampered = join(directory, "tampered.beetl.zip");
-  await writeFile(tampered, zipSync(files));
-  const rejected = runCli(workingDirectory, "check", tampered);
-  assert.equal(rejected.status, 1);
-  assert.match(rejected.stderr, /digest mismatch for integration\.mjs/);
+test("CLI rejects unsafe config roots and concurrent OAuth connection use", async (t) => {
+  const directory = await fixtureDirectory(t, "beetl-cli-config-locks");
+  const relativeConfig = spawnSync(process.execPath, [CliPath, "--help"], {
+    cwd: directory,
+    encoding: "utf8",
+    env: { ...process.env, XDG_CONFIG_HOME: "relative" },
+  });
+  assert.equal(relativeConfig.status, 1);
+  assert.match(relativeConfig.stderr, /user configuration directory must be absolute/);
+  await assert.rejects(access(join(directory, "relative")));
+
+  const connection = join(
+    directory,
+    "user-config/beetl-connect/connections/all-features/default.json",
+  );
+  const profile = join(
+    directory,
+    "user-config/beetl-connect/profiles/all-features/contacts/default.json",
+  );
+  await mkdir(dirname(connection), { recursive: true });
+  await writeFile(
+    connection,
+    JSON.stringify({
+      integration: "all-features",
+      name: "default",
+      revision: ConnectionRevision,
+      provider: Provider,
+      inputs: {},
+      credentials: {},
+    }),
+  );
+  await mkdir(dirname(profile), { recursive: true });
+  await writeFile(
+    profile,
+    JSON.stringify({
+      integration: "all-features",
+      sync: "contacts",
+      connection: "default",
+      revision: "11111111-1111-4111-8111-111111111111",
+      inputs: {},
+    }),
+  );
+  await writeFile(`${connection}.lock`, "held");
+  const locked = runCli(directory, "sync", resolve("examples/all-features"), "contacts");
+  assert.equal(locked.status, 1);
+  assert.match(locked.stderr, /Connection "default" is already in use/);
 });
 
 test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
@@ -250,11 +261,11 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
     `,
   );
 
-  const missingIcon = runCli(directory, "check", directory);
+  const missingIcon = runCli(directory, "sync", directory);
   assert.equal(missingIcon.status, 1);
   assert.match(missingIcon.stderr, /declares missing icon\.png/);
   await writeFile(join(directory, "icon.png"), "not a png");
-  const invalidIcon = runCli(directory, "check", directory);
+  const invalidIcon = runCli(directory, "sync", directory);
   assert.equal(invalidIcon.status, 1);
   assert.match(invalidIcon.stderr, /valid png image/);
   await writeFile(
@@ -274,32 +285,14 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
   assert.match(missingProfile.stderr, /Profile "prodution" does not exist/);
 
   const profiles = join(directory, "user-config/beetl-connect/profiles/multiple");
-  await mkdir(join(profiles, "first"), { recursive: true });
-  await mkdir(join(profiles, "second"), { recursive: true });
-  await writeFile(
-    join(profiles, "first/default.json"),
-    JSON.stringify({
-      integration: "multiple",
-      sync: "first",
-      connection: "default",
-      revision: ProfileRevision,
-      inputs: {},
-    }),
-  );
-  await writeFile(
-    join(profiles, "second/default.json"),
-    JSON.stringify({
-      integration: "multiple",
-      sync: "second",
-      connection: "default",
-      revision: SecondProfileRevision,
-      inputs: {},
-    }),
-  );
+  const configuredFirst = runCli(directory, "configure", directory, "first");
+  assert.equal(configuredFirst.status, 0, configuredFirst.stderr);
+  await access(join(profiles, "first/default.json"));
   const output = join(directory, "second.ndjson");
   const selected = runCli(directory, "sync", directory, "second", "--output", output);
   assert.equal(selected.status, 0, selected.stderr);
   assert.deepEqual(JSON.parse((await readFile(output, "utf8")).trim()), { id: "second" });
+  const secondProfile = JSON.parse(await readFile(join(profiles, "second/default.json"), "utf8"));
   const savedConnection = JSON.parse(
     await readFile(
       join(directory, "user-config/beetl-connect/connections/multiple/default.json"),
@@ -315,7 +308,7 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
       await readFile(
         join(
           directory,
-          `.beetl/state/multiple/default/${SecondProfileRevision}/default/${savedConnection.revision}/second.json`,
+          `.beetl/state/multiple/default/${secondProfile.revision}/default/${savedConnection.revision}/second.json`,
         ),
         "utf8",
       ),
@@ -323,7 +316,7 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
     { cursor: "second" },
   );
 
-  const reauthorized = runCli(directory, "connect", directory);
+  const reauthorized = runCli(directory, "configure", directory, "second", "--reauthorize");
   assert.equal(reauthorized.status, 0, reauthorized.stderr);
   const replacedConnection = JSON.parse(
     await readFile(
@@ -346,7 +339,7 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
       await readFile(
         join(
           directory,
-          `.beetl/state/multiple/default/${SecondProfileRevision}/default/${replacedConnection.revision}/second.json`,
+          `.beetl/state/multiple/default/${secondProfile.revision}/default/${replacedConnection.revision}/second.json`,
         ),
         "utf8",
       ),
@@ -386,6 +379,10 @@ test("CLI reports integration source locations and error causes", async (t) => {
     directory,
     "user-config/beetl-connect/connections/errors/default.json",
   );
+  const profilePath = join(
+    directory,
+    "user-config/beetl-connect/profiles/errors/items/default.json",
+  );
   const storedConnection = {
     integration: "errors",
     name: "default",
@@ -396,9 +393,20 @@ test("CLI reports integration source locations and error causes", async (t) => {
   };
   await mkdir(dirname(connectionPath), { recursive: true });
   await writeFile(connectionPath, JSON.stringify(storedConnection));
-  const reconnect = runCli(directory, "connect", directory);
-  assert.equal(reconnect.status, 1);
-  assert.match(reconnect.stderr, /bad credentials/);
+  await mkdir(dirname(profilePath), { recursive: true });
+  await writeFile(
+    profilePath,
+    JSON.stringify({
+      integration: "errors",
+      sync: "items",
+      connection: "default",
+      revision: "11111111-1111-4111-8111-111111111111",
+      inputs: {},
+    }),
+  );
+  const configure = runCli(directory, "configure", directory);
+  assert.equal(configure.status, 1);
+  assert.match(configure.stderr, /bad credentials/);
   assert.deepEqual(JSON.parse(await readFile(connectionPath, "utf8")), storedConnection);
 
   const result = runCli(directory, "sync", directory);
@@ -408,101 +416,218 @@ test("CLI reports integration source locations and error causes", async (t) => {
   assert.match(result.stderr, /Error: provider failed/);
 });
 
-test("dependency bundles require the npm lockfile and portable modules", async (t) => {
-  const directory = await fixtureDirectory(t, "beetl-cli-dependencies");
+test("pack creates an installable npm application package", async (t) => {
+  const directory = await fixtureDirectory(t, "beetl-cli-pack");
   const integrationDirectory = join(directory, "integration");
-  const dependency = join(directory, "node_modules/runtime-specific");
   await mkdir(integrationDirectory);
-  await mkdir(dependency, { recursive: true });
   await writeFile(
     join(integrationDirectory, "package.json"),
-    JSON.stringify({ dependencies: { "runtime-specific": "npm:portable-package@1.0.0" } }),
-  );
-  await writeFile(
-    join(dependency, "package.json"),
     JSON.stringify({
-      name: "portable-package",
+      name: "packed-integration",
       version: "1.0.0",
+      files: ["integration.ts"],
       type: "module",
-      exports: "./index.js",
-      types: "./index.d.ts",
     }),
-  );
-  await writeFile(join(dependency, "index.js"), 'export const value = "portable";\n');
-  await writeFile(join(dependency, "index.d.ts"), "export const value: Uint8Array;\n");
-  await writeFile(
-    join(integrationDirectory, "tsconfig.json"),
-    JSON.stringify({
-      compilerOptions: { baseUrl: ".", paths: { "@shared": ["../shared.ts"] } },
-    }),
-  );
-  await writeFile(
-    join(directory, "shared.ts"),
-    'export { value } from "./node_modules/runtime-specific/index.js";\n',
   );
   await writeFile(
     join(integrationDirectory, "integration.ts"),
+    'export default "packed source";\n',
+  );
+
+  const unlocked = runCli(directory, "pack", integrationDirectory);
+  assert.equal(unlocked.status, 1);
+  assert.match(unlocked.stderr, /require package\.json and package-lock\.json/);
+
+  await writeFile(
+    join(integrationDirectory, "package-lock.json"),
+    JSON.stringify({
+      name: "packed-integration",
+      version: "1.0.0",
+      lockfileVersion: 3,
+      packages: {
+        "": { name: "packed-integration", version: "1.0.0" },
+      },
+    }),
+  );
+  await writeFile(
+    join(integrationDirectory, "package.json"),
+    JSON.stringify({ name: "packed-integration", version: "1.0.0", type: "module" }),
+  );
+  const implicitFiles = runCli(directory, "pack", integrationDirectory);
+  assert.equal(implicitFiles.status, 1);
+  assert.match(implicitFiles.stderr, /requires an explicit "files" allowlist/);
+  await writeFile(
+    join(integrationDirectory, "package.json"),
+    JSON.stringify({
+      name: "packed-integration",
+      version: "1.0.0",
+      files: ["."],
+      type: "module",
+    }),
+  );
+  const broadFiles = runCli(directory, "pack", integrationDirectory);
+  assert.equal(broadFiles.status, 1);
+  assert.match(broadFiles.stderr, /files entry "\." is too broad/);
+  await writeFile(join(integrationDirectory, ".env"), "API_KEY=private\n");
+  await writeFile(
+    join(integrationDirectory, "package.json"),
+    JSON.stringify({
+      name: "packed-integration",
+      version: "1.0.0",
+      files: ["integration.ts"],
+      main: ".env",
+      type: "module",
+    }),
+  );
+  const privateFile = runCli(directory, "pack", integrationDirectory);
+  assert.equal(privateFile.status, 1);
+  assert.match(privateFile.stderr, /contains private runtime file \.env/);
+  await writeFile(join(integrationDirectory, "credentials.json"), '{"token":"private"}\n');
+  await writeFile(
+    join(integrationDirectory, "package.json"),
+    JSON.stringify({
+      name: "packed-integration",
+      version: "1.0.0",
+      files: ["integration.ts"],
+      main: "credentials.json",
+      type: "module",
+    }),
+  );
+  const implicitMain = runCli(directory, "pack", integrationDirectory);
+  assert.equal(implicitMain.status, 1);
+  assert.match(implicitMain.stderr, /credentials\.json outside the package files allowlist/);
+  await mkdir(join(integrationDirectory, "src"));
+  await writeFile(join(integrationDirectory, "src/.env.production"), "API_KEY=private\n");
+  await writeFile(
+    join(integrationDirectory, "package.json"),
+    JSON.stringify({
+      name: "packed-integration",
+      version: "1.0.0",
+      files: ["integration.ts", "src"],
+      type: "module",
+    }),
+  );
+  const nestedPrivateFile = runCli(directory, "pack", integrationDirectory);
+  assert.equal(nestedPrivateFile.status, 1);
+  assert.match(nestedPrivateFile.stderr, /private runtime file src\/\.env\.production/);
+  await writeFile(
+    join(integrationDirectory, "package.json"),
+    JSON.stringify({
+      name: "packed-integration",
+      version: "1.0.0",
+      files: ["integration.ts"],
+      bundledDependencies: [],
+      type: "module",
+    }),
+  );
+  const bundled = runCli(directory, "pack", integrationDirectory);
+  assert.equal(bundled.status, 1);
+  assert.match(bundled.stderr, /cannot bundle node_modules/);
+  await writeFile(
+    join(integrationDirectory, "package.json"),
+    JSON.stringify({
+      name: "packed-integration",
+      version: "1.0.0",
+      files: ["integration.ts"],
+      dependencies: { shared: "file:../shared" },
+      type: "module",
+    }),
+  );
+  const linked = runCli(directory, "pack", integrationDirectory);
+  assert.equal(linked.status, 1);
+  assert.match(linked.stderr, /dependency "shared" must resolve from the npm registry/);
+  await writeFile(
+    join(integrationDirectory, "package.json"),
+    JSON.stringify({
+      name: "packed-integration",
+      version: "1.0.0",
+      files: ["integration.ts"],
+      dependencies: { remote: "https://example.com/remote.tgz" },
+      type: "module",
+    }),
+  );
+  const remote = runCli(directory, "pack", integrationDirectory);
+  assert.equal(remote.status, 1);
+  assert.match(remote.stderr, /dependency "remote" must resolve from the npm registry/);
+  await writeFile(
+    join(integrationDirectory, "package.json"),
+    JSON.stringify({
+      name: "packed-integration",
+      version: "1.0.0",
+      files: ["integration.ts"],
+      dependencies: { zod: "1.0.0" },
+      type: "module",
+    }),
+  );
+  const staleLock = runCli(directory, "pack", integrationDirectory);
+  assert.equal(staleLock.status, 1);
+  assert.match(staleLock.stderr, /package-lock\.json dependencies are out of sync/);
+  await writeFile(
+    join(integrationDirectory, "package.json"),
+    JSON.stringify({
+      name: "packed-integration",
+      version: "1.0.0",
+      files: ["integration.ts"],
+      type: "module",
+    }),
+  );
+  const sourcePackage = join(directory, "packed-integration.tgz");
+  const packed = runCli(directory, "pack", integrationDirectory, "--output", sourcePackage);
+  assert.equal(packed.status, 0, packed.stderr);
+
+  const consumer = join(directory, "consumer");
+  await mkdir(consumer);
+  await writeFile(join(consumer, "package.json"), '{"private":true}');
+  const installed = spawnSync(
+    process.platform === "win32" ? "npm.cmd" : "npm",
+    [
+      "install",
+      sourcePackage,
+      "--ignore-scripts",
+      "--offline",
+      "--no-audit",
+      "--no-fund",
+      "--package-lock=false",
+      "--cache",
+      join(consumer, "npm-cache"),
+    ],
+    { cwd: consumer, encoding: "utf8" },
+  );
+  assert.equal(installed.status, 0, installed.stderr);
+  const installedPackage = join(consumer, "node_modules/packed-integration");
+  assert.equal(
+    await readFile(join(installedPackage, "integration.ts"), "utf8"),
+    'export default "packed source";\n',
+  );
+  assert.equal(
+    JSON.parse(await readFile(join(installedPackage, "package-lock.json"), "utf8")).lockfileVersion,
+    3,
+  );
+});
+
+test("local integration builds support the hosted Node runtime", async (t) => {
+  const directory = await fixtureDirectory(t, "beetl-cli-node-module");
+  await writeFile(
+    join(directory, "integration.ts"),
     `
+      import { Buffer } from "node:buffer";
       import { defineIntegration, z } from "@beetlio/connect";
-      import { value } from "@shared";
+
       export default defineIntegration({
-        key: "runtime-specific",
-        displayName: "Runtime specific",
+        key: "node-runtime",
+        displayName: Buffer.from("Node runtime").toString(),
         connection: { origin: "https://api.example.com" },
-        syncs: [
-          {
-            key: "items",
-            displayName: "Items",
-            records: z.object({ size: z.number() }),
-            async run(ctx) {
-              await ctx.emit({ records: [{ size: value.length }] });
-            },
-          },
-        ],
+        syncs: (defineSync) => [defineSync({
+          key: "items",
+          displayName: "Items",
+          records: z.string(),
+          async run(ctx) { await ctx.emit({ records: [process.platform] }); },
+        })],
       });
     `,
   );
-
-  const unlocked = runCli(directory, "check", integrationDirectory);
-  assert.equal(unlocked.status, 1);
-  assert.match(unlocked.stderr, /require a committed package-lock\.json/);
-
-  await writeFile(
-    join(directory, "package-lock.json"),
-    JSON.stringify({
-      lockfileVersion: 3,
-      packages: {
-        integration: {
-          dependencies: { "runtime-specific": "npm:portable-package@1.0.0" },
-        },
-        "node_modules/runtime-specific": { version: "0.9.0" },
-      },
-    }),
-  );
-  const stale = runCli(directory, "check", integrationDirectory);
-  assert.equal(stale.status, 1);
-  assert.match(stale.stderr, /not pinned at this version/);
-
-  await writeFile(
-    join(directory, "package-lock.json"),
-    JSON.stringify({
-      lockfileVersion: 3,
-      packages: {
-        integration: {
-          dependencies: { "runtime-specific": "npm:portable-package@1.0.0" },
-        },
-        "node_modules/runtime-specific": { version: "1.0.0" },
-      },
-    }),
-  );
-  const portable = runCli(directory, "check", integrationDirectory);
-  assert.equal(portable.status, 0, portable.stderr);
-
-  await writeFile(
-    join(dependency, "index.js"),
-    'import { Buffer } from "node:buffer";\nexport const value = Buffer.from("x");\n',
-  );
-  const nodeOnly = runCli(directory, "check", integrationDirectory);
-  assert.equal(nodeOnly.status, 1);
-  assert.match(nodeOnly.stderr, /Could not resolve "node:buffer"/);
+  const output = join(directory, "output.ndjson");
+  const result = runCli(directory, "sync", directory, "--output", output);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse((await readFile(output, "utf8")).trim()), process.platform);
 });

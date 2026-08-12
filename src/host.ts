@@ -106,12 +106,15 @@ export async function runSync(
     snapshot || input.checkpoint === undefined
       ? undefined
       : await parseCheckpoint(sync, input.checkpoint);
-  const signal = input.signal ?? new AbortController().signal;
+  const runSignal = input.signal ?? new AbortController().signal;
+  const lifecycle = new AbortController();
+  const contextSignal = AbortSignal.any([runSignal, lifecycle.signal]);
 
   let sequence = 0;
   let records = 0;
   let latestCheckpoint = initialCheckpoint;
   let emitQueue = Promise.resolve();
+  let logQueue = Promise.resolve();
   let contextOpen = true;
   const rejectClosed = <T>(): Promise<T> => {
     const rejected = Promise.reject<T>(new Error("Sync context is closed"));
@@ -130,7 +133,7 @@ export async function runSync(
       );
       const checkpoint =
         value.checkpoint === undefined ? undefined : await parseCheckpoint(sync, value.checkpoint);
-      signal.throwIfAborted();
+      runSignal.throwIfAborted();
       const batch: EmittedBatch = {
         batchId: crypto.randomUUID(),
         sequence,
@@ -156,17 +159,18 @@ export async function runSync(
     fields: JsonObject = {},
   ): Promise<void> => {
     if (!contextOpen) return rejectClosed();
-    const operation = host.log({ level, message, fields });
-    void operation.catch(() => undefined);
-    return operation;
+    const queued = logQueue.then(() => host.log({ level, message, fields }));
+    logQueue = queued;
+    void queued.catch(() => undefined);
+    return queued;
   };
 
   const fetch = (path: string, init?: SyncFetchInit): Promise<Response> => {
     if (!contextOpen) {
       return rejectClosed<Response>();
     }
-    signal.throwIfAborted();
-    const operation = hostFetch(host, path, init, signal, integration.connection.retry);
+    contextSignal.throwIfAborted();
+    const operation = hostFetch(host, path, init, contextSignal, integration.connection.retry);
     void operation.catch(() => undefined);
     return operation;
   };
@@ -184,7 +188,7 @@ export async function runSync(
       sync: syncConfig,
     },
     checkpoint: initialCheckpoint,
-    signal,
+    signal: contextSignal,
     fetch,
     paginate: <const Records extends z.ZodType>(options: PaginateOptions<Records>) =>
       paginateRequests(fetch, integration.connection.pagination, options),
@@ -193,11 +197,13 @@ export async function runSync(
   };
 
   // The public type carries stronger per-integration inference than this runtime seam.
-  signal.throwIfAborted();
-  if (snapshot) {
-    await host.beginSnapshot!();
-  }
+  let snapshotStarted = false;
   try {
+    runSignal.throwIfAborted();
+    if (snapshot) {
+      await host.beginSnapshot!();
+      snapshotStarted = true;
+    }
     let runError: unknown;
     let runFailed = false;
     try {
@@ -207,17 +213,21 @@ export async function runSync(
       runFailed = true;
     } finally {
       contextOpen = false;
+      lifecycle.abort(new Error("Sync context is closed"));
     }
 
-    const [emitResult] = await Promise.allSettled([emitQueue]);
+    const [emitResult, logResult] = await Promise.allSettled([emitQueue, logQueue]);
     if (runFailed) {
       throw runError;
     }
     if (emitResult?.status === "rejected") {
       throw emitResult.reason;
     }
-    signal.throwIfAborted();
-    if (snapshot) {
+    if (logResult?.status === "rejected") {
+      throw logResult.reason;
+    }
+    runSignal.throwIfAborted();
+    if (snapshotStarted) {
       await host.commitSnapshot!();
     }
 
@@ -227,7 +237,7 @@ export async function runSync(
       ...(latestCheckpoint === undefined ? {} : { checkpoint: latestCheckpoint }),
     };
   } catch (error) {
-    if (snapshot) {
+    if (snapshotStarted) {
       try {
         await host.abortSnapshot!();
       } catch (abortError) {
@@ -259,8 +269,11 @@ export async function verifyConnection(
     input.connectionConfig ?? {},
     "connection config",
   );
-  const signal = input.signal ?? new AbortController().signal;
+  const runSignal = input.signal ?? new AbortController().signal;
+  const lifecycle = new AbortController();
+  const contextSignal = AbortSignal.any([runSignal, lifecycle.signal]);
   let contextOpen = true;
+  let logQueue = Promise.resolve();
 
   const rejectClosed = <T>(): Promise<T> => {
     const rejected = Promise.reject<T>(new Error("Connection context is closed"));
@@ -271,8 +284,8 @@ export async function verifyConnection(
     if (!contextOpen) {
       return rejectClosed<Response>();
     }
-    signal.throwIfAborted();
-    const operation = hostFetch(host, path, init, signal, integration.connection.retry);
+    contextSignal.throwIfAborted();
+    const operation = hostFetch(host, path, init, contextSignal, integration.connection.retry);
     void operation.catch(() => undefined);
     return operation;
   };
@@ -282,18 +295,19 @@ export async function verifyConnection(
     fields: JsonObject = {},
   ): Promise<void> => {
     if (!contextOpen) return rejectClosed();
-    const operation = host.log({ level, message, fields });
-    void operation.catch(() => undefined);
-    return operation;
+    const queued = logQueue.then(() => host.log({ level, message, fields }));
+    logQueue = queued;
+    void queued.catch(() => undefined);
+    return queued;
   };
 
-  signal.throwIfAborted();
+  runSignal.throwIfAborted();
   let verifyError: unknown;
   let verifyFailed = false;
   try {
     await verify({
       config,
-      signal,
+      signal: contextSignal,
       fetch,
       log: {
         debug: (message, fields = {}) => log("debug", message, fields),
@@ -307,12 +321,17 @@ export async function verifyConnection(
     verifyFailed = true;
   } finally {
     contextOpen = false;
+    lifecycle.abort(new Error("Connection context is closed"));
   }
 
+  const [logResult] = await Promise.allSettled([logQueue]);
   if (verifyFailed) {
     throw verifyError;
   }
-  signal.throwIfAborted();
+  if (logResult?.status === "rejected") {
+    throw logResult.reason;
+  }
+  runSignal.throwIfAborted();
 }
 
 export function validateIntegration(integration: IntegrationDefinition): void {
@@ -333,11 +352,11 @@ export function validateIntegration(integration: IntegrationDefinition): void {
   const auth = integration.connection.auth ?? authentication.none();
   if (typeof integration.connection.origin === "string") {
     const origin = providerOrigin(integration.connection.origin);
-    const isLoopback =
+    const loopback =
       origin.hostname === "localhost" ||
       origin.hostname === "[::1]" ||
       /^127(?:\.\d{1,3}){3}$/.test(origin.hostname);
-    if (auth.type !== "none" && origin.protocol !== "https:" && !isLoopback) {
+    if (auth.type !== "none" && origin.protocol !== "https:" && !loopback) {
       throw new Error("Authenticated provider origins must use HTTPS or loopback HTTP");
     }
   }
@@ -401,8 +420,12 @@ export function validateIntegration(integration: IntegrationDefinition): void {
   if (auth.type === "oauth2_authorization_code") {
     for (const value of [auth.issuer, auth.authorizationUrl, auth.tokenUrl]) {
       const url = new URL(value);
-      if (url.protocol !== "https:") {
-        throw new Error("OAuth URLs must use HTTPS");
+      const loopback =
+        url.hostname === "localhost" ||
+        url.hostname === "[::1]" ||
+        /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
+      if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+        throw new Error("OAuth URLs must use HTTPS or loopback HTTP");
       }
       if (url.username || url.password) {
         throw new Error("OAuth URLs cannot contain credentials");
@@ -431,6 +454,9 @@ export function validateIntegration(integration: IntegrationDefinition): void {
   resolveRetry(integration.connection.retry);
   if (integration.connection.pagination) {
     validatePagination(integration.connection.pagination);
+  }
+  if (integration.syncs.length === 0) {
+    throw new Error("Integration must define at least one sync");
   }
 
   const keys = new Set<string>();
