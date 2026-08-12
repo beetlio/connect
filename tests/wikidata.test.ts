@@ -3,8 +3,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { buildIntegration } from "@beetlio/connect/builder";
 import { runSync, verifyConnection } from "@beetlio/connect/host";
-import { loadIntegration } from "../dist/artifact.js";
 import { LocalHost } from "../src/local-host.ts";
 import { fixtureDirectory, fixtureServer } from "./support.ts";
 
@@ -15,8 +15,16 @@ const hit = (id: string, label: string) => ({
   aliases: [label.toLowerCase()],
 });
 
-test("Wikidata example identifies the client and follows continuation", async (t) => {
-  const { integration: wikidata } = await loadIntegration("examples/wikidata");
+test("Wikidata example builds through the public builder and follows continuation", async (t) => {
+  const {
+    bundle,
+    integration: wikidata,
+    manifest,
+    sdkVersion,
+  } = await buildIntegration("examples/wikidata");
+  assert.ok(bundle.byteLength > 0);
+  assert.equal(manifest.integration.key, wikidata.key);
+  assert.match(sdkVersion, /^\d+\.\d+\.\d+/);
   const requests: Array<{ url: URL; userAgent: string }> = [];
   const origin = await fixtureServer(t, (request, response) => {
     const url = new URL(request.url ?? "/", "http://fixture");

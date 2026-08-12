@@ -18,7 +18,7 @@ import password from "@inquirer/password";
 import envPaths from "env-paths";
 import { z } from "zod";
 
-import { loadIntegration, packIntegration } from "./artifact.ts";
+import { buildIntegration, packIntegration } from "./artifact.ts";
 import type {
   InputObjectSchema,
   IntegrationDefinition,
@@ -202,7 +202,7 @@ async function main(args = process.argv.slice(2)): Promise<void> {
     console.log(`Included files: ${packed.files.join(", ")}`);
     return;
   }
-  const { integration, manifest } = await loadIntegration(options.integrationPath);
+  const { integration, manifest } = await buildIntegration(options.integrationPath);
 
   if (options.command === "configure") {
     const syncKey = selectSyncKey(integration, options.syncKey);
@@ -706,8 +706,11 @@ function providerBinding(
   authorizationState: OAuthAuthorizationState | undefined,
 ): ProviderBinding {
   return {
-    origin: resolveProviderOrigin(origin ?? integration.connection.origin, authorizationState)
-      .origin,
+    origin: resolveProviderOrigin(
+      origin ?? integration.connection.origin,
+      authorizationState,
+      manifest.connection.auth.type !== "none",
+    ).origin,
     authentication: z.json().parse(manifest.connection.auth),
   };
 }

@@ -9,6 +9,7 @@
     "noUncheckedIndexedAccess": true,
     "paths": {
       "@beetlio/connect": ["./src/index.ts"],
+      "@beetlio/connect/builder": ["./src/artifact.ts"],
       "@beetlio/connect/host": ["./src/host.ts"]
     },
     "strict": true,

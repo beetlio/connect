@@ -54,7 +54,11 @@ export class LocalHost implements SyncHost {
     this.#auth = options.auth ?? { type: "none" };
     this.#credentials = options.credentials ?? {};
     this.#authorizationState = options.authorizationState;
-    this.#origin = resolveProviderOrigin(this.#originDefinition, this.#authorizationState);
+    this.#origin = resolveProviderOrigin(
+      this.#originDefinition,
+      this.#authorizationState,
+      this.#auth.type !== "none",
+    );
     this.#outputPath = options.outputPath;
     this.#statePath = options.statePath;
     this.#fetch = options.fetch ?? globalThis.fetch;
@@ -64,7 +68,7 @@ export class LocalHost implements SyncHost {
   }
 
   async settleAuthentication(): Promise<void> {
-    await Promise.all([this.#refreshing, this.#exchanging]);
+    await Promise.allSettled([this.#refreshing, this.#exchanging]);
   }
 
   async request(request: ProviderRequest, signal?: AbortSignal): Promise<ProviderResponse> {
@@ -206,9 +210,7 @@ export class LocalHost implements SyncHost {
     if (this.#auth.type === "none") {
       return;
     }
-    if (url.protocol !== "https:" && !isLoopback(url.hostname)) {
-      throw new Error("Authenticated provider requests require HTTPS");
-    }
+    providerOrigin(url.origin, true);
     if (this.#auth.type === "bearer") {
       headers.set("authorization", `Bearer ${this.#credential("token")}`);
       return;
@@ -354,7 +356,7 @@ export class LocalHost implements SyncHost {
       fetch: this.#fetch,
       ...(signal === undefined ? {} : { signal }),
     });
-    const origin = resolveProviderOrigin(this.#originDefinition, authorizationState);
+    const origin = resolveProviderOrigin(this.#originDefinition, authorizationState, true);
     await this.#onAuthorizationStateChanged(authorizationState);
     this.#authorizationState = authorizationState;
     this.#origin = origin;
@@ -370,6 +372,7 @@ export class LocalHost implements SyncHost {
 export function resolveProviderOrigin(
   definition: ProviderOriginDefinition,
   authorizationState?: OAuthAuthorizationState,
+  authenticated = false,
 ): URL {
   let value: string;
   if (typeof definition === "string") {
@@ -383,7 +386,7 @@ export function resolveProviderOrigin(
     }
     value = tokenField;
   }
-  return providerOrigin(value);
+  return providerOrigin(value, authenticated);
 }
 
 export async function replacePrivateFile(path: string, value: string | Uint8Array): Promise<void> {
@@ -460,10 +463,6 @@ async function readResponseBody(response: Response): Promise<Uint8Array> {
 
 function isMissingFile(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
-}
-
-function isLoopback(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
 }
 
 function shouldRetry(

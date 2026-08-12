@@ -135,9 +135,20 @@ the lockfile root.
 The npm package is transport, not a trusted build artifact: `pack` does not compile
 or execute the integration. A hosted platform must safely unpack it inside an
 untrusted build job, enforce package limits, run `npm ci --ignore-scripts`, validate
-the exact upload, and produce the immutable Node.js 24.2 runtime bundle and manifest
-itself. Runtime jobs execute that artifact in gVisor on an isolated node pool.
-`sync` uses the same Node.js target for local development.
+the exact upload, and call the same builder used by the local CLI:
+
+```ts
+import { buildIntegration } from "@beetlio/connect/builder";
+
+const { bundle, manifest, sdkVersion } = await buildIntegration("/workspace/integration");
+```
+
+The builder produces the Node.js 24.2 runtime bundle and manifest and records its SDK
+version. It resolves integration imports of `@beetlio/connect` to that SDK, so Core
+does not duplicate compiler or validation rules. The bundle validates its definition
+against the build manifest when loaded and uses canonical source-map paths for
+reproducible artifacts. Runtime jobs execute the immutable result in gVisor on an
+isolated node pool. `sync` uses the same builder and Node.js target for local development.
 
 Connection and sync configuration must use `input.object()` and the non-secret
 `input.*` field helpers. Authentication uses the separate `credential.*` helpers.

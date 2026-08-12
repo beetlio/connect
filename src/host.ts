@@ -351,14 +351,7 @@ export function validateIntegration(integration: IntegrationDefinition): void {
   }
   const auth = integration.connection.auth ?? authentication.none();
   if (typeof integration.connection.origin === "string") {
-    const origin = providerOrigin(integration.connection.origin);
-    const loopback =
-      origin.hostname === "localhost" ||
-      origin.hostname === "[::1]" ||
-      /^127(?:\.\d{1,3}){3}$/.test(origin.hostname);
-    if (auth.type !== "none" && origin.protocol !== "https:" && !loopback) {
-      throw new Error("Authenticated provider origins must use HTTPS or loopback HTTP");
-    }
+    providerOrigin(integration.connection.origin, auth.type !== "none");
   }
 
   const credentialKeys = new Set(Object.keys(auth.credentials.shape));
@@ -488,7 +481,7 @@ export function validateIntegration(integration: IntegrationDefinition): void {
   }
 }
 
-export function providerOrigin(value: string): URL {
+export function providerOrigin(value: string, authenticated = false): URL {
   const origin = new URL(value);
   if (origin.protocol !== "http:" && origin.protocol !== "https:") {
     throw new Error("Provider origin must use HTTP or HTTPS");
@@ -498,6 +491,15 @@ export function providerOrigin(value: string): URL {
   }
   if (origin.pathname !== "/" || origin.search || origin.hash) {
     throw new Error("Provider origin cannot contain a path, query, or fragment");
+  }
+  if (
+    authenticated &&
+    origin.protocol !== "https:" &&
+    origin.hostname !== "localhost" &&
+    origin.hostname !== "[::1]" &&
+    !/^127(?:\.\d{1,3}){3}$/.test(origin.hostname)
+  ) {
+    throw new Error("Authenticated provider origins must use HTTPS or loopback HTTP");
   }
   return origin;
 }

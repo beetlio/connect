@@ -25,9 +25,9 @@ test("authentication stays on secure origins and supports declarative fields", a
     },
   };
 
-  await assert.rejects(
-    new LocalHost({ ...authenticated, origin: "http://example.com" }).request(Request),
-    /require HTTPS/,
+  assert.throws(
+    () => new LocalHost({ ...authenticated, origin: "http://example.com" }),
+    /must use HTTPS/,
   );
   assert.equal(calls, 0);
   await new LocalHost({ ...authenticated, origin: "http://127.0.0.1" }).request(Request);
@@ -214,6 +214,53 @@ test("OAuth refresh is single-flight and isolated from waiter cancellation", asy
     refreshToken: "refresh-token",
     tokenFields: { instanceUrl: "https://new.example" },
   });
+});
+
+test("authentication settlement waits without replacing caller errors", async () => {
+  let notifyRefreshStarted!: () => void;
+  let releaseRefresh!: () => void;
+  const refreshStarted = new Promise<void>((resolve) => (notifyRefreshStarted = resolve));
+  const refreshGate = new Promise<void>((resolve) => (releaseRefresh = resolve));
+  const host = new LocalHost({
+    origin: "https://provider.example",
+    auth: auth.oauth2AuthorizationCode({
+      issuer: "https://provider.example",
+      authorizationUrl: "https://provider.example/authorize",
+      tokenUrl: "https://provider.example/token",
+      scopes: ["events.read"],
+    }),
+    credentials: { clientId: "client-id" },
+    authorizationState: {
+      accessToken: "expired-token",
+      refreshToken: "refresh-token",
+      tokenFields: {},
+    },
+    outputPath: "unused",
+    statePath: "unused",
+    fetch: async (input) => {
+      if (String(input) === "https://provider.example/token") {
+        notifyRefreshStarted();
+        await refreshGate;
+        return new Response(null, { status: 500 });
+      }
+      return new Response(null, { status: 401 });
+    },
+  });
+
+  const request = host.request(Request).catch(() => undefined);
+  await refreshStarted;
+  const primary = new Error("integration failed");
+  const run = (async () => {
+    try {
+      throw primary;
+    } finally {
+      await host.settleAuthentication();
+    }
+  })();
+  releaseRefresh();
+
+  await assert.rejects(run, (error) => error === primary);
+  await request;
 });
 
 test("provider responses have a hard size limit", async () => {

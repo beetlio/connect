@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { Buffer } from "node:buffer";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire, setSourceMapsSupport } from "node:module";
 import { tmpdir } from "node:os";
@@ -6,7 +7,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
-import { build, formatMessages } from "esbuild";
+import { build, formatMessages, type BuildOptions } from "esbuild";
 import { create as createTar, extract as extractTar } from "tar";
 import ts from "typescript";
 import { z } from "zod";
@@ -18,13 +19,16 @@ import {
 } from "./index.ts";
 import { validateIntegration } from "./host.ts";
 
+const Require = createRequire(import.meta.url);
 const SdkEntry = fileURLToPath(new URL("./index.js", import.meta.url));
 const SdkTypesEntry = fileURLToPath(new URL("./index.d.ts", import.meta.url));
 const SdkDirectory = dirname(SdkEntry);
-const NodeTypesDirectory = dirname(
-  dirname(createRequire(import.meta.url).resolve("@types/node/package.json")),
-);
+const SdkVersion = z
+  .object({ version: z.string().min(1) })
+  .parse(Require("../package.json")).version;
+const NodeTypesDirectory = dirname(dirname(Require.resolve("@types/node/package.json")));
 const Encoder = new TextEncoder();
+const Decoder = new TextDecoder();
 const Limits = {
   archive: 25 * 1024 * 1024,
   expanded: 50 * 1024 * 1024,
@@ -66,22 +70,23 @@ const DependencyFields = [
 ] as const;
 const RegistryDependencyPattern =
   /^(?:npm:(?:@[^/\\:@]+\/[^/\\:@]+|[^/\\:@]+)(?:@[^:/\\]+)?|[^:/\\]*)$/;
+const InlineSourceMapPattern =
+  /\/\/# sourceMappingURL=data:application\/json;base64,([A-Za-z0-9+/=]+)\n?$/;
+const SourceMapSchema = z.looseObject({ sources: z.array(z.string()) });
 const ExecFile = promisify(execFile);
 setSourceMapsSupport(true);
 
-interface BuiltIntegration {
+export interface BuiltIntegration {
+  readonly bundle: Uint8Array;
   readonly integration: IntegrationDefinition;
   readonly manifest: IntegrationManifest;
+  readonly sdkVersion: string;
 }
 
-interface PackedIntegration {
+export interface PackedIntegration {
   readonly bytes: Uint8Array;
   readonly filename: string;
   readonly files: readonly string[];
-}
-
-export function loadIntegration(inputPath: string): Promise<BuiltIntegration> {
-  return buildIntegration(inputPath);
 }
 
 export async function packIntegration(inputDirectory: string): Promise<PackedIntegration> {
@@ -255,48 +260,77 @@ export async function packIntegration(inputDirectory: string): Promise<PackedInt
   }
 }
 
-async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
+export async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
   const entryPath = await resolveIntegrationEntry(inputPath);
   const workingDirectory = dirname(entryPath);
-  let output;
-  try {
-    output = await build({
-      absWorkingDir: workingDirectory,
-      entryPoints: [basename(entryPath)],
-      outfile: "integration.mjs",
-      bundle: true,
-      format: "esm",
-      platform: "node",
-      target: "node24.2",
-      mainFields: ["module", "main"],
-      sourcemap: "inline",
-      sourcesContent: false,
-      metafile: true,
-      write: false,
-      logLevel: "silent",
-      logOverride: { "unsupported-dynamic-import": "error" },
-      plugins: [
-        {
-          name: "beetl-connect-imports",
-          setup(builder) {
-            builder.onResolve({ filter: /^@beetlio\/connect$/ }, () => ({ path: SdkEntry }));
-          },
+  const options = {
+    absWorkingDir: workingDirectory,
+    outfile: "integration.mjs",
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    target: "node24.2",
+    mainFields: ["module", "main"],
+    minifyWhitespace: true,
+    sourcemap: "inline",
+    sourcesContent: false,
+    metafile: true,
+    write: false,
+    logLevel: "silent",
+    logOverride: { "unsupported-dynamic-import": "error" },
+    plugins: [
+      {
+        name: "beetl-connect-imports",
+        setup(builder) {
+          builder.onResolve({ filter: /^@beetlio\/connect$/ }, () => ({ path: SdkEntry }));
         },
-      ],
+      },
+    ],
+  } satisfies BuildOptions;
+  let sourceOutput;
+  try {
+    sourceOutput = await build({
+      ...options,
+      entryPoints: [basename(entryPath)],
     });
   } catch (error) {
     throw await integrationBuildError(error, entryPath);
   }
 
-  const bundle = output.outputFiles.find((file) => file.path.endsWith("integration.mjs"))?.contents;
-  if (!bundle) throw new Error("Bundler did not produce integration.mjs");
-  assertSize("integration.mjs", bundle, Limits.bundle);
+  const sourceBundle = sourceOutput.outputFiles.find((file) =>
+    file.path.endsWith("integration.mjs"),
+  )?.contents;
+  if (!sourceBundle) throw new Error("Bundler did not produce integration.mjs");
   await typeCheckIntegration(entryPath);
-  const integration = await importBundle(bundle, inputPath);
+  const integration = await importBundle(sourceBundle, inputPath);
   validateIntegration(integration);
   const manifest = createIntegrationManifest(integration);
   assertSize("manifest.json", Encoder.encode(JSON.stringify(manifest)), Limits.manifest);
   await validateIntegrationIcon(entryPath, integration.icon);
+
+  let output;
+  try {
+    output = await build({
+      ...options,
+      stdin: {
+        contents: `
+          import { isDeepStrictEqual } from "node:util";
+          import integration from ${JSON.stringify(`./${basename(entryPath)}`)};
+          import { createIntegrationManifest } from "@beetlio/connect";
+
+          if (!isDeepStrictEqual(createIntegrationManifest(integration), ${JSON.stringify(manifest)})) {
+            throw new Error("Runtime integration definition does not match its build manifest");
+          }
+          export default integration;
+        `,
+        loader: "js",
+        resolveDir: workingDirectory,
+        sourcefile: "beetl-runtime-entry.js",
+      },
+    });
+  } catch (error) {
+    throw await integrationBuildError(error, entryPath);
+  }
 
   for (const input of Object.keys(output.metafile.inputs)) {
     if (input.startsWith("<")) continue;
@@ -308,7 +342,37 @@ async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
       throw new Error(`Integration source imports outside its package directory: ${path}`);
     }
   }
-  return { integration, manifest };
+  const generated = output.outputFiles.find((file) =>
+    file.path.endsWith("integration.mjs"),
+  )?.contents;
+  if (!generated) throw new Error("Bundler did not produce integration.mjs");
+  const bundle = normalizeSourceMap(generated, workingDirectory);
+  assertSize("integration.mjs", bundle, Limits.bundle);
+  return { bundle, integration, manifest, sdkVersion: SdkVersion };
+}
+
+function normalizeSourceMap(bundle: Uint8Array, workingDirectory: string): Uint8Array {
+  const source = Decoder.decode(bundle);
+  const match = InlineSourceMapPattern.exec(source);
+  if (!match?.[1]) throw new Error("Bundler did not produce an inline source map");
+  const map = SourceMapSchema.parse(JSON.parse(Buffer.from(match[1], "base64").toString()));
+  const sources = map.sources.map((sourcePath) => {
+    const path = resolve(workingDirectory, sourcePath);
+    if (pathWithin(SdkDirectory, path)) {
+      return `@beetlio/connect/${relative(SdkDirectory, path).replaceAll("\\", "/")}`;
+    }
+    const normalized = path.replaceAll("\\", "/");
+    const dependency = normalized.indexOf("/node_modules/");
+    if (dependency >= 0) return `npm/${normalized.slice(dependency + 14)}`;
+    if (pathWithin(workingDirectory, path)) {
+      return relative(workingDirectory, path).replaceAll("\\", "/");
+    }
+    return sourcePath;
+  });
+  const encoded = Buffer.from(JSON.stringify({ ...map, sources })).toString("base64");
+  return Encoder.encode(
+    `${source.slice(0, match.index)}//# sourceMappingURL=data:application/json;base64,${encoded}\n`,
+  );
 }
 
 async function importBundle(bundle: Uint8Array, source: string): Promise<IntegrationDefinition> {

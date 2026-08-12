@@ -27,6 +27,10 @@
     "./host": {
       "types": "./dist/host.d.ts",
       "default": "./dist/host.js"
+    },
+    "./builder": {
+      "types": "./dist/artifact.d.ts",
+      "default": "./dist/artifact.js"
     }
   },
   "engines": {
