@@ -450,17 +450,17 @@ head -n 1 repositories.ndjson</code></pre>
           </p>
           <pre><code>import { buildIntegration } from "@beetlio/connect/builder";
 
-const { bundle, manifest, sdkVersion } = await buildIntegration("/workspace/integration");</code></pre>
+const { bundle, manifest, icon, sdkVersion } = await buildIntegration("/workspace/integration");</code></pre>
           <p>
-            The builder produces the Node.js 24.2 runtime bundle and manifest and records its SDK
-            version. It resolves integration imports of <code>@beetlio/connect</code> to that SDK,
-            so Core does not duplicate compiler or validation rules. The bundle validates its
-            definition against the build manifest when loaded and uses canonical source-map paths
-            for reproducible artifacts. Runtime jobs execute the immutable result in gVisor on an
-            isolated node pool. Local <code>sync</code> uses the same builder and Node.js target.
-            Use <code>ctx.fetch()</code> for managed authentication, retries, and origin
-            enforcement; direct external requests receive none of the connection's managed
-            credentials.
+            The builder produces the Node.js 24.2 runtime bundle and manifest, captures any
+            validated icon bytes, and records its SDK version. It resolves integration imports of
+            <code>@beetlio/connect</code> to that SDK, so Core does not duplicate compiler or
+            validation rules. The bundle validates its definition against the build manifest when
+            loaded and uses canonical source-map paths for reproducible artifacts. Runtime jobs
+            execute the immutable result in gVisor on an isolated node pool. Local
+            <code>sync</code> uses the same builder and Node.js target. Use
+            <code>ctx.fetch()</code> for managed authentication, retries, and origin enforcement;
+            direct external requests receive none of the connection's managed credentials.
           </p>
           <p>
             Hosted v1 treats uploaded integrations as tenant-admin-approved executable code. gVisor

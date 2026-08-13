@@ -679,6 +679,28 @@ test("integration contracts enforce authentication and input invariants", () => 
       },
     }),
   );
+  const secretInputs = credential.object({ token: credential.secret() });
+  assert.throws(
+    () =>
+      validateIntegration({
+        ...authenticatedHttp,
+        connection: {
+          ...authenticatedHttp.connection,
+          origin: "https://example.com",
+          inputs: { ...secretInputs, kind: "configuration" } as never,
+        },
+      }),
+    /Connection inputs cannot contain credentials/,
+  );
+  assert.throws(
+    () =>
+      validateIntegration({
+        ...authenticatedHttp,
+        connection: { ...authenticatedHttp.connection, origin: "https://example.com" },
+        syncs: [{ ...authenticatedHttp.syncs[0]!, inputs: secretInputs as never }],
+      }),
+    /Sync "items" inputs must use input\.object\(\)/,
+  );
 
   const integration = defineIntegration({
     key: "invalid",

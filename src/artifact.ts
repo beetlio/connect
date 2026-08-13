@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { build, formatMessages, type BuildOptions } from "esbuild";
+import sharp from "sharp";
 import { create as createTar, extract as extractTar } from "tar";
 import ts from "typescript";
 import { z } from "zod";
@@ -73,13 +74,22 @@ const RegistryDependencyPattern =
 const InlineSourceMapPattern =
   /\/\/# sourceMappingURL=data:application\/json;base64,([A-Za-z0-9+/=]+)\n?$/;
 const SourceMapSchema = z.looseObject({ sources: z.array(z.string()) });
+const CommonJsBanner =
+  'import { createRequire as __beetlCreateRequire } from "node:module"; const require = __beetlCreateRequire(import.meta.url);';
 const ExecFile = promisify(execFile);
 setSourceMapsSupport(true);
+
+export interface BuiltIntegrationIcon {
+  readonly filename: "icon.png" | "icon.webp";
+  readonly mediaType: "image/png" | "image/webp";
+  readonly bytes: Uint8Array;
+}
 
 export interface BuiltIntegration {
   readonly bundle: Uint8Array;
   readonly integration: IntegrationDefinition;
   readonly manifest: IntegrationManifest;
+  readonly icon?: BuiltIntegrationIcon;
   readonly sdkVersion: string;
 }
 
@@ -277,7 +287,10 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
     metafile: true,
     write: false,
     logLevel: "silent",
-    logOverride: { "unsupported-dynamic-import": "error" },
+    logOverride: {
+      "unsupported-dynamic-import": "error",
+      "unsupported-require-call": "error",
+    },
     plugins: [
       {
         name: "beetl-connect-imports",
@@ -291,7 +304,17 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
   try {
     sourceOutput = await build({
       ...options,
-      entryPoints: [basename(entryPath)],
+      banner: { js: CommonJsBanner },
+      stdin: {
+        contents: `
+          import integration from ${JSON.stringify(`./${basename(entryPath)}`)};
+          export { createIntegrationManifest } from "@beetlio/connect";
+          export default integration;
+        `,
+        loader: "js",
+        resolveDir: workingDirectory,
+        sourcefile: "beetl-build-entry.js",
+      },
     });
   } catch (error) {
     throw await integrationBuildError(error, entryPath);
@@ -306,7 +329,7 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
   validateIntegration(integration);
   const manifest = createIntegrationManifest(integration);
   assertSize("manifest.json", Encoder.encode(JSON.stringify(manifest)), Limits.manifest);
-  await validateIntegrationIcon(entryPath, integration.icon);
+  const icon = await loadIntegrationIcon(entryPath, integration.icon);
 
   let output;
   try {
@@ -315,8 +338,7 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
       stdin: {
         contents: `
           import { isDeepStrictEqual } from "node:util";
-          import integration from ${JSON.stringify(`./${basename(entryPath)}`)};
-          import { createIntegrationManifest } from "@beetlio/connect";
+          import integration, { createIntegrationManifest } from "beetl:frozen-integration";
 
           if (!isDeepStrictEqual(createIntegrationManifest(integration), ${JSON.stringify(manifest)})) {
             throw new Error("Runtime integration definition does not match its build manifest");
@@ -327,12 +349,28 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
         resolveDir: workingDirectory,
         sourcefile: "beetl-runtime-entry.js",
       },
+      plugins: [
+        ...options.plugins,
+        {
+          name: "beetl-frozen-integration",
+          setup(builder) {
+            builder.onResolve({ filter: /^beetl:frozen-integration$/ }, () => ({
+              path: "integration.mjs",
+              namespace: "beetl-frozen",
+            }));
+            builder.onLoad({ filter: /.*/, namespace: "beetl-frozen" }, () => ({
+              contents: sourceBundle,
+              loader: "js",
+            }));
+          },
+        },
+      ],
     });
   } catch (error) {
     throw await integrationBuildError(error, entryPath);
   }
 
-  for (const input of Object.keys(output.metafile.inputs)) {
+  for (const input of Object.keys(sourceOutput.metafile.inputs)) {
     if (input.startsWith("<")) continue;
     const path = resolve(workingDirectory, input);
     if (pathWithin(SdkDirectory, path) || path.replaceAll("\\", "/").includes("/node_modules/")) {
@@ -348,7 +386,13 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
   if (!generated) throw new Error("Bundler did not produce integration.mjs");
   const bundle = normalizeSourceMap(generated, workingDirectory);
   assertSize("integration.mjs", bundle, Limits.bundle);
-  return { bundle, integration, manifest, sdkVersion: SdkVersion };
+  return {
+    bundle,
+    integration: await importBundle(bundle, inputPath),
+    manifest,
+    ...(icon === undefined ? {} : { icon }),
+    sdkVersion: SdkVersion,
+  };
 }
 
 function normalizeSourceMap(bundle: Uint8Array, workingDirectory: string): Uint8Array {
@@ -404,7 +448,10 @@ function pathWithin(directory: string, path: string): boolean {
   );
 }
 
-async function validateIntegrationIcon(entryPath: string, declared: string | undefined) {
+async function loadIntegrationIcon(
+  entryPath: string,
+  declared: string | undefined,
+): Promise<BuiltIntegrationIcon | undefined> {
   if (declared === undefined) return;
   if (declared !== "icon.png" && declared !== "icon.webp") {
     throw new Error("Integration icon must be icon.png or icon.webp beside integration.ts");
@@ -419,24 +466,18 @@ async function validateIntegrationIcon(entryPath: string, declared: string | und
     throw error;
   }
   assertSize(declared, bytes, Limits.icon);
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const decoder = new TextDecoder();
-  const valid =
-    declared === "icon.png"
-      ? bytes.length >= 33 &&
-        [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every(
-          (byte, index) => bytes[index] === byte,
-        ) &&
-        view.getUint32(8) === 13 &&
-        decoder.decode(bytes.subarray(12, 16)) === "IHDR" &&
-        view.getUint32(16) > 0 &&
-        view.getUint32(20) > 0
-      : bytes.length >= 20 &&
-        decoder.decode(bytes.subarray(0, 4)) === "RIFF" &&
-        view.getUint32(4, true) + 8 === bytes.length &&
-        decoder.decode(bytes.subarray(8, 12)) === "WEBP" &&
-        ["VP8 ", "VP8L", "VP8X"].includes(decoder.decode(bytes.subarray(12, 16)));
-  if (!valid) throw new Error(`${declared} does not contain a valid ${declared.slice(5)} image`);
+  try {
+    const image = sharp(bytes, { failOn: "warning", limitInputPixels: 4096 ** 2 });
+    if ((await image.metadata()).format !== declared.slice(5)) throw new Error();
+    await image.raw().toBuffer();
+  } catch {
+    throw new Error(`${declared} does not contain a valid ${declared.slice(5)} image`);
+  }
+  return {
+    filename: declared,
+    mediaType: declared === "icon.png" ? "image/png" : "image/webp",
+    bytes,
+  };
 }
 
 function assertSize(name: string, bytes: Uint8Array, maximum: number): void {

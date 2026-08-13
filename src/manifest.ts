@@ -50,7 +50,7 @@ export interface IntegrationManifest {
     readonly key: string;
     readonly displayName: string;
     readonly description?: string;
-    readonly icon?: string;
+    readonly icon?: "icon.png" | "icon.webp";
   };
   readonly connection: {
     readonly origin: ProviderOriginDefinition;

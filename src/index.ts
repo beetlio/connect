@@ -699,7 +699,7 @@ export interface IntegrationDefinition<
   readonly key: string;
   readonly displayName: string;
   readonly description?: string;
-  readonly icon?: string;
+  readonly icon?: "icon.png" | "icon.webp";
   readonly connection: ConnectionDefinition<ConnectionConfig>;
   readonly syncs: Syncs;
 }

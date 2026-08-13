@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   auth as authentication,
   type AuthDefinition,
+  type InputField,
+  type InputObjectSchema,
   type IntegrationDefinition,
   type JsonObject,
   type JsonValue,
@@ -349,6 +351,7 @@ export function validateIntegration(integration: IntegrationDefinition): void {
   ) {
     throw new Error("Integration icon must be icon.png or icon.webp");
   }
+  validateConfigurationInputs(integration.connection.inputs, "Connection");
   const auth = integration.connection.auth ?? authentication.none();
   if (typeof integration.connection.origin === "string") {
     providerOrigin(integration.connection.origin, auth.type !== "none");
@@ -454,6 +457,7 @@ export function validateIntegration(integration: IntegrationDefinition): void {
 
   const keys = new Set<string>();
   for (const sync of integration.syncs) {
+    validateConfigurationInputs(sync.inputs, `Sync ${JSON.stringify(sync.key)}`);
     validateKey(sync.key, "Sync");
     if (keys.has(sync.key)) {
       throw new Error(`Duplicate sync key ${JSON.stringify(sync.key)}`);
@@ -478,6 +482,27 @@ export function validateIntegration(integration: IntegrationDefinition): void {
       }
       primaryKeys.add(path);
     }
+  }
+}
+
+function validateConfigurationInputs(
+  inputs: { readonly kind: string; readonly manifest: InputObjectSchema } | undefined,
+  label: string,
+): void {
+  if (inputs === undefined) return;
+  if (inputs.kind !== "configuration") {
+    throw new Error(`${label} inputs must use input.object()`);
+  }
+  const fields: InputField[] = Object.values(inputs.manifest.properties);
+  for (const field of fields) {
+    if (
+      ("writeOnly" in field && field.writeOnly) ||
+      ("x-beetl-widget" in field && field["x-beetl-widget"] === "password")
+    ) {
+      throw new Error(`${label} inputs cannot contain credentials`);
+    }
+    if (field.type === "object") fields.push(...Object.values(field.properties));
+    if (field.type === "array" && field.items !== undefined) fields.push(field.items);
   }
 }
 

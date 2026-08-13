@@ -264,7 +264,13 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
   const missingIcon = runCli(directory, "sync", directory);
   assert.equal(missingIcon.status, 1);
   assert.match(missingIcon.stderr, /declares missing icon\.png/);
-  await writeFile(join(directory, "icon.png"), "not a png");
+  await writeFile(
+    join(directory, "icon.png"),
+    Buffer.concat([
+      Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAA", "base64"),
+      Buffer.alloc(64),
+    ]),
+  );
   const invalidIcon = runCli(directory, "sync", directory);
   assert.equal(invalidIcon.status, 1);
   assert.match(invalidIcon.stderr, /valid png image/);
