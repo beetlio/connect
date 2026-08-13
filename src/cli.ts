@@ -676,7 +676,7 @@ function createLocalHost(
   const auth = integration.connection.auth;
   return new LocalHost({
     origin: connection.origin ?? integration.connection.origin,
-    connectionConfig: connection.inputs,
+    connectionConfig: parseConnectionInputs(integration, connection.inputs),
     fetch: ProviderFetch,
     ...(auth === undefined ? {} : { auth }),
     credentials: parseCredentials(auth?.credentials.schema ?? EmptyInputs, connection.credentials),
@@ -701,6 +701,12 @@ function createLocalHost(
   });
 }
 
+function parseConnectionInputs(integration: IntegrationDefinition, input: unknown): JsonObject {
+  return JsonObjectSchema.parse(
+    (integration.connection.inputs?.schema ?? EmptyInputs).parse(input),
+  );
+}
+
 function parseCredentials(schema: z.ZodType, input: unknown): Readonly<Record<string, string>> {
   const result = schema.safeParse(input);
   if (!result.success) {
@@ -721,7 +727,7 @@ function providerBinding(
       origin ?? integration.connection.origin,
       authorizationState,
       manifest.connection.auth.type !== "none",
-      connectionInputs,
+      parseConnectionInputs(integration, connectionInputs),
     ).origin,
     authentication: z.json().parse(manifest.connection.auth),
   };

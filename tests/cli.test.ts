@@ -22,6 +22,99 @@ function runCli(cwd: string, ...args: string[]) {
   return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
 }
 
+test("CLI syncs legacy connections after adding mapped origin defaults", async (t) => {
+  const directory = await fixtureDirectory(t, "beetl-cli-origin-default");
+  const home = join(directory, "home");
+  const configHome = join(home, "config");
+  const configDirectory =
+    process.platform === "darwin"
+      ? join(home, "Library/Preferences/beetl-connect")
+      : process.platform === "win32"
+        ? join(configHome, "beetl-connect/Config")
+        : join(configHome, "beetl-connect");
+  const connection = join(configDirectory, "connections/origin-default/default.json");
+  const profile = join(configDirectory, "profiles/origin-default/items/default.json");
+  const output = join(directory, "output.ndjson");
+  await writeFile(
+    join(directory, "integration.ts"),
+    `
+      import { defineIntegration, input, z } from "@beetlio/connect";
+
+      export default defineIntegration({
+        key: "origin-default",
+        displayName: "Origin default",
+        connection: {
+          origin: {
+            input: "environment",
+            values: {
+              production: "https://api.example.com",
+              sandbox: "https://api.sandbox.example.com",
+            },
+          },
+          inputs: input.object({
+            environment: input.select(
+              [
+                { value: "production", label: "Production" },
+                { value: "sandbox", label: "Sandbox" },
+              ],
+              { default: "production" },
+            ),
+          }),
+        },
+        syncs: (defineSync) => [defineSync({
+          key: "items",
+          displayName: "Items",
+          records: z.object({ environment: z.string() }),
+          async run(ctx) {
+            await ctx.emit({ records: [{ environment: ctx.config.connection.environment }] });
+          },
+        })],
+      });
+    `,
+  );
+  await mkdir(dirname(connection), { recursive: true });
+  await writeFile(
+    connection,
+    JSON.stringify({
+      integration: "origin-default",
+      name: "default",
+      revision: ConnectionRevision,
+      provider: Provider,
+      inputs: {},
+      credentials: {},
+    }),
+  );
+  await mkdir(dirname(profile), { recursive: true });
+  await writeFile(
+    profile,
+    JSON.stringify({
+      integration: "origin-default",
+      sync: "items",
+      connection: "default",
+      revision: "11111111-1111-4111-8111-111111111111",
+      inputs: {},
+    }),
+  );
+
+  const result = spawnSync(process.execPath, [CliPath, "sync", directory, "--output", output], {
+    cwd: directory,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      XDG_CONFIG_HOME: configHome,
+      APPDATA: configHome,
+      LOCALAPPDATA: configHome,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse((await readFile(output, "utf8")).trim()), {
+    environment: "production",
+  });
+});
+
 test("CLI configures source integrations and creates source packages", async (t) => {
   const directory = await fixtureDirectory(t, "beetl-cli");
   const workingDirectory = join(directory, "workspace");

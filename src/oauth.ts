@@ -26,20 +26,20 @@ export interface AuthorizeOAuthOptions extends OAuthRequestOptions {
   onAuthorizationCallback?(): string | Promise<string>;
 }
 
-export async function authorizeOAuth(
-  options: AuthorizeOAuthOptions,
-): Promise<OAuthAuthorizationState> {
-  const redirect = new URL(options.redirectUri);
-  const usesLocalCallback =
-    redirect.protocol === "http:" && isLoopback(redirect.hostname) && Boolean(redirect.port);
-  if (!usesLocalCallback && redirect.protocol !== "https:") {
-    throw new Error("OAuth redirect URIs must use HTTPS or loopback HTTP");
-  }
+export interface OAuthAuthorizationRequest {
+  readonly authorizationUrl: string;
+  readonly state: string;
+  readonly codeVerifier: string;
+}
 
-  const { server, client, clientAuth, requestOptions } = oauthContext(options);
+export async function beginOAuthAuthorization(
+  options: OAuthRequestOptions & { redirectUri: string },
+): Promise<OAuthAuthorizationRequest> {
+  const redirect = oauthRedirect(options.redirectUri);
+  const { server, client } = oauthContext(options);
   const state = oauth.generateRandomState();
-  const verifier = oauth.generateRandomCodeVerifier();
-  const challenge = await oauth.calculatePKCECodeChallenge(verifier);
+  const codeVerifier = oauth.generateRandomCodeVerifier();
+  const challenge = await oauth.calculatePKCECodeChallenge(codeVerifier);
   const authorizationUrl = new URL(server.authorization_endpoint);
   authorizationUrl.searchParams.set("response_type", "code");
   authorizationUrl.searchParams.set("client_id", client.client_id);
@@ -48,16 +48,57 @@ export async function authorizeOAuth(
   authorizationUrl.searchParams.set("state", state);
   authorizationUrl.searchParams.set("code_challenge", challenge);
   authorizationUrl.searchParams.set("code_challenge_method", "S256");
+  return { authorizationUrl: authorizationUrl.href, state, codeVerifier };
+}
+
+export async function completeOAuthAuthorization(
+  options: OAuthRequestOptions & {
+    redirectUri: string;
+    callbackUrl: string;
+    state: string;
+    codeVerifier: string;
+  },
+): Promise<OAuthAuthorizationState> {
+  const redirect = oauthRedirect(options.redirectUri);
+  const callback = new URL(options.callbackUrl);
+  if (callback.origin !== redirect.origin || callback.pathname !== redirect.pathname) {
+    throw new Error("OAuth callback URL does not match the configured redirect URI");
+  }
+  const { server, client, clientAuth, requestOptions } = oauthContext(options);
+  const callbackParameters = oauth.validateAuthResponse(server, client, callback, options.state);
+  const response = await oauth.authorizationCodeGrantRequest(
+    server,
+    client,
+    clientAuth,
+    callbackParameters,
+    redirect.href,
+    options.codeVerifier,
+    requestOptions,
+  );
+  return authorizationState(
+    options,
+    await oauth.processAuthorizationCodeResponse(server, client, response),
+    undefined,
+  );
+}
+
+export async function authorizeOAuth(
+  options: AuthorizeOAuthOptions,
+): Promise<OAuthAuthorizationState> {
+  const redirect = oauthRedirect(options.redirectUri);
+  const usesLocalCallback =
+    redirect.protocol === "http:" && isLoopback(redirect.hostname) && Boolean(redirect.port);
+  const request = await beginOAuthAuthorization(options);
 
   const validateCallback = (value: string | URL) => {
     const url = new URL(value);
     if (url.origin !== redirect.origin || url.pathname !== redirect.pathname) {
       throw new Error("OAuth callback URL does not match the configured redirect URI");
     }
-    return oauth.validateAuthResponse(server, client, url, state);
+    return url;
   };
 
-  let callbackParameters: URLSearchParams;
+  let callbackUrl: URL;
   if (usesLocalCallback) {
     const callbackServer = createServer();
     await new Promise<void>((resolve, reject) => {
@@ -78,33 +119,24 @@ export async function authorizeOAuth(
         validateCallback,
         options.signal,
       );
-      await options.onAuthorizationUrl(authorizationUrl.href);
-      callbackParameters = await callbackPromise;
+      await options.onAuthorizationUrl(request.authorizationUrl);
+      callbackUrl = await callbackPromise;
     } finally {
       await new Promise<void>((resolve) => callbackServer.close(() => resolve()));
     }
   } else {
-    await options.onAuthorizationUrl(authorizationUrl.href);
+    await options.onAuthorizationUrl(request.authorizationUrl);
     if (options.onAuthorizationCallback === undefined) {
       throw new Error("This OAuth redirect requires the callback URL to be supplied");
     }
-    callbackParameters = validateCallback(await options.onAuthorizationCallback());
+    callbackUrl = validateCallback(await options.onAuthorizationCallback());
   }
-
-  const response = await oauth.authorizationCodeGrantRequest(
-    server,
-    client,
-    clientAuth,
-    callbackParameters,
-    redirect.href,
-    verifier,
-    requestOptions,
-  );
-  return authorizationState(
-    options,
-    await oauth.processAuthorizationCodeResponse(server, client, response),
-    undefined,
-  );
+  return completeOAuthAuthorization({
+    ...options,
+    callbackUrl: callbackUrl.href,
+    state: request.state,
+    codeVerifier: request.codeVerifier,
+  });
 }
 
 export async function refreshOAuthAuthorization(
@@ -153,10 +185,10 @@ function authorizationState(
 function waitForAuthorizationCallback(
   server: ReturnType<typeof createServer>,
   redirect: URL,
-  validate: (url: URL) => URLSearchParams,
+  validate: (url: URL) => URL,
   signal: AbortSignal | undefined,
-): Promise<URLSearchParams> {
-  return new Promise<URLSearchParams>((resolve, reject) => {
+): Promise<URL> {
+  return new Promise<URL>((resolve, reject) => {
     const timeout = setTimeout(
       () => settle(() => reject(new Error("OAuth authorization timed out"))),
       5 * 60_000,
@@ -192,6 +224,15 @@ function waitForAuthorizationCallback(
     server.on("request", request);
     if (signal?.aborted) abort();
   });
+}
+
+function oauthRedirect(value: string): URL {
+  const redirect = new URL(value);
+  const loopback = redirect.protocol === "http:" && isLoopback(redirect.hostname);
+  if (redirect.protocol !== "https:" && !loopback) {
+    throw new Error("OAuth redirect URIs must use HTTPS or loopback HTTP");
+  }
+  return redirect;
 }
 
 function oauthContext(options: OAuthRequestOptions) {
