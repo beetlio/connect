@@ -353,8 +353,26 @@ export function validateIntegration(integration: IntegrationDefinition): void {
   }
   validateConfigurationInputs(integration.connection.inputs, "Connection");
   const auth = integration.connection.auth ?? authentication.none();
-  if (typeof integration.connection.origin === "string") {
-    providerOrigin(integration.connection.origin, auth.type !== "none");
+  const origin = integration.connection.origin;
+  if (typeof origin === "string") {
+    providerOrigin(origin, auth.type !== "none");
+  } else if ("values" in origin) {
+    const inputField = integration.connection.inputs?.shape[origin.input];
+    const selectValues =
+      inputField?.manifest.type === "string" ? inputField.manifest.enum : undefined;
+    const configuredValues = Object.keys(origin.values);
+    if (
+      !origin.input.trim() ||
+      selectValues === undefined ||
+      configuredValues.length === 0 ||
+      configuredValues.length !== selectValues.length ||
+      selectValues.some((value) => origin.values[value] === undefined)
+    ) {
+      throw new Error("Provider origins must map every value of a connection select input");
+    }
+    for (const value of Object.values(origin.values)) {
+      providerOrigin(value, auth.type !== "none");
+    }
   }
 
   const credentialKeys = new Set(Object.keys(auth.credentials.shape));
@@ -438,12 +456,13 @@ export function validateIntegration(integration: IntegrationDefinition): void {
       throw new Error("OAuth token field mappings cannot be empty");
     }
     if (
-      typeof integration.connection.origin !== "string" &&
-      auth.tokenFields[integration.connection.origin.oauthTokenField] === undefined
+      typeof origin !== "string" &&
+      "oauthTokenField" in origin &&
+      auth.tokenFields[origin.oauthTokenField] === undefined
     ) {
       throw new Error("Provider origin references an unknown OAuth token field");
     }
-  } else if (typeof integration.connection.origin !== "string") {
+  } else if (typeof origin !== "string" && "oauthTokenField" in origin) {
     throw new Error("Dynamic provider origins require OAuth authentication");
   }
 

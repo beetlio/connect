@@ -63,7 +63,14 @@ test("token exchange authentication caches tokens and refreshes after a 401", as
   let exchanges = 0;
   let rejectFirstToken = false;
   const host = new LocalHost({
-    origin: "https://api.example.com",
+    origin: {
+      input: "environment",
+      values: {
+        production: "https://api.example.com",
+        sandbox: "https://api.sandbox.example.com",
+      },
+    },
+    connectionConfig: { environment: "sandbox" },
     auth: auth.tokenExchange({
       credentials: credential.object({
         clientId: credential.string(),
@@ -76,7 +83,7 @@ test("token exchange authentication caches tokens and refreshes after a 401", as
     outputPath: "unused",
     statePath: "unused",
     fetch: async (input, init) => {
-      if (String(input) === "https://api.example.com/login") {
+      if (String(input) === "https://api.sandbox.example.com/login") {
         exchanges += 1;
         const headers = new Headers(init?.headers);
         assert.equal(init?.method, "POST");

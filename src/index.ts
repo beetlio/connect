@@ -390,7 +390,13 @@ export interface RetryPolicy {
 
 export type RetryDefinition = false | RetryPolicy;
 
-export type ProviderOriginDefinition = string | { readonly oauthTokenField: string };
+export type ProviderOriginDefinition =
+  | string
+  | { readonly oauthTokenField: string }
+  | {
+      readonly input: string;
+      readonly values: Readonly<Record<string, string>>;
+    };
 
 export type AuthManifest =
   | { type: "none" }

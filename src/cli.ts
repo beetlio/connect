@@ -471,6 +471,7 @@ async function configureIntegration(
           manifest,
           configuredOrigin,
           authorizationState,
+          connectionInputs,
         );
         const connectionValues = {
           integration: integration.key,
@@ -509,6 +510,7 @@ async function configureIntegration(
                         manifest,
                         existingConnection.origin,
                         updated.authorizationState,
+                        existingConnection.inputs,
                       ),
                     },
                     null,
@@ -673,6 +675,7 @@ function createLocalHost(
   const auth = integration.connection.auth;
   return new LocalHost({
     origin: connection.origin ?? integration.connection.origin,
+    connectionConfig: connection.inputs,
     fetch: ProviderFetch,
     ...(auth === undefined ? {} : { auth }),
     credentials: parseCredentials(auth?.credentials.schema ?? EmptyInputs, connection.credentials),
@@ -683,7 +686,13 @@ function createLocalHost(
       const updated = {
         ...connection,
         authorizationState,
-        provider: providerBinding(integration, manifest, connection.origin, authorizationState),
+        provider: providerBinding(
+          integration,
+          manifest,
+          connection.origin,
+          authorizationState,
+          connection.inputs,
+        ),
       };
       return onConnectionChanged(updated);
     },
@@ -704,12 +713,14 @@ function providerBinding(
   manifest: IntegrationManifest,
   origin: string | undefined,
   authorizationState: OAuthAuthorizationState | undefined,
+  connectionInputs: JsonObject,
 ): ProviderBinding {
   return {
     origin: resolveProviderOrigin(
       origin ?? integration.connection.origin,
       authorizationState,
       manifest.connection.auth.type !== "none",
+      connectionInputs,
     ).origin,
     authentication: z.json().parse(manifest.connection.auth),
   };
@@ -723,7 +734,13 @@ function connectionMatchesProvider(
   try {
     return isDeepStrictEqual(
       connection.provider,
-      providerBinding(integration, manifest, connection.origin, connection.authorizationState),
+      providerBinding(
+        integration,
+        manifest,
+        connection.origin,
+        connection.authorizationState,
+        connection.inputs,
+      ),
     );
   } catch {
     return false;

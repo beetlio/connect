@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { AuthDefinition, JsonValue, ProviderOriginDefinition } from "./index.ts";
+import type { AuthDefinition, JsonObject, JsonValue, ProviderOriginDefinition } from "./index.ts";
 import { refreshOAuthAuthorization, type OAuthAuthorizationState } from "./oauth.ts";
 import {
   resolveRetry,
@@ -20,6 +20,7 @@ const MaxProviderResponseBytes = 16 * 1024 * 1024;
 
 export interface LocalHostOptions {
   origin: ProviderOriginDefinition;
+  connectionConfig?: JsonObject;
   auth?: AuthDefinition;
   credentials?: Readonly<Record<string, string>>;
   authorizationState?: OAuthAuthorizationState;
@@ -34,6 +35,7 @@ export interface LocalHostOptions {
 export class LocalHost implements SyncHost {
   #origin: URL;
   readonly #originDefinition: ProviderOriginDefinition;
+  readonly #connectionConfig: JsonObject;
   readonly #auth: AuthDefinition | { readonly type: "none" };
   readonly #credentials: Readonly<Record<string, string>>;
   #authorizationState: OAuthAuthorizationState | undefined;
@@ -51,6 +53,7 @@ export class LocalHost implements SyncHost {
 
   constructor(options: LocalHostOptions) {
     this.#originDefinition = options.origin;
+    this.#connectionConfig = options.connectionConfig ?? {};
     this.#auth = options.auth ?? { type: "none" };
     this.#credentials = options.credentials ?? {};
     this.#authorizationState = options.authorizationState;
@@ -58,6 +61,7 @@ export class LocalHost implements SyncHost {
       this.#originDefinition,
       this.#authorizationState,
       this.#auth.type !== "none",
+      this.#connectionConfig,
     );
     this.#outputPath = options.outputPath;
     this.#statePath = options.statePath;
@@ -356,7 +360,12 @@ export class LocalHost implements SyncHost {
       fetch: this.#fetch,
       ...(signal === undefined ? {} : { signal }),
     });
-    const origin = resolveProviderOrigin(this.#originDefinition, authorizationState, true);
+    const origin = resolveProviderOrigin(
+      this.#originDefinition,
+      authorizationState,
+      true,
+      this.#connectionConfig,
+    );
     await this.#onAuthorizationStateChanged(authorizationState);
     this.#authorizationState = authorizationState;
     this.#origin = origin;
@@ -373,11 +382,12 @@ export function resolveProviderOrigin(
   definition: ProviderOriginDefinition,
   authorizationState?: OAuthAuthorizationState,
   authenticated = false,
+  connectionConfig: JsonObject = {},
 ): URL {
   let value: string;
   if (typeof definition === "string") {
     value = definition;
-  } else {
+  } else if ("oauthTokenField" in definition) {
     const tokenField = authorizationState?.tokenFields[definition.oauthTokenField];
     if (tokenField === undefined) {
       throw new Error(
@@ -385,6 +395,14 @@ export function resolveProviderOrigin(
       );
     }
     value = tokenField;
+  } else {
+    const selected = connectionConfig[definition.input];
+    if (typeof selected !== "string" || definition.values[selected] === undefined) {
+      throw new Error(
+        `Connection input ${JSON.stringify(definition.input)} has no provider origin`,
+      );
+    }
+    value = definition.values[selected];
   }
   return providerOrigin(value, authenticated);
 }
