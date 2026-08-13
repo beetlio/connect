@@ -478,11 +478,12 @@ const { bundle, manifest, icon, sdkVersion } = await buildIntegration("/workspac
             origin and authentication definition. Connections are not encrypted. Profiles and
             connections carry revisions; changed inputs and explicit reauthorization create new
             revisions, while automatic OAuth refresh preserves them. Sync checkpoints remain under
-            <code>.beetl/state</code> and are isolated by those revisions. Only one local process
-            may use a state path at a time. Configuration and OAuth-backed syncs also lock their
-            named connection so authorization refresh cannot race. Concurrent operations fail
-            instead of waiting. If a process is forcibly killed, remove its adjacent
-            <code>.lock</code> file only after confirming no operation still uses it.
+            <code>.beetl/state</code> and are isolated by the built artifact digest and those
+            revisions. Only one local process may use a state path at a time. Configuration and
+            OAuth-backed syncs also lock their named connection so authorization refresh cannot
+            race. Concurrent operations fail instead of waiting. If a process is forcibly killed,
+            remove its adjacent <code>.lock</code> file only after confirming no operation still
+            uses it.
           </p>
         </section>
 

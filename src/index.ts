@@ -65,6 +65,15 @@ export interface CredentialField<Schema extends z.ZodType<string> = z.ZodType<st
   readonly manifest: InputValueSchema;
 }
 
+export interface SecretCredentialField<
+  Schema extends z.ZodType<string> = z.ZodType<string>,
+> extends CredentialField<Schema> {
+  readonly manifest: InputValueSchema & {
+    readonly writeOnly: true;
+    readonly "x-beetl-widget": "password";
+  };
+}
+
 type CredentialShape = Record<string, CredentialField>;
 type CredentialSchemaShape<Shape extends CredentialShape> = {
   readonly [Key in keyof Shape]: Shape[Key]["schema"];
@@ -327,19 +336,21 @@ export const input = {
   },
 };
 
-type CredentialOptions = Omit<StringInputOptions, "default">;
+type CredentialOptions = Omit<StringInputOptions, "default" | "minLength">;
 
+function credentialField(options: CredentialOptions, secret: true): SecretCredentialField;
+function credentialField(options: CredentialOptions, secret: false): CredentialField;
 function credentialField(
   options: CredentialOptions,
   secret: boolean,
 ): CredentialField<z.ZodType<string>> {
   return {
     kind: "credential",
-    schema: stringSchema(options),
+    schema: stringSchema({ ...options, minLength: 1 }),
     manifest: {
       type: "string",
       ...metadata(options),
-      ...(options.minLength === undefined ? {} : { minLength: options.minLength }),
+      minLength: 1,
       ...(options.maxLength === undefined ? {} : { maxLength: options.maxLength }),
       ...(options.pattern === undefined ? {} : { pattern: options.pattern }),
       ...(options.format === undefined ? {} : { format: options.format }),
@@ -436,7 +447,7 @@ export const auth = {
     return { type: "none", credentials: credential.object({}) };
   },
 
-  bearer(options: { token?: CredentialField } = {}): AuthDefinition {
+  bearer(options: { token?: SecretCredentialField } = {}): AuthDefinition {
     return {
       type: "bearer",
       credentials: credential.object({
@@ -448,7 +459,7 @@ export const auth = {
   basic(
     options: {
       username?: CredentialField;
-      password?: CredentialField;
+      password?: SecretCredentialField;
     } = {},
   ): AuthDefinition {
     return {
@@ -463,7 +474,7 @@ export const auth = {
   apiKey(options: {
     in: "header" | "query";
     name: string;
-    apiKey?: CredentialField;
+    apiKey?: SecretCredentialField;
   }): AuthDefinition {
     return {
       type: "api_key",
@@ -477,7 +488,7 @@ export const auth = {
 
   oauth2AuthorizationCode(options: {
     clientId?: CredentialField;
-    clientSecret?: CredentialField;
+    clientSecret?: SecretCredentialField;
     issuer: string;
     authorizationUrl: string;
     tokenUrl: string;

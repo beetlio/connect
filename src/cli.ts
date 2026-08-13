@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -202,7 +202,8 @@ async function main(args = process.argv.slice(2)): Promise<void> {
     console.log(`Included files: ${packed.files.join(", ")}`);
     return;
   }
-  const { integration, manifest } = await buildIntegration(options.integrationPath);
+  const { bundle, integration, manifest } = await buildIntegration(options.integrationPath);
+  const artifactRevision = createHash("sha256").update(bundle).digest("hex");
 
   if (options.command === "configure") {
     const syncKey = selectSyncKey(integration, options.syncKey);
@@ -263,7 +264,7 @@ async function main(args = process.argv.slice(2)): Promise<void> {
       );
       const statePath = resolve(
         options.statePath ??
-          `.beetl/state/${integration.key}/${configuration.profile}/${configuration.revision}/${configuration.connection}/${connection.revision}/${syncKey}.json`,
+          `.beetl/state/${integration.key}/${artifactRevision}/${configuration.profile}/${configuration.revision}/${configuration.connection}/${connection.revision}/${syncKey}.json`,
       );
       await withFileLock(
         `${statePath}.lock`,

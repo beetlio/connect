@@ -353,6 +353,12 @@ export function validateIntegration(integration: IntegrationDefinition): void {
   }
   validateConfigurationInputs(integration.connection.inputs, "Connection");
   const auth = integration.connection.auth ?? authentication.none();
+  if (
+    auth.credentials.kind !== "credentials" ||
+    Object.values(auth.credentials.shape).some((field) => field.kind !== "credential")
+  ) {
+    throw new Error("Authentication credentials must use credential.object()");
+  }
   const origin = integration.connection.origin;
   if (typeof origin === "string") {
     providerOrigin(origin, auth.type !== "none");
@@ -376,9 +382,32 @@ export function validateIntegration(integration: IntegrationDefinition): void {
   }
 
   const credentialKeys = new Set(Object.keys(auth.credentials.shape));
-  for (const field of credentialReferences(auth)) {
+  const referencedCredentials = new Set(credentialReferences(auth));
+  for (const field of referencedCredentials) {
     if (!credentialKeys.has(field)) {
       throw new Error(`Authentication references unknown credential ${JSON.stringify(field)}`);
+    }
+  }
+  const unusedCredential = [...credentialKeys].find((field) => !referencedCredentials.has(field));
+  if (unusedCredential !== undefined) {
+    throw new Error(
+      `Authentication declares unused credential ${JSON.stringify(unusedCredential)}`,
+    );
+  }
+  const secretCredentials =
+    auth.type === "bearer"
+      ? ["token"]
+      : auth.type === "basic"
+        ? ["password"]
+        : auth.type === "api_key"
+          ? ["apiKey"]
+          : auth.type === "oauth2_authorization_code" && auth.usesClientSecret
+            ? ["clientSecret"]
+            : [];
+  for (const name of secretCredentials) {
+    const field = auth.credentials.shape[name];
+    if (field?.manifest.writeOnly !== true || field.manifest["x-beetl-widget"] !== "password") {
+      throw new Error(`Authentication credential ${JSON.stringify(name)} must be secret`);
     }
   }
   if (

@@ -209,10 +209,10 @@ CLI replaces the file selected by `--output` only after the new snapshot
 succeeds. Without `--output`, each run uses a new timestamped filename.
 Profiles and connections carry revisions. `configure` preserves revisions when
 nothing changed, while changed inputs and `--reauthorize` create new revisions.
-Automatic OAuth refresh preserves the
-connection revision. Default checkpoint paths include both revisions so changed
-filters or credentials cannot silently reuse older state. Existing checkpoint
-files are retained, and `--state` can select one explicitly.
+Automatic OAuth refresh preserves the connection revision. Default checkpoint paths
+include the built artifact digest and both revisions so changed code, filters, or
+credentials cannot silently reuse older state. Existing checkpoint files are retained,
+and `--state` can select one explicitly.
 Only one local process may use a state path at a time. Configuration and OAuth-backed
 syncs also lock their named connection so authorization refresh cannot race. A
 concurrent operation fails instead of waiting. If a process is forcibly killed, remove

@@ -72,10 +72,15 @@ test("authoring produces a typed integration manifest", () => {
   assert.deepEqual(manifest.connection.auth, { type: "bearer" });
   assert.deepEqual(manifest.connection.credentials.properties.token, {
     type: "string",
+    minLength: 1,
     title: "API token",
     "x-beetl-widget": "password",
     writeOnly: true,
   });
+  assert.equal(
+    integration.connection.auth?.credentials.schema.safeParse({ token: "" }).success,
+    false,
+  );
   assert.equal(manifest.syncs[0]?.inputs.properties.pageSize?.default, 100);
   assert.equal(manifest.syncs[0]?.inputs.properties.advanced?.type, "object");
   assert.ok(!manifest.syncs[0]?.inputs.required?.includes("advanced"));
@@ -582,6 +587,10 @@ test("records must be JSON values before they cross the host boundary", async ()
 });
 
 test("integration contracts enforce authentication and input invariants", () => {
+  if (false) {
+    // @ts-expect-error Built-in bearer tokens must be masked secret credentials.
+    auth.bearer({ token: credential.string() });
+  }
   assert.throws(
     () => input.object({ token: credential.secret() } as never),
     /only input\.\* fields/,
@@ -687,6 +696,51 @@ test("integration contracts enforce authentication and input invariants", () => 
         connection: {
           ...authenticatedHttp.connection,
           origin: "https://example.com",
+          auth: auth.bearer({ token: credential.string() as never }),
+        },
+      }),
+    /credential "token" must be secret/,
+  );
+  assert.throws(
+    () =>
+      validateIntegration({
+        ...authenticatedHttp,
+        connection: {
+          ...authenticatedHttp.connection,
+          origin: "https://example.com",
+          auth: {
+            ...auth.bearer(),
+            credentials: input.object({ token: input.string() }) as never,
+          },
+        },
+      }),
+    /credentials must use credential\.object\(\)/,
+  );
+  assert.throws(
+    () =>
+      validateIntegration({
+        ...authenticatedHttp,
+        connection: {
+          ...authenticatedHttp.connection,
+          origin: "https://example.com",
+          auth: auth.custom({
+            credentials: credential.object({
+              token: credential.secret(),
+              unused: credential.secret(),
+            }),
+            headers: { authorization: "token" },
+          }),
+        },
+      }),
+    /unused credential "unused"/,
+  );
+  assert.throws(
+    () =>
+      validateIntegration({
+        ...authenticatedHttp,
+        connection: {
+          ...authenticatedHttp.connection,
+          origin: "https://example.com",
           inputs: { ...secretInputs, kind: "configuration" } as never,
         },
       }),
@@ -777,7 +831,7 @@ test("integration contracts enforce authentication and input invariants", () => 
         syncs: [],
       }),
     ).connection.credentials.properties.default,
-    { type: "string", "x-beetl-widget": "password", writeOnly: true },
+    { type: "string", minLength: 1, "x-beetl-widget": "password", writeOnly: true },
   );
   assert.throws(
     () =>

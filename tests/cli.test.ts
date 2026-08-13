@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
@@ -239,9 +239,8 @@ test("CLI rejects unsafe config roots and concurrent OAuth connection use", asyn
 
 test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
   const directory = await fixtureDirectory(t, "beetl-cli-syncs");
-  await writeFile(
-    join(directory, "integration.ts"),
-    `
+  const entry = join(directory, "integration.ts");
+  const source = `
       import { defineIntegration, z } from "@beetlio/connect";
       export default defineIntegration({
         key: "multiple",
@@ -258,8 +257,8 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
           },
         })),
       });
-    `,
-  );
+    `;
+  await writeFile(entry, source);
 
   const missingIcon = runCli(directory, "sync", directory);
   assert.equal(missingIcon.status, 1);
@@ -298,7 +297,6 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
   const selected = runCli(directory, "sync", directory, "second", "--output", output);
   assert.equal(selected.status, 0, selected.stderr);
   assert.deepEqual(JSON.parse((await readFile(output, "utf8")).trim()), { id: "second" });
-  const secondProfile = JSON.parse(await readFile(join(profiles, "second/default.json"), "utf8"));
   const savedConnection = JSON.parse(
     await readFile(
       join(directory, "user-config/beetl-connect/connections/multiple/default.json"),
@@ -309,18 +307,30 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
   assert.match(savedConnection.revision, /^[0-9a-f-]{36}$/);
   assert.deepEqual(savedConnection.inputs, {});
   assert.deepEqual(savedConnection.credentials, {});
-  assert.deepEqual(
-    JSON.parse(
-      await readFile(
-        join(
-          directory,
-          `.beetl/state/multiple/default/${secondProfile.revision}/default/${savedConnection.revision}/second.json`,
-        ),
-        "utf8",
-      ),
-    ),
-    { cursor: "second" },
+  const stateRoot = join(directory, ".beetl/state/multiple");
+  let stateFiles = (await readdir(stateRoot, { recursive: true })).filter((path) =>
+    path.endsWith(join(savedConnection.revision, "second.json")),
   );
+  assert.equal(stateFiles.length, 1);
+  assert.match(stateFiles[0]!, /^[a-f0-9]{64}[\\/]/);
+  assert.deepEqual(JSON.parse(await readFile(join(stateRoot, stateFiles[0]!), "utf8")), {
+    cursor: "second",
+  });
+
+  await writeFile(entry, source.replace("displayName: key,", "displayName: key.toUpperCase(),"));
+  const rebuilt = runCli(
+    directory,
+    "sync",
+    directory,
+    "second",
+    "--output",
+    join(directory, "second-rebuilt.ndjson"),
+  );
+  assert.equal(rebuilt.status, 0, rebuilt.stderr);
+  stateFiles = (await readdir(stateRoot, { recursive: true })).filter((path) =>
+    path.endsWith(join(savedConnection.revision, "second.json")),
+  );
+  assert.equal(stateFiles.length, 2);
 
   const reauthorized = runCli(directory, "configure", directory, "second", "--reauthorize");
   assert.equal(reauthorized.status, 0, reauthorized.stderr);
@@ -340,18 +350,13 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
     join(directory, "second-reauthorized.ndjson"),
   );
   assert.equal(resumed.status, 0, resumed.stderr);
-  assert.deepEqual(
-    JSON.parse(
-      await readFile(
-        join(
-          directory,
-          `.beetl/state/multiple/default/${secondProfile.revision}/default/${replacedConnection.revision}/second.json`,
-        ),
-        "utf8",
-      ),
-    ),
-    { cursor: "second" },
+  const reauthorizedState = (await readdir(stateRoot, { recursive: true })).find((path) =>
+    path.endsWith(join(replacedConnection.revision, "second.json")),
   );
+  assert.ok(reauthorizedState);
+  assert.deepEqual(JSON.parse(await readFile(join(stateRoot, reauthorizedState), "utf8")), {
+    cursor: "second",
+  });
 });
 
 test("CLI reports integration source locations and error causes", async (t) => {

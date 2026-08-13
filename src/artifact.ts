@@ -74,8 +74,12 @@ const RegistryDependencyPattern =
 const InlineSourceMapPattern =
   /\/\/# sourceMappingURL=data:application\/json;base64,([A-Za-z0-9+/=]+)\n?$/;
 const SourceMapSchema = z.looseObject({ sources: z.array(z.string()) });
-const CommonJsBanner =
-  'import { createRequire as __beetlCreateRequire } from "node:module"; const require = __beetlCreateRequire(import.meta.url);';
+const RuntimeRequire = "__beetlRuntimeRequire";
+const CommonJsBanner = `import { createRequire as __beetlCreateRequire } from "node:module"; const ${RuntimeRequire} = __beetlCreateRequire(import.meta.url);`;
+const UnsupportedRuntimePaths = {
+  __dirname: "__beetlUnsupportedDirname",
+  __filename: "__beetlUnsupportedFilename",
+} as const;
 const ExecFile = promisify(execFile);
 setSourceMapsSupport(true);
 
@@ -289,8 +293,8 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
     logLevel: "silent",
     logOverride: {
       "unsupported-dynamic-import": "error",
-      "unsupported-require-call": "error",
     },
+    define: { ...UnsupportedRuntimePaths, require: RuntimeRequire },
     plugins: [
       {
         name: "beetl-connect-imports",
@@ -324,6 +328,12 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
     file.path.endsWith("integration.mjs"),
   )?.contents;
   if (!sourceBundle) throw new Error("Bundler did not produce integration.mjs");
+  const unsupportedRuntimePath = runtimePathDependency(sourceBundle);
+  if (unsupportedRuntimePath !== undefined) {
+    throw new Error(
+      `${unsupportedRuntimePath} is not supported because runtime artifacts do not include package files`,
+    );
+  }
   await typeCheckIntegration(entryPath);
   const integration = await importBundle(sourceBundle, inputPath);
   validateIntegration(integration);
@@ -417,6 +427,39 @@ function normalizeSourceMap(bundle: Uint8Array, workingDirectory: string): Uint8
   return Encoder.encode(
     `${source.slice(0, match.index)}//# sourceMappingURL=data:application/json;base64,${encoded}\n`,
   );
+}
+
+function runtimePathDependency(bundle: Uint8Array): string | undefined {
+  const markers: ReadonlyMap<string, string> = new Map(
+    Object.entries(UnsupportedRuntimePaths).map(([name, marker]) => [marker, name]),
+  );
+  const source = ts.createSourceFile(
+    "integration.mjs",
+    Decoder.decode(bundle),
+    ts.ScriptTarget.ES2024,
+    true,
+    ts.ScriptKind.JS,
+  );
+  let unsupported: string | undefined;
+  const visit = (node: ts.Node): void => {
+    if (unsupported !== undefined) return;
+    if (ts.isIdentifier(node) && markers.has(node.text)) {
+      unsupported = markers.get(node.text);
+    } else if (ts.isIdentifier(node) && node.text === RuntimeRequire) {
+      const directCall = ts.isCallExpression(node.parent) && node.parent.expression === node;
+      const declaration = ts.isVariableDeclaration(node.parent) && node.parent.name === node;
+      if (directCall) {
+        if (node.parent.arguments.length !== 1 || !ts.isStringLiteral(node.parent.arguments[0]!)) {
+          unsupported = "Dynamic require";
+        }
+      } else if (!declaration) {
+        unsupported = "Using require as a value";
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return unsupported;
 }
 
 async function importBundle(bundle: Uint8Array, source: string): Promise<IntegrationDefinition> {
