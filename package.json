@@ -1,0 +1,64 @@
+{
+  "name": "@beetlio/connect",
+  "version": "0.1.0",
+  "description": "CLI for building and running TypeScript API integrations",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/beetlio/connect.git"
+  },
+  "homepage": "https://beetlio.github.io/connect/",
+  "bugs": "https://github.com/beetlio/connect/issues",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
+  "bin": {
+    "beetl-connect": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "default": "./dist/host.js"
+    },
+    "./builder": {
+      "types": "./dist/artifact.d.ts",
+      "default": "./dist/artifact.js"
+    }
+  },
+  "engines": {
+    "node": ">=24.2"
+  },
+  "scripts": {
+    "clean": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "prebuild": "npm run clean --silent",
+    "build": "tsc -p tsconfig.build.json",
+    "check": "npm run format:check && npm run build --silent && tsc --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "npm run build --silent && node --test tests/*.test.ts",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@inquirer/password": "^5.1.1",
+    "@optique/core": "^1.2.0",
+    "@optique/run": "^1.2.0",
+    "@types/node": "24.2.0",
+    "env-paths": "^4.0.0",
+    "oauth4webapi": "^3.8.6",
+    "sharp": "^0.35.3",
+    "tar": "^7.5.22",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.6"
+  }
+}
