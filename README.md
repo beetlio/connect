@@ -47,9 +47,13 @@ npm install --global @beetlio/connect
 Or install it in an integration project and run it with `npx`:
 
 ```sh
-npm install @beetlio/connect
+npm install --save-dev @beetlio/connect
 npx beetl-connect --help
 ```
+
+Integration projects are npm packages. Set `"type": "module"` and add an explicit
+`"files": ["integration.ts", "src"]` allowlist to `package.json`; npm creates and
+maintains the required `package-lock.json`.
 
 ## Quick start
 
@@ -140,21 +144,24 @@ the exact upload, and call the same builder used by the local CLI:
 ```ts
 import { buildIntegration } from "@beetlio/connect/builder";
 
-const { bundle, manifest, icon, sdkVersion } = await buildIntegration("/workspace/integration");
+const { archive, manifest, icon, sdkVersion } = await buildIntegration("/workspace/integration");
 ```
 
-The builder produces the Node.js 24.2 runtime bundle and manifest, captures any validated
-icon bytes, and records its SDK version. It resolves integration imports of
-`@beetlio/connect` to that SDK, so Core does not duplicate compiler or validation rules.
-The bundle validates its definition against the build manifest when loaded and uses
-canonical source-map paths for reproducible artifacts. Runtime jobs execute the immutable
-result in gVisor on an isolated node pool. `sync` uses the same builder and Node.js target
-for local development.
+The builder compiles the package into a Node.js 24.2 module tree, prunes development
+dependencies with npm, adds the runtime SDK, and returns it as an immutable `.tgz` archive.
+Normal ESM, CommonJS dependencies, package assets, `__dirname`, and `import.meta.url` keep
+their ordinary Node behavior because dependencies are not forced into one JavaScript file.
+The runtime entry validates its definition against the build manifest when loaded. Runtime
+jobs extract and execute the archive in gVisor on an isolated node pool. `sync` uses the same
+builder and archive loader for local development.
+
+Builds never run dependency lifecycle scripts. Packages that require install-time code or native
+compilation are outside the first-release runtime contract.
 
 Connection and sync configuration must use `input.object()` and the non-secret
-`input.*` field helpers. Authentication uses the separate `credential.*` helpers.
-Each descriptor directly owns its parser and manifest representation; ordinary Zod
-schemas remain available for records and checkpoints. Use `ctx.fetch()` for managed
+`input.*` field helpers. Built-in authentication owns its credential schema; custom
+authentication uses `credential.*`. Each descriptor directly owns its parser and manifest
+representation; ordinary Zod schemas remain available for records and checkpoints. Use `ctx.fetch()` for managed
 authentication, retries, and origin enforcement. Hosted jobs may make direct external
 requests, but those requests receive none of the connection's managed credentials.
 The local CLI is not a sandbox, so only run integrations you trust.
@@ -164,6 +171,12 @@ code. gVisor isolates the workload from platform infrastructure; it does not pre
 integration code or an npm dependency from forwarding fetched data to another external
 service. Third-party marketplace integrations require a separate egress policy and are
 outside the first release.
+
+Built-in authentication declarations own their credential schemas: bearer and API keys
+are non-empty secrets, Basic auth permits an empty password, and OAuth uses
+`clientSecret: true` for confidential clients. `credential.string()` and
+`credential.secret()` are the explicit escape hatch for `auth.custom()` and
+`auth.tokenExchange()`; add `minLength` when an empty custom credential is invalid.
 
 Local commands use the `default` profile unless `--profile <name>` is supplied.
 Profiles contain only sync inputs and a named connection reference. `configure`
@@ -207,6 +220,8 @@ Append syncs are the default: each run writes a new NDJSON file and can resume
 from its latest checkpoint. A sync can instead declare `mode: "snapshot"`; the
 CLI replaces the file selected by `--output` only after the new snapshot
 succeeds. Without `--output`, each run uses a new timestamped filename.
+Checkpoint schemas decode persisted JSON into `ctx.checkpoint`; values supplied to
+`ctx.emit()` are stored in their input form and decoded once when the next run starts.
 Profiles and connections carry revisions. `configure` preserves revisions when
 nothing changed, while changed inputs and `--reauthorize` create new revisions.
 Automatic OAuth refresh preserves the connection revision. Default checkpoint paths
@@ -221,7 +236,9 @@ the adjacent `.lock` file only after confirming that no operation still uses it.
 `ctx.paginate()` supports cursor, offset, and provider-supplied next-URL APIs.
 Each yielded page includes the response status and normalized headers. Integrations can
 optionally set `hasMorePath` when a response boolean explicitly controls whether pagination
-continues. They can also issue requests directly for custom pagination and checkpoint strategies.
+continues. Page schemas validate provider values without rewriting them; the sync record schema
+normalizes records once at `ctx.emit()`. Integrations can also issue requests directly for custom
+pagination and checkpoint strategies.
 Retries apply to safe HTTP methods by default and can be configured per connection. The CLI rejects
 malformed or repeated continuations, follows continuations across empty pages, limits pagination to
 10,000 pages, and rejects provider response bodies larger than 16 MiB.

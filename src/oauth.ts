@@ -101,6 +101,7 @@ export async function authorizeOAuth(
   let callbackUrl: URL;
   if (usesLocalCallback) {
     const callbackServer = createServer();
+    const callbackController = new AbortController();
     await new Promise<void>((resolve, reject) => {
       callbackServer.once("error", reject);
       callbackServer.listen(
@@ -112,16 +113,20 @@ export async function authorizeOAuth(
         },
       );
     });
+    const callbackPromise = waitForAuthorizationCallback(
+      callbackServer,
+      redirect,
+      validateCallback,
+      options.signal === undefined
+        ? callbackController.signal
+        : AbortSignal.any([options.signal, callbackController.signal]),
+    );
     try {
-      const callbackPromise = waitForAuthorizationCallback(
-        callbackServer,
-        redirect,
-        validateCallback,
-        options.signal,
-      );
       await options.onAuthorizationUrl(request.authorizationUrl);
       callbackUrl = await callbackPromise;
     } finally {
+      callbackController.abort(new Error("OAuth authorization stopped"));
+      await callbackPromise.catch(() => undefined);
       await new Promise<void>((resolve) => callbackServer.close(() => resolve()));
     }
   } else {

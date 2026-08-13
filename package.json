@@ -52,7 +52,6 @@
     "@optique/run": "^1.2.0",
     "@types/node": "24.2.0",
     "env-paths": "^4.0.0",
-    "esbuild": "^0.28.1",
     "oauth4webapi": "^3.8.6",
     "sharp": "^0.35.3",
     "tar": "^7.5.22",

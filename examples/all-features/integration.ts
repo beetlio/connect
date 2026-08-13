@@ -1,4 +1,4 @@
-import { auth, credential, defineIntegration, input, z } from "@beetlio/connect";
+import { auth, defineIntegration, input, z } from "@beetlio/connect";
 
 const Contact = z.object({
   id: z.string(),
@@ -25,8 +25,7 @@ export default defineIntegration({
       workspace: input.string({ label: "Workspace", minLength: 1 }),
     }),
     auth: auth.oauth2AuthorizationCode({
-      clientId: credential.string({ label: "OAuth client ID" }),
-      clientSecret: credential.secret({ label: "OAuth client secret" }),
+      clientSecret: true,
       issuer: "https://auth.example.com",
       authorizationUrl: "https://auth.example.com/oauth/authorize",
       tokenUrl: "https://auth.example.com/oauth/token",

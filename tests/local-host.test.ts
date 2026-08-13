@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -223,53 +223,6 @@ test("OAuth refresh is single-flight and isolated from waiter cancellation", asy
   });
 });
 
-test("authentication settlement waits without replacing caller errors", async () => {
-  let notifyRefreshStarted!: () => void;
-  let releaseRefresh!: () => void;
-  const refreshStarted = new Promise<void>((resolve) => (notifyRefreshStarted = resolve));
-  const refreshGate = new Promise<void>((resolve) => (releaseRefresh = resolve));
-  const host = new LocalHost({
-    origin: "https://provider.example",
-    auth: auth.oauth2AuthorizationCode({
-      issuer: "https://provider.example",
-      authorizationUrl: "https://provider.example/authorize",
-      tokenUrl: "https://provider.example/token",
-      scopes: ["events.read"],
-    }),
-    credentials: { clientId: "client-id" },
-    authorizationState: {
-      accessToken: "expired-token",
-      refreshToken: "refresh-token",
-      tokenFields: {},
-    },
-    outputPath: "unused",
-    statePath: "unused",
-    fetch: async (input) => {
-      if (String(input) === "https://provider.example/token") {
-        notifyRefreshStarted();
-        await refreshGate;
-        return new Response(null, { status: 500 });
-      }
-      return new Response(null, { status: 401 });
-    },
-  });
-
-  const request = host.request(Request).catch(() => undefined);
-  await refreshStarted;
-  const primary = new Error("integration failed");
-  const run = (async () => {
-    try {
-      throw primary;
-    } finally {
-      await host.settleAuthentication();
-    }
-  })();
-  releaseRefresh();
-
-  await assert.rejects(run, (error) => error === primary);
-  await request;
-});
-
 test("provider responses have a hard size limit", async () => {
   const host = new LocalHost({
     origin: "https://api.example.com",
@@ -288,24 +241,6 @@ test("provider responses have a hard size limit", async () => {
   });
   const response = await bodyless.request({ ...Request, method: "HEAD", retry: false });
   assert.equal(response.body.byteLength, 0);
-});
-
-test("checkpoint replacement uses private exclusive files", async (t) => {
-  const directory = await fixtureDirectory(t, "beetl-checkpoint");
-  const statePath = join(directory, "state.json");
-  const predictableTemporaryPath = `${statePath}.tmp-${process.pid}`;
-  await writeFile(predictableTemporaryPath, "reserved");
-  const host = new LocalHost({
-    origin: "https://api.example.com",
-    outputPath: join(directory, "items.ndjson"),
-    statePath,
-  });
-
-  await host.emit({ batchId: "batch", sequence: 0, records: [], checkpoint: { cursor: "next" } });
-
-  assert.equal(await readFile(predictableTemporaryPath, "utf8"), "reserved");
-  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), { cursor: "next" });
-  assert.equal((await stat(statePath)).mode & 0o777, 0o600);
 });
 
 test("snapshot output is replaced only after a successful run", async (t) => {

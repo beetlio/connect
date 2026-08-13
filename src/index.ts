@@ -65,15 +65,6 @@ export interface CredentialField<Schema extends z.ZodType<string> = z.ZodType<st
   readonly manifest: InputValueSchema;
 }
 
-export interface SecretCredentialField<
-  Schema extends z.ZodType<string> = z.ZodType<string>,
-> extends CredentialField<Schema> {
-  readonly manifest: InputValueSchema & {
-    readonly writeOnly: true;
-    readonly "x-beetl-widget": "password";
-  };
-}
-
 type CredentialShape = Record<string, CredentialField>;
 type CredentialSchemaShape<Shape extends CredentialShape> = {
   readonly [Key in keyof Shape]: Shape[Key]["schema"];
@@ -336,21 +327,19 @@ export const input = {
   },
 };
 
-type CredentialOptions = Omit<StringInputOptions, "default" | "minLength">;
+type CredentialOptions = Omit<StringInputOptions, "default">;
 
-function credentialField(options: CredentialOptions, secret: true): SecretCredentialField;
-function credentialField(options: CredentialOptions, secret: false): CredentialField;
 function credentialField(
   options: CredentialOptions,
   secret: boolean,
 ): CredentialField<z.ZodType<string>> {
   return {
     kind: "credential",
-    schema: stringSchema({ ...options, minLength: 1 }),
+    schema: stringSchema(options),
     manifest: {
       type: "string",
       ...metadata(options),
-      minLength: 1,
+      ...(options.minLength === undefined ? {} : { minLength: options.minLength }),
       ...(options.maxLength === undefined ? {} : { maxLength: options.maxLength }),
       ...(options.pattern === undefined ? {} : { pattern: options.pattern }),
       ...(options.format === undefined ? {} : { format: options.format }),
@@ -447,39 +436,30 @@ export const auth = {
     return { type: "none", credentials: credential.object({}) };
   },
 
-  bearer(options: { token?: SecretCredentialField } = {}): AuthDefinition {
+  bearer(): AuthDefinition {
     return {
       type: "bearer",
       credentials: credential.object({
-        token: options.token ?? credential.secret({ label: "Bearer token" }),
+        token: credential.secret({ label: "Bearer token", minLength: 1 }),
       }),
     };
   },
 
-  basic(
-    options: {
-      username?: CredentialField;
-      password?: SecretCredentialField;
-    } = {},
-  ): AuthDefinition {
+  basic(): AuthDefinition {
     return {
       type: "basic",
       credentials: credential.object({
-        username: options.username ?? credential.string({ label: "Username" }),
-        password: options.password ?? credential.secret({ label: "Password" }),
+        username: credential.string({ label: "Username", minLength: 1 }),
+        password: credential.secret({ label: "Password" }),
       }),
     };
   },
 
-  apiKey(options: {
-    in: "header" | "query";
-    name: string;
-    apiKey?: SecretCredentialField;
-  }): AuthDefinition {
+  apiKey(options: { in: "header" | "query"; name: string }): AuthDefinition {
     return {
       type: "api_key",
       credentials: credential.object({
-        apiKey: options.apiKey ?? credential.secret({ label: "API key" }),
+        apiKey: credential.secret({ label: "API key", minLength: 1 }),
       }),
       in: options.in,
       name: options.name,
@@ -487,8 +467,7 @@ export const auth = {
   },
 
   oauth2AuthorizationCode(options: {
-    clientId?: CredentialField;
-    clientSecret?: SecretCredentialField;
+    clientSecret?: true;
     issuer: string;
     authorizationUrl: string;
     tokenUrl: string;
@@ -498,8 +477,15 @@ export const auth = {
     return {
       type: "oauth2_authorization_code",
       credentials: credential.object({
-        clientId: options.clientId ?? credential.string({ label: "OAuth client ID" }),
-        ...(options.clientSecret === undefined ? {} : { clientSecret: options.clientSecret }),
+        clientId: credential.string({ label: "OAuth client ID", minLength: 1 }),
+        ...(options.clientSecret === undefined
+          ? {}
+          : {
+              clientSecret: credential.secret({
+                label: "OAuth client secret",
+                minLength: 1,
+              }),
+            }),
       }),
       issuer: options.issuer,
       authorizationUrl: options.authorizationUrl,
@@ -630,7 +616,7 @@ export interface SyncContext<
   fetch(path: string, init?: SyncFetchInit): Promise<Response>;
   paginate<const Records extends RecordSchema>(
     options: PaginateOptions<Records>,
-  ): AsyncGenerator<PaginationPage<z.output<Records>>, void, void>;
+  ): AsyncGenerator<PaginationPage<z.input<Records>>, void, void>;
   emit(value: { records: readonly RecordInput[]; checkpoint?: CheckpointInput }): Promise<void>;
   readonly log: IntegrationLogger;
 }

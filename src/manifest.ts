@@ -113,14 +113,16 @@ export function createIntegrationManifest(integration: IntegrationDefinition): I
       inputs: sync.inputs?.manifest ?? EmptyObject,
       records: jsonSchema(sync.records),
       primaryKey: sync.primaryKey ?? [],
-      ...(sync.checkpoint === undefined ? {} : { checkpoint: jsonSchema(sync.checkpoint) }),
+      ...(sync.checkpoint === undefined
+        ? {}
+        : { checkpoint: jsonSchema(sync.checkpoint, "input") }),
     })),
   };
 }
 
-function jsonSchema(schema: z.ZodType): JsonSchema {
+function jsonSchema(schema: z.ZodType, io: "input" | "output" = "output"): JsonSchema {
   try {
-    return z.toJSONSchema(schema, { io: "output" }) as JsonSchema;
+    return z.toJSONSchema(schema, { io }) as JsonSchema;
   } catch (error) {
     throw new Error(
       `Schema cannot be represented in an integration manifest: ${

@@ -107,7 +107,10 @@ export async function runSync(
   const initialCheckpoint =
     snapshot || input.checkpoint === undefined
       ? undefined
-      : await parseCheckpoint(sync, input.checkpoint);
+      : await parseCheckpoint(
+          sync,
+          jsonSnapshot(input.checkpoint, "Invalid checkpoint input: must be JSON-compatible"),
+        );
   const runSignal = input.signal ?? new AbortController().signal;
   const lifecycle = new AbortController();
   const contextSignal = AbortSignal.any([runSignal, lifecycle.signal]);
@@ -133,14 +136,18 @@ export async function runSync(
       const parsedRecords = await Promise.all(
         value.records.map((record, index) => parse(sync.records, record, `record ${index}`)),
       );
+      const checkpointInput =
+        value.checkpoint === undefined
+          ? undefined
+          : jsonSnapshot(value.checkpoint, "Invalid checkpoint input: must be JSON-compatible");
       const checkpoint =
-        value.checkpoint === undefined ? undefined : await parseCheckpoint(sync, value.checkpoint);
+        checkpointInput === undefined ? undefined : await parseCheckpoint(sync, checkpointInput);
       runSignal.throwIfAborted();
       const batch: EmittedBatch = {
         batchId: crypto.randomUUID(),
         sequence,
         records: parsedRecords,
-        ...(checkpoint === undefined ? {} : { checkpoint }),
+        ...(checkpointInput === undefined ? {} : { checkpoint: checkpointInput }),
       };
 
       await host.emit(batch);
@@ -633,7 +640,7 @@ async function* paginateRequests<Records extends z.ZodType>(
   fetch: (path: string, init?: SyncFetchInit) => Promise<Response>,
   defaults: PaginationDefinition | undefined,
   options: PaginateOptions<Records>,
-): AsyncGenerator<PaginationPage<z.output<Records>>, void, void> {
+): AsyncGenerator<PaginationPage<z.input<Records>>, void, void> {
   const pagination = resolvePagination(defaults, options.pagination);
   let pages = 0;
   const fetchPage = (path: string) => {
@@ -657,7 +664,7 @@ async function* paginateRequests<Records extends z.ZodType>(
       seenPaths.add(path);
       const response = await fetchPage(path);
       const { body, metadata } = await parsePageResponse(response);
-      const records = await parsePageRecords(options.records, body, pagination.responsePath);
+      const records = await validatePageRecords(options.records, body, pagination.responsePath);
       const hasMore = parseHasMore(body, pagination.hasMorePath);
       const candidate = hasMore === false ? undefined : valueAtPath(body, pagination.nextUrlPath);
       if (
@@ -696,7 +703,7 @@ async function* paginateRequests<Records extends z.ZodType>(
         }),
       );
       const { body, metadata } = await parsePageResponse(response);
-      const records = await parsePageRecords(options.records, body, pagination.responsePath);
+      const records = await validatePageRecords(options.records, body, pagination.responsePath);
       const hasMore = parseHasMore(body, pagination.hasMorePath);
       const candidate = hasMore === false ? undefined : valueAtPath(body, pagination.cursorPath);
       let nextPageParam: string | number | undefined;
@@ -739,7 +746,7 @@ async function* paginateRequests<Records extends z.ZodType>(
       }),
     );
     const { body, metadata } = await parsePageResponse(response);
-    const records = await parsePageRecords(options.records, body, pagination.responsePath);
+    const records = await validatePageRecords(options.records, body, pagination.responsePath);
     const hasMore = parseHasMore(body, pagination.hasMorePath);
     if (records.length === 0 && hasMore !== true) {
       return;
@@ -808,18 +815,17 @@ async function parsePageResponse(
   };
 }
 
-async function parsePageRecords<Records extends z.ZodType>(
+async function validatePageRecords<Records extends z.ZodType>(
   schema: Records,
   body: unknown,
   responsePath: string | undefined,
-): Promise<z.output<Records>[]> {
-  const result = await z
-    .array(schema)
-    .safeParseAsync(responsePath === undefined ? body : valueAtPath(body, responsePath));
+): Promise<z.input<Records>[]> {
+  const records = responsePath === undefined ? body : valueAtPath(body, responsePath);
+  const result = await z.array(schema).safeParseAsync(records);
   if (!result.success) {
     throw new Error(`Invalid paginated records: ${z.prettifyError(result.error)}`);
   }
-  return result.data;
+  return records as z.input<Records>[];
 }
 
 function valueAtPath(value: unknown, path: string): unknown {
@@ -926,6 +932,13 @@ function validatePagination(pagination: PaginationDefinition): void {
   }
   if (
     pagination.type !== "next-url" &&
+    pagination.limitParameter ===
+      (pagination.type === "cursor" ? pagination.cursorParameter : pagination.offsetParameter)
+  ) {
+    throw new Error("Pagination continuation and limit parameters must differ");
+  }
+  if (
+    pagination.type !== "next-url" &&
     pagination.limit !== undefined &&
     (!Number.isInteger(pagination.limit) || pagination.limit < 1)
   ) {
@@ -971,19 +984,8 @@ async function parse<T>(
   if (!result.success) {
     throw new Error(`Invalid ${label}: ${z.prettifyError(result.error)}`);
   }
-  if (!isJsonValue(result.data)) {
-    throw new Error(`Invalid ${label}: schema output must be JSON-compatible`);
-  }
-  let snapshot: unknown;
-  try {
-    snapshot = structuredClone(result.data);
-  } catch {
-    throw new Error(`Invalid ${label}: schema output must be JSON-compatible`);
-  }
-  if (!isJsonValue(snapshot)) {
-    throw new Error(`Invalid ${label}: schema output must be JSON-compatible`);
-  }
-  return snapshot as T & JsonValue;
+  return jsonSnapshot(result.data, `Invalid ${label}: schema output must be JSON-compatible`) as T &
+    JsonValue;
 }
 
 async function parseCheckpoint(sync: SyncDefinition, value: unknown): Promise<JsonValue> {
@@ -991,6 +993,16 @@ async function parseCheckpoint(sync: SyncDefinition, value: unknown): Promise<Js
     throw new Error(`Sync ${JSON.stringify(sync.key)} does not declare a checkpoint`);
   }
   return parse(sync.checkpoint, value, "checkpoint");
+}
+
+function jsonSnapshot(value: unknown, errorMessage: string): JsonValue {
+  if (isJsonValue(value)) {
+    try {
+      const snapshot: unknown = structuredClone(value);
+      if (isJsonValue(snapshot)) return snapshot;
+    } catch {}
+  }
+  throw new Error(errorMessage);
 }
 
 function isJsonValue(value: unknown, ancestors = new Set<object>()): value is JsonValue {

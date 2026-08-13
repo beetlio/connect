@@ -18,7 +18,7 @@ import password from "@inquirer/password";
 import envPaths from "env-paths";
 import { z } from "zod";
 
-import { buildIntegration, packIntegration } from "./artifact.ts";
+import { buildIntegration, packIntegration, withIntegration } from "./artifact.ts";
 import type {
   InputObjectSchema,
   IntegrationDefinition,
@@ -94,10 +94,6 @@ const StoredConnectionSchema = z.strictObject({
 type StoredConnection = z.output<typeof StoredConnectionSchema>;
 
 const integrationArgument = () =>
-  argument(pathValue({ mustExist: true, type: "either", metavar: "INTEGRATION" }), {
-    description: message`Integration source file or directory.`,
-  });
-const sourceIntegrationArgument = () =>
   argument(pathValue({ mustExist: true, type: "directory", metavar: "INTEGRATION" }), {
     description: message`Integration npm package directory.`,
   });
@@ -125,7 +121,7 @@ const Cli = or(
     "pack",
     object({
       command: constant("pack"),
-      integrationPath: sourceIntegrationArgument(),
+      integrationPath: integrationArgument(),
       outputPath: optional(
         option("--output", pathValue({ metavar: "PATH" }), {
           description: message`npm package output path.`,
@@ -202,120 +198,120 @@ async function main(args = process.argv.slice(2)): Promise<void> {
     console.log(`Included files: ${packed.files.join(", ")}`);
     return;
   }
-  const { bundle, integration, manifest } = await buildIntegration(options.integrationPath);
-  const artifactRevision = createHash("sha256").update(bundle).digest("hex");
-
-  if (options.command === "configure") {
-    const syncKey = selectSyncKey(integration, options.syncKey);
-    const profile = options.profile ?? DefaultProfile;
-    const connection = await configureIntegration(
-      integration,
-      manifest,
-      syncKey,
-      profile,
-      options.connection,
-      options.origin,
-      options.inputs === undefined ? undefined : ConfigurationInputsSchema.parse(options.inputs),
-      options.reauthorize ?? false,
-    );
-    console.log(`Configured ${integration.displayName}/${syncKey} with connection ${connection}`);
-    return;
-  }
-
-  if (options.command === "sync") {
-    const syncKey = selectSyncKey(integration, options.syncKey);
-    let configuration = await resolveProfile(integration, manifest, syncKey, options.profile);
-    let connectionPath = join(
-      UserConfigDirectory,
-      "connections",
-      integration.key,
-      `${configuration.connection}.json`,
-    );
-    if (
-      (await readConnection(connectionPath, integration.key, configuration.connection)) ===
-      undefined
-    ) {
-      await configureIntegration(
+  const { archive, manifest } = await buildIntegration(options.integrationPath);
+  const artifactRevision = createHash("sha256").update(archive).digest("hex");
+  await withIntegration(archive, async (integration) => {
+    if (options.command === "configure") {
+      const syncKey = selectSyncKey(integration, options.syncKey);
+      const profile = options.profile ?? DefaultProfile;
+      const connection = await configureIntegration(
         integration,
         manifest,
         syncKey,
-        configuration.profile,
-        configuration.connection,
+        profile,
+        options.connection,
+        options.origin,
+        options.inputs === undefined ? undefined : ConfigurationInputsSchema.parse(options.inputs),
+        options.reauthorize ?? false,
       );
-      configuration = await resolveProfile(integration, manifest, syncKey, options.profile);
-      connectionPath = join(
+      console.log(`Configured ${integration.displayName}/${syncKey} with connection ${connection}`);
+      return;
+    }
+
+    if (options.command === "sync") {
+      const syncKey = selectSyncKey(integration, options.syncKey);
+      let configuration = await resolveProfile(integration, manifest, syncKey, options.profile);
+      let connectionPath = join(
         UserConfigDirectory,
         "connections",
         integration.key,
         `${configuration.connection}.json`,
       );
-    }
-    const runConfiguredSync = async () => {
-      const connection = await readConnection(
-        connectionPath,
-        integration.key,
-        configuration.connection,
-      );
-      if (connection === undefined) throw new Error("Configuration did not create a connection");
-      assertConnectionProvider(integration, manifest, connection);
-      const outputPath = resolve(
-        options.outputPath ??
-          `${integration.key}-${syncKey}_${new Date().toISOString().replaceAll(":", "-")}.ndjson`,
-      );
-      const statePath = resolve(
-        options.statePath ??
-          `.beetl/state/${integration.key}/${artifactRevision}/${configuration.profile}/${configuration.revision}/${configuration.connection}/${connection.revision}/${syncKey}.json`,
-      );
-      await withFileLock(
-        `${statePath}.lock`,
-        `Sync state is already in use: ${statePath}`,
-        async () => {
-          const controller = new AbortController();
-          const abort = () => controller.abort(new Error("Interrupted"));
-          process.once("SIGINT", abort);
-          try {
-            const host = createLocalHost(integration, manifest, connection, {
-              outputPath,
-              statePath,
-              signal: controller.signal,
-              onConnectionChanged: (updated) =>
-                replacePrivateFile(connectionPath, `${JSON.stringify(updated, null, 2)}\n`),
-            });
+      if (
+        (await readConnection(connectionPath, integration.key, configuration.connection)) ===
+        undefined
+      ) {
+        await configureIntegration(
+          integration,
+          manifest,
+          syncKey,
+          configuration.profile,
+          configuration.connection,
+        );
+        configuration = await resolveProfile(integration, manifest, syncKey, options.profile);
+        connectionPath = join(
+          UserConfigDirectory,
+          "connections",
+          integration.key,
+          `${configuration.connection}.json`,
+        );
+      }
+      const runConfiguredSync = async () => {
+        const connection = await readConnection(
+          connectionPath,
+          integration.key,
+          configuration.connection,
+        );
+        if (connection === undefined) throw new Error("Configuration did not create a connection");
+        assertConnectionProvider(integration, manifest, connection);
+        const outputPath = resolve(
+          options.outputPath ??
+            `${integration.key}-${syncKey}_${new Date().toISOString().replaceAll(":", "-")}.ndjson`,
+        );
+        const statePath = resolve(
+          options.statePath ??
+            `.beetl/state/${integration.key}/${artifactRevision}/${configuration.profile}/${configuration.revision}/${configuration.connection}/${connection.revision}/${syncKey}.json`,
+        );
+        await withFileLock(
+          `${statePath}.lock`,
+          `Sync state is already in use: ${statePath}`,
+          async () => {
+            const controller = new AbortController();
+            const abort = () => controller.abort(new Error("Interrupted"));
+            process.once("SIGINT", abort);
             try {
-              const result = await runSync(
-                integration,
-                syncKey,
-                {
-                  connectionConfig: connection.inputs,
-                  syncConfig: configuration.inputs,
-                  checkpoint: await host.loadCheckpoint(),
-                  signal: controller.signal,
-                },
-                host,
-              );
-              console.log(
-                `Emitted ${result.records} records in ${result.batches} batches to ${outputPath}`,
-              );
+              const host = createLocalHost(integration, manifest, connection, {
+                outputPath,
+                statePath,
+                signal: controller.signal,
+                onConnectionChanged: (updated) =>
+                  replacePrivateFile(connectionPath, `${JSON.stringify(updated, null, 2)}\n`),
+              });
+              try {
+                const result = await runSync(
+                  integration,
+                  syncKey,
+                  {
+                    connectionConfig: connection.inputs,
+                    syncConfig: configuration.inputs,
+                    checkpoint: await host.loadCheckpoint(),
+                    signal: controller.signal,
+                  },
+                  host,
+                );
+                console.log(
+                  `Emitted ${result.records} records in ${result.batches} batches to ${outputPath}`,
+                );
+              } finally {
+                await host.settleAuthentication();
+              }
             } finally {
-              await host.settleAuthentication();
+              process.removeListener("SIGINT", abort);
             }
-          } finally {
-            process.removeListener("SIGINT", abort);
-          }
-        },
-      );
-    };
-    if (integration.connection.auth?.type === "oauth2_authorization_code") {
-      await withFileLock(
-        `${connectionPath}.lock`,
-        `Connection ${JSON.stringify(configuration.connection)} is already in use`,
-        runConfiguredSync,
-      );
-    } else {
-      await runConfiguredSync();
+          },
+        );
+      };
+      if (integration.connection.auth?.type === "oauth2_authorization_code") {
+        await withFileLock(
+          `${connectionPath}.lock`,
+          `Connection ${JSON.stringify(configuration.connection)} is already in use`,
+          runConfiguredSync,
+        );
+      } else {
+        await runConfiguredSync();
+      }
     }
-    return;
-  }
+  });
 }
 
 async function resolveProfile(
@@ -441,7 +437,7 @@ async function configureIntegration(
           ? existingConnection.credentials
           : await promptCredentials(
               manifest.connection.credentials,
-              existingConnection?.credentials ?? {},
+              reauthorize ? {} : (existingConnection?.credentials ?? {}),
             );
       const parsedCredentials = parseCredentials(
         integration.connection.auth?.credentials.schema ?? EmptyInputs,

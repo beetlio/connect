@@ -18,7 +18,7 @@ test("server host inspects, verifies, and syncs an uploaded package", async (t) 
   await writeFile(
     join(packageDirectory, "integration.ts"),
     `
-      import { auth, credential, defineIntegration, input, z } from "@beetlio/connect";
+      import { auth, defineIntegration, input, z } from "@beetlio/connect";
 
       export default defineIntegration({
         key: "fixture",
@@ -30,7 +30,7 @@ test("server host inspects, verifies, and syncs an uploaded package", async (t) 
             authorizationUrl: "https://auth.example.com/authorize",
             tokenUrl: "https://auth.example.com/token",
             scopes: ["read"],
-            clientSecret: credential.secret(),
+            clientSecret: true,
           }),
           inputs: input.object({ prefix: input.string() }),
           async verify(ctx) {
@@ -55,7 +55,13 @@ test("server host inspects, verifies, and syncs an uploaded package", async (t) 
   );
   await writeFile(
     join(packageDirectory, "package.json"),
-    JSON.stringify({ name: "fixture", version: "0.0.0", private: true, type: "module" }),
+    JSON.stringify({
+      name: "fixture",
+      version: "0.0.0",
+      private: true,
+      type: "module",
+      files: ["integration.ts"],
+    }),
   );
   await writeFile(
     join(packageDirectory, "package-lock.json"),

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type RequestListener } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -11,6 +11,31 @@ export async function fixtureDirectory(t: TestContext, name: string): Promise<st
   const directory = await mkdtemp(join(tmpdir(), `${name}-`));
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
+}
+
+export async function integrationPackage(
+  directory: string,
+  files: readonly string[] = ["integration.ts"],
+): Promise<void> {
+  const definition = {
+    name: "fixture-beetl-integration",
+    version: "0.0.0",
+    private: true,
+    type: "module",
+    files,
+  };
+  await Promise.all([
+    writeFile(join(directory, "package.json"), JSON.stringify(definition)),
+    writeFile(
+      join(directory, "package-lock.json"),
+      JSON.stringify({
+        name: definition.name,
+        version: definition.version,
+        lockfileVersion: 3,
+        packages: { "": { name: definition.name, version: definition.version } },
+      }),
+    ),
+  ]);
 }
 
 export async function fixtureServer(t: TestContext, listener: RequestListener): Promise<string> {

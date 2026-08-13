@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { extract } from "tar";
 
-import { buildIntegration } from "./artifact.ts";
+import { buildIntegration, withIntegration } from "./artifact.ts";
 import { runSync, verifyConnection } from "./host.ts";
 import { LocalHost, replacePrivateFile } from "./local-host.ts";
 import {
@@ -100,103 +100,105 @@ async function main(): Promise<void> {
   const workingDirectory = await mkdtemp(join(tmpdir(), "beetl-connect-server-host-"));
   try {
     const integrationPath = await prepareIntegrationPath(request.integrationPath, workingDirectory);
-    const { integration, manifest } = await buildIntegration(integrationPath);
+    const { archive, manifest } = await buildIntegration(integrationPath);
 
     if (request.operation === "inspect") {
       await replacePrivateFile(request.resultPath, JSON.stringify({ manifest }));
       return;
     }
-    if (request.operation === "oauth_start" || request.operation === "oauth_callback") {
-      const oauth = integration.connection.auth;
-      if (oauth?.type !== "oauth2_authorization_code") {
-        throw new Error("Integration does not use OAuth authorization code authentication");
-      }
-      await oauth.credentials.schema.parseAsync(request.credentials);
-      if (request.operation === "oauth_start") {
-        const authorization = await beginOAuthAuthorization({
+    await withIntegration(archive, async (integration) => {
+      if (request.operation === "oauth_start" || request.operation === "oauth_callback") {
+        const oauth = integration.connection.auth;
+        if (oauth?.type !== "oauth2_authorization_code") {
+          throw new Error("Integration does not use OAuth authorization code authentication");
+        }
+        await oauth.credentials.schema.parseAsync(request.credentials);
+        if (request.operation === "oauth_start") {
+          const authorization = await beginOAuthAuthorization({
+            auth: oauth,
+            credentials: request.credentials,
+            redirectUri: request.redirectUri,
+          });
+          await replacePrivateFile(request.resultPath, JSON.stringify(authorization));
+          return;
+        }
+        const authorizationState = await completeOAuthAuthorization({
           auth: oauth,
           credentials: request.credentials,
           redirectUri: request.redirectUri,
+          callbackUrl: request.callbackUrl,
+          state: request.state,
+          codeVerifier: request.codeVerifier,
         });
-        await replacePrivateFile(request.resultPath, JSON.stringify(authorization));
+        await replacePrivateFile(request.resultPath, JSON.stringify({ authorizationState }));
         return;
       }
-      const authorizationState = await completeOAuthAuthorization({
-        auth: oauth,
+
+      const connectionConfig = await (
+        integration.connection.inputs?.schema ?? z.strictObject({})
+      ).parseAsync(request.connectionConfig);
+
+      const outputPath =
+        request.operation === "sync" ? request.outputPath : join(workingDirectory, "verify.ndjson");
+      const statePath =
+        request.operation === "sync"
+          ? request.statePath
+          : join(workingDirectory, "verify-state.json");
+      let authorizationState: OAuthAuthorizationState | undefined = request.authorizationState;
+      const host = new LocalHost({
+        origin: integration.connection.origin,
+        connectionConfig,
+        ...(integration.connection.auth === undefined ? {} : { auth: integration.connection.auth }),
         credentials: request.credentials,
-        redirectUri: request.redirectUri,
-        callbackUrl: request.callbackUrl,
-        state: request.state,
-        codeVerifier: request.codeVerifier,
+        ...(authorizationState === undefined ? {} : { authorizationState }),
+        outputPath,
+        statePath,
+        onLog: (entry) => console.error(JSON.stringify(entry)),
+        onAuthorizationStateChanged: (state) => void (authorizationState = state),
       });
-      await replacePrivateFile(request.resultPath, JSON.stringify({ authorizationState }));
-      return;
-    }
 
-    const connectionConfig = await (
-      integration.connection.inputs?.schema ?? z.strictObject({})
-    ).parseAsync(request.connectionConfig);
+      if (request.operation === "verify") {
+        await (integration.connection.auth?.credentials.schema ?? z.strictObject({})).parseAsync(
+          request.credentials,
+        );
+        for (const selected of request.syncs) {
+          const sync = integration.syncs.find((candidate) => candidate.key === selected.key);
+          if (sync === undefined) throw new Error(`Unknown sync ${JSON.stringify(selected.key)}`);
+          await (sync.inputs?.schema ?? z.strictObject({})).parseAsync(selected.configuration);
+        }
+        if (manifest.connection.canVerify) {
+          await verifyConnection(integration, { connectionConfig }, host);
+        }
+        await host.settleAuthentication();
+        await replacePrivateFile(
+          request.resultPath,
+          JSON.stringify({
+            verified: true,
+            ...(authorizationState === undefined ? {} : { authorizationState }),
+          }),
+        );
+        return;
+      }
 
-    const outputPath =
-      request.operation === "sync" ? request.outputPath : join(workingDirectory, "verify.ndjson");
-    const statePath =
-      request.operation === "sync"
-        ? request.statePath
-        : join(workingDirectory, "verify-state.json");
-    let authorizationState: OAuthAuthorizationState | undefined = request.authorizationState;
-    const host = new LocalHost({
-      origin: integration.connection.origin,
-      connectionConfig,
-      ...(integration.connection.auth === undefined ? {} : { auth: integration.connection.auth }),
-      credentials: request.credentials,
-      ...(authorizationState === undefined ? {} : { authorizationState }),
-      outputPath,
-      statePath,
-      onLog: (entry) => console.error(JSON.stringify(entry)),
-      onAuthorizationStateChanged: (state) => void (authorizationState = state),
-    });
-
-    if (request.operation === "verify") {
-      await (integration.connection.auth?.credentials.schema ?? z.strictObject({})).parseAsync(
-        request.credentials,
+      const result = await runSync(
+        integration,
+        request.syncKey,
+        {
+          connectionConfig,
+          syncConfig: request.syncConfig,
+          ...(request.checkpoint === undefined ? {} : { checkpoint: request.checkpoint }),
+        },
+        host,
       );
-      for (const selected of request.syncs) {
-        const sync = integration.syncs.find((candidate) => candidate.key === selected.key);
-        if (sync === undefined) throw new Error(`Unknown sync ${JSON.stringify(selected.key)}`);
-        await (sync.inputs?.schema ?? z.strictObject({})).parseAsync(selected.configuration);
-      }
-      if (manifest.connection.canVerify) {
-        await verifyConnection(integration, { connectionConfig }, host);
-      }
       await host.settleAuthentication();
       await replacePrivateFile(
         request.resultPath,
         JSON.stringify({
-          verified: true,
+          ...result,
           ...(authorizationState === undefined ? {} : { authorizationState }),
         }),
       );
-      return;
-    }
-
-    const result = await runSync(
-      integration,
-      request.syncKey,
-      {
-        connectionConfig,
-        syncConfig: request.syncConfig,
-        ...(request.checkpoint === undefined ? {} : { checkpoint: request.checkpoint }),
-      },
-      host,
-    );
-    await host.settleAuthentication();
-    await replacePrivateFile(
-      request.resultPath,
-      JSON.stringify({
-        ...result,
-        ...(authorizationState === undefined ? {} : { authorizationState }),
-      }),
-    );
+    });
   } finally {
     await rm(workingDirectory, { recursive: true, force: true });
   }

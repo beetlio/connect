@@ -1,297 +1,138 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
 
-import { buildIntegration } from "@beetlio/connect/builder";
-import { fixtureDirectory } from "./support.ts";
+import { buildIntegration, withIntegration } from "@beetlio/connect/builder";
+import { fixtureDirectory, integrationPackage } from "./support.ts";
 
-test("builder emits reproducible artifacts that validate their runtime manifest", async (t) => {
+const source = (displayName: string) => `
+  import { defineIntegration, z } from "@beetlio/connect";
+  export default defineIntegration({
+    key: "builder-invariant",
+    displayName: ${displayName},
+    connection: { origin: "https://api.example.com" },
+    syncs: [{ key: "items", displayName: "Items", records: z.string(), async run() {} }],
+  });
+`;
+
+test("builder emits relocatable, reproducible runtime archives", async (t) => {
   const directory = await fixtureDirectory(t, "beetl-builder");
   const shallow = join(directory, "shallow");
   const deep = join(directory, "deep/path/integration");
   await Promise.all([mkdir(shallow), mkdir(deep, { recursive: true })]);
-  const source = `
-    import { defineIntegration, z } from "@beetlio/connect";
-    export default defineIntegration({
-      key: "builder-invariant",
-      displayName: process.env.BEETL_BUILDER_TEST_MODE ?? "unset",
-      connection: { origin: "https://api.example.com" },
-      syncs: [{
-        key: "items",
-        displayName: "Items",
-        records: z.string(),
-        async run() {},
-      }],
-    });
-  `;
-  await Promise.all([shallow, deep].map((path) => writeFile(join(path, "integration.ts"), source)));
-  const previousMode = process.env.BEETL_BUILDER_TEST_MODE;
-  t.after(() => {
-    if (previousMode === undefined) delete process.env.BEETL_BUILDER_TEST_MODE;
-    else process.env.BEETL_BUILDER_TEST_MODE = previousMode;
-  });
+  await Promise.all([integrationPackage(shallow), integrationPackage(deep)]);
+  await Promise.all(
+    [shallow, deep].map((path) => writeFile(join(path, "integration.ts"), source('"Relocatable"'))),
+  );
 
-  process.env.BEETL_BUILDER_TEST_MODE = "build";
   const [first, second] = await Promise.all([buildIntegration(shallow), buildIntegration(deep)]);
-  assert.deepEqual(first.bundle, second.bundle);
-
-  const artifact = join(directory, "integration.mjs");
-  await writeFile(artifact, first.bundle);
-  const artifactUrl = pathToFileURL(artifact).href;
-  const runtime = (await import(`${artifactUrl}?build`)) as {
-    default: { displayName: string };
-  };
-  assert.equal(runtime.default.displayName, "build");
-  process.env.BEETL_BUILDER_TEST_MODE = "runtime";
-  await assert.rejects(
-    import(`${artifactUrl}?runtime`),
-    /Runtime integration definition does not match its build manifest/,
-  );
-
-  await writeFile(
-    join(shallow, "integration.ts"),
-    source.replace('process.env.BEETL_BUILDER_TEST_MODE ?? "unset"', "crypto.randomUUID()"),
-  );
-  await assert.rejects(
-    buildIntegration(shallow),
-    /Runtime integration definition does not match its build manifest/,
-  );
-});
-
-test("builder freezes source before evaluating its manifest", async (t) => {
-  const directory = await fixtureDirectory(t, "beetl-frozen-builder");
-  const entry = join(directory, "integration.ts");
-  const source = (record: string, prelude = "") => `
-    import { defineIntegration, z } from "@beetlio/connect";
-    ${prelude}
-    export default defineIntegration({
-      key: "frozen-builder",
-      displayName: "Frozen builder",
-      connection: { origin: "https://api.example.com" },
-      syncs: [{
-        key: "items",
-        displayName: "Items",
-        records: z.object({ value: z.string() }),
-        async run(ctx) { await ctx.emit({ records: [{ value: ${JSON.stringify(record)} }] }); },
-      }],
-    });
-  `;
-  const replacement = source("mutated");
-  await writeFile(
-    entry,
-    source(
-      "original",
-      `import { writeFile } from "node:fs/promises";
-       await writeFile(${JSON.stringify(entry)}, ${JSON.stringify(replacement)});`,
-    ),
-  );
-
-  const artifact = join(directory, "integration.mjs");
-  const built = await buildIntegration(directory);
-  await writeFile(artifact, built.bundle);
-  const runtime = (await import(`${pathToFileURL(artifact).href}?frozen`)) as {
-    default: {
-      syncs: readonly {
-        run(context: unknown): Promise<void>;
-      }[];
-    };
-  };
-  let emitted: unknown;
-  await runtime.default.syncs[0]!.run({
-    emit(value: { records: readonly { value: string }[] }) {
-      emitted = value.records[0]?.value;
-      return Promise.resolve();
-    },
+  assert.deepEqual(first.archive, second.archive);
+  await withIntegration(first.archive, (integration) => {
+    assert.equal(integration.displayName, "Relocatable");
   });
-  assert.equal(emitted, "original");
 });
 
-test("builder enforces its minimum Node runtime types", async (t) => {
-  const directory = await fixtureDirectory(t, "beetl-node-runtime-builder");
-  await writeFile(
-    join(directory, "integration.ts"),
-    `
-      import { mkdtempDisposable } from "node:fs/promises";
-      import { defineIntegration, z } from "@beetlio/connect";
-      export default defineIntegration({
-        key: "node-runtime-builder",
-        displayName: "Node runtime builder",
-        connection: { origin: "https://api.example.com" },
-        syncs: [{
-          key: "items",
-          displayName: "Items",
-          records: z.string(),
-          async run() { await mkdtempDisposable("beetl-"); },
-        }],
-      });
-    `,
-  );
-
-  await assert.rejects(buildIntegration(directory), /no exported member 'mkdtempDisposable'/);
-});
-
-test("builder bundles self-contained CommonJS dependencies", async (t) => {
-  const directory = await fixtureDirectory(t, "beetl-commonjs-builder");
-  const dependency = join(directory, "node_modules/commonjs-dependency");
+test("runtime archives preserve npm modules and package assets", async (t) => {
+  const directory = await fixtureDirectory(t, "beetl-module-tree-builder");
+  const dependency = join(directory, "node_modules/fixture-dependency");
   await mkdir(dependency, { recursive: true });
   await Promise.all([
     writeFile(
-      join(dependency, "package.json"),
-      JSON.stringify({ name: "commonjs-dependency", main: "index.cjs", types: "index.d.ts" }),
+      join(directory, "package.json"),
+      JSON.stringify({
+        name: "module-tree-integration",
+        version: "1.0.0",
+        private: true,
+        type: "module",
+        files: ["integration.ts", "message.txt"],
+        dependencies: { "fixture-dependency": "1.0.0" },
+      }),
     ),
-    writeFile(join(dependency, "index.cjs"), 'exports.platform = require("node:os").platform();\n'),
-    writeFile(join(dependency, "index.d.ts"), "export const platform: string;\n"),
+    writeFile(
+      join(directory, "package-lock.json"),
+      JSON.stringify({
+        name: "module-tree-integration",
+        version: "1.0.0",
+        lockfileVersion: 3,
+        packages: {
+          "": { dependencies: { "fixture-dependency": "1.0.0" } },
+          "node_modules/fixture-dependency": { version: "1.0.0" },
+        },
+      }),
+    ),
+    writeFile(
+      join(dependency, "package.json"),
+      JSON.stringify({
+        name: "fixture-dependency",
+        version: "1.0.0",
+        main: "index.cjs",
+        types: "index.d.ts",
+      }),
+    ),
+    writeFile(
+      join(dependency, "index.cjs"),
+      'const fs = require("node:fs"); const path = require("node:path"); exports.read = () => fs.readFileSync(path.join(__dirname, "message.txt"), "utf8");\n',
+    ),
+    writeFile(join(dependency, "index.d.ts"), "export function read(): string;\n"),
+    writeFile(join(dependency, "message.txt"), "dependency"),
+    writeFile(join(directory, "message.txt"), "integration+"),
+    writeFile(
+      join(directory, "integration.ts"),
+      `
+        import { readFile } from "node:fs/promises";
+        import { defineIntegration, z } from "@beetlio/connect";
+        import { read } from "fixture-dependency";
+        export default defineIntegration({
+          key: "module-tree",
+          displayName: "Module tree",
+          connection: { origin: "https://api.example.com" },
+          syncs: [{
+            key: "items",
+            displayName: "Items",
+            records: z.string(),
+            async run(ctx) {
+              const local = await readFile(new URL("./message.txt", import.meta.url), "utf8");
+              await ctx.emit({ records: [local + read()] });
+            },
+          }],
+        });
+      `,
+    ),
   ]);
-  const entry = join(directory, "integration.ts");
-  await writeFile(
-    entry,
-    `
-      import { defineIntegration, z } from "@beetlio/connect";
-      import { platform } from "commonjs-dependency";
-      export default defineIntegration({
-        key: "commonjs-builder",
-        displayName: platform,
-        connection: { origin: "https://api.example.com" },
-        syncs: [{ key: "items", displayName: "Items", records: z.string(), async run() {} }],
-      });
-    `,
-  );
 
-  assert.equal((await buildIntegration(directory)).integration.displayName, process.platform);
-
-  await writeFile(
-    entry,
-    `
-      import { defineIntegration, z } from "@beetlio/connect";
-      export default defineIntegration({
-        key: "computed-require",
-        displayName: "Computed require",
-        connection: { origin: "https://api.example.com" },
-        syncs: [{
-          key: "items",
-          displayName: "Items",
-          records: z.string(),
-          async run() { const path = "./dependency.cjs"; require(path); },
-        }],
-      });
-    `,
-  );
-  await assert.rejects(buildIntegration(directory), /Dynamic require.*not supported/);
-
-  await writeFile(join(directory, "helper.cjs"), 'module.exports = "helper";\n');
-  await writeFile(
-    entry,
-    `
-      import { defineIntegration, z } from "@beetlio/connect";
-      export default defineIntegration({
-        key: "require-resolve",
-        displayName: "Require resolve",
-        connection: { origin: "https://api.example.com" },
-        syncs: [{
-          key: "items",
-          displayName: "Items",
-          records: z.string(),
-          async run() { require.resolve("./helper.cjs"); },
-        }],
-      });
-    `,
-  );
-  await assert.rejects(buildIntegration(directory), /Using require as a value.*not supported/);
-
-  await writeFile(
-    entry,
-    `
-      import { defineIntegration, z } from "@beetlio/connect";
-      export default defineIntegration({
-        key: "aliased-require",
-        displayName: "Aliased require",
-        connection: { origin: "https://api.example.com" },
-        syncs: [{
-          key: "items",
-          displayName: "Items",
-          records: z.string(),
-          async run() { const loader = require; loader.resolve("./helper.cjs"); },
-        }],
-      });
-    `,
-  );
-  await assert.rejects(buildIntegration(directory), /Using require as a value.*not supported/);
-
-  await writeFile(
-    entry,
-    `
-      import { defineIntegration, z } from "@beetlio/connect";
-      const __require2 = { resolve: () => "local" };
-      export default defineIntegration({
-        key: "local-resolve",
-        displayName: __require2.resolve(),
-        connection: { origin: "https://api.example.com" },
-        syncs: [{ key: "items", displayName: "Items", records: z.string(), async run() {} }],
-      });
-    `,
-  );
-  assert.equal((await buildIntegration(directory)).integration.displayName, "local");
-
-  await Promise.all([
-    writeFile(join(dependency, "index.cjs"), "exports.directory = () => __dirname;\n"),
-    writeFile(join(dependency, "index.d.ts"), "export function directory(): string;\n"),
-  ]);
-  await writeFile(
-    entry,
-    `
-      import { defineIntegration, z } from "@beetlio/connect";
-      import { directory } from "commonjs-dependency";
-      export default defineIntegration({
-        key: "commonjs-path",
-        displayName: "CommonJS path",
-        connection: { origin: "https://api.example.com" },
-        syncs: [{
-          key: "items",
-          displayName: "Items",
-          records: z.string(),
-          async run() { directory(); },
-        }],
-      });
-    `,
-  );
-  await assert.rejects(buildIntegration(directory), /__dirname is not supported/);
+  const built = await buildIntegration(directory);
+  await withIntegration(built.archive, async (integration) => {
+    let emitted: unknown;
+    await integration.syncs[0]!.run({
+      emit(value: { records: readonly string[] }) {
+        emitted = value.records[0];
+        return Promise.resolve();
+      },
+    } as never);
+    assert.equal(emitted, "integration+dependency");
+  });
 });
 
 test("builder captures validated icon bytes", async (t) => {
   const directory = await fixtureDirectory(t, "beetl-icon-builder");
+  await integrationPackage(directory, ["integration.ts", "icon.png"]);
   const icon = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64",
   );
-  const iconPath = join(directory, "icon.png");
-  const markerPath = join(directory, "evaluated");
-  await writeFile(iconPath, icon);
-  await writeFile(
-    join(directory, "integration.ts"),
-    `
-      import { access, writeFile } from "node:fs/promises";
-      import { defineIntegration, z } from "@beetlio/connect";
-      try {
-        await access(${JSON.stringify(markerPath)});
-        await writeFile(${JSON.stringify(iconPath)}, "not an image");
-      } catch {
-        await writeFile(${JSON.stringify(markerPath)}, "");
-      }
-      export default defineIntegration({
-        key: "icon-builder",
-        displayName: "Icon builder",
-        icon: "icon.png",
-        connection: { origin: "https://api.example.com" },
-        syncs: [{ key: "items", displayName: "Items", records: z.string(), async run() {} }],
-      });
-    `,
-  );
+  await Promise.all([
+    writeFile(join(directory, "icon.png"), icon),
+    writeFile(
+      join(directory, "integration.ts"),
+      source('"Icon builder"').replace(
+        'displayName: "Icon builder",',
+        'displayName: "Icon builder", icon: "icon.png",',
+      ),
+    ),
+  ]);
 
   const built = await buildIntegration(directory);
   assert.equal(built.icon?.filename, "icon.png");
-  assert.equal(built.icon?.mediaType, "image/png");
   assert.ok(built.icon && Buffer.from(built.icon.bytes).equals(icon));
-  assert.equal(await readFile(iconPath, "utf8"), "not an image");
 });

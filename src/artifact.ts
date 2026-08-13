@@ -1,13 +1,22 @@
 import { execFile } from "node:child_process";
-import { Buffer } from "node:buffer";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire, setSourceMapsSupport } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
-import { build, formatMessages, type BuildOptions } from "esbuild";
 import sharp from "sharp";
 import { create as createTar, extract as extractTar } from "tar";
 import ts from "typescript";
@@ -22,18 +31,18 @@ import { validateIntegration } from "./host.ts";
 
 const Require = createRequire(import.meta.url);
 const SdkEntry = fileURLToPath(new URL("./index.js", import.meta.url));
+const SdkManifestEntry = fileURLToPath(new URL("./manifest.js", import.meta.url));
 const SdkTypesEntry = fileURLToPath(new URL("./index.d.ts", import.meta.url));
-const SdkDirectory = dirname(SdkEntry);
 const SdkVersion = z
   .object({ version: z.string().min(1) })
   .parse(Require("../package.json")).version;
+const ZodDirectory = dirname(Require.resolve("zod/package.json"));
 const NodeTypesDirectory = dirname(dirname(Require.resolve("@types/node/package.json")));
 const Encoder = new TextEncoder();
-const Decoder = new TextDecoder();
 const Limits = {
   archive: 25 * 1024 * 1024,
   expanded: 50 * 1024 * 1024,
-  bundle: 15 * 1024 * 1024,
+  runtime: 100 * 1024 * 1024,
   manifest: 1024 * 1024,
   icon: 512 * 1024,
 } as const;
@@ -48,6 +57,7 @@ const NpmPackResultSchema = z
   )
   .length(1);
 const PackageDefinitionSchema = z.object({
+  type: z.string().optional(),
   files: z.array(z.string().min(1)).min(1).optional(),
   dependencies: z.record(z.string(), z.string()).optional(),
   devDependencies: z.record(z.string(), z.string()).optional(),
@@ -71,16 +81,11 @@ const DependencyFields = [
 ] as const;
 const RegistryDependencyPattern =
   /^(?:npm:(?:@[^/\\:@]+\/[^/\\:@]+|[^/\\:@]+)(?:@[^:/\\]+)?|[^:/\\]*)$/;
-const InlineSourceMapPattern =
-  /\/\/# sourceMappingURL=data:application\/json;base64,([A-Za-z0-9+/=]+)\n?$/;
-const SourceMapSchema = z.looseObject({ sources: z.array(z.string()) });
-const RuntimeRequire = "__beetlRuntimeRequire";
-const CommonJsBanner = `import { createRequire as __beetlCreateRequire } from "node:module"; const ${RuntimeRequire} = __beetlCreateRequire(import.meta.url);`;
-const UnsupportedRuntimePaths = {
-  __dirname: "__beetlUnsupportedDirname",
-  __filename: "__beetlUnsupportedFilename",
-} as const;
 const ExecFile = promisify(execFile);
+const Npm =
+  process.platform === "win32"
+    ? [process.execPath, join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")]
+    : ["npm"];
 setSourceMapsSupport(true);
 
 export interface BuiltIntegrationIcon {
@@ -90,8 +95,7 @@ export interface BuiltIntegrationIcon {
 }
 
 export interface BuiltIntegration {
-  readonly bundle: Uint8Array;
-  readonly integration: IntegrationDefinition;
+  readonly archive: Uint8Array;
   readonly manifest: IntegrationManifest;
   readonly icon?: BuiltIntegrationIcon;
   readonly sdkVersion: string;
@@ -134,6 +138,9 @@ export async function packIntegration(inputDirectory: string): Promise<PackedInt
   }
   if (packageDefinition.workspaces !== undefined) {
     throw new Error("Integration packages cannot declare npm workspaces");
+  }
+  if (packageDefinition.type !== "module") {
+    throw new Error('Integration package.json requires "type": "module"');
   }
   if (packageDefinition.files === undefined) {
     throw new Error('Integration package.json requires an explicit "files" allowlist');
@@ -179,14 +186,10 @@ export async function packIntegration(inputDirectory: string): Promise<PackedInt
   try {
     let stdout: string;
     try {
-      const npm =
-        process.platform === "win32"
-          ? [process.execPath, join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")]
-          : ["npm"];
       const result = await ExecFile(
-        npm[0]!,
+        Npm[0]!,
         [
-          ...npm.slice(1),
+          ...Npm.slice(1),
           "pack",
           "--json",
           "--ignore-scripts",
@@ -275,220 +278,177 @@ export async function packIntegration(inputDirectory: string): Promise<PackedInt
 }
 
 export async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
-  const entryPath = await resolveIntegrationEntry(inputPath);
-  const workingDirectory = dirname(entryPath);
-  const options = {
-    absWorkingDir: workingDirectory,
-    outfile: "integration.mjs",
-    bundle: true,
-    format: "esm",
-    platform: "node",
-    target: "node24.2",
-    mainFields: ["module", "main"],
-    minifyWhitespace: true,
-    sourcemap: "inline",
-    sourcesContent: false,
-    metafile: true,
-    write: false,
-    logLevel: "silent",
-    logOverride: {
-      "unsupported-dynamic-import": "error",
-    },
-    define: { ...UnsupportedRuntimePaths, require: RuntimeRequire },
-    plugins: [
-      {
-        name: "beetl-connect-imports",
-        setup(builder) {
-          builder.onResolve({ filter: /^@beetlio\/connect$/ }, () => ({ path: SdkEntry }));
-        },
-      },
-    ],
-  } satisfies BuildOptions;
-  let sourceOutput;
+  const directory = await realpath(resolve(inputPath));
+  if (!(await stat(directory)).isDirectory()) {
+    throw new Error("build requires an integration package directory");
+  }
+  const packed = await packIntegration(directory);
+  const temporary = await mkdtemp(join(tmpdir(), "beetl-connect-build-"));
   try {
-    sourceOutput = await build({
-      ...options,
-      banner: { js: CommonJsBanner },
-      stdin: {
-        contents: `
-          import integration from ${JSON.stringify(`./${basename(entryPath)}`)};
-          export { createIntegrationManifest } from "@beetlio/connect";
-          export default integration;
-        `,
-        loader: "js",
-        resolveDir: workingDirectory,
-        sourcefile: "beetl-build-entry.js",
-      },
-    });
-  } catch (error) {
-    throw await integrationBuildError(error, entryPath);
-  }
+    const sourceArchive = join(temporary, packed.filename);
+    const sourceDirectory = join(temporary, "source");
+    const sourcePackage = join(sourceDirectory, "package");
+    const runtimeDirectory = join(temporary, "runtime");
+    const runtimePackage = join(runtimeDirectory, "package");
+    await Promise.all([writeFile(sourceArchive, packed.bytes), mkdir(sourceDirectory)]);
+    await extractTar({ cwd: sourceDirectory, file: sourceArchive, strict: true });
 
-  const sourceBundle = sourceOutput.outputFiles.find((file) =>
-    file.path.endsWith("integration.mjs"),
-  )?.contents;
-  if (!sourceBundle) throw new Error("Bundler did not produce integration.mjs");
-  const unsupportedRuntimePath = runtimePathDependency(sourceBundle);
-  if (unsupportedRuntimePath !== undefined) {
-    throw new Error(
-      `${unsupportedRuntimePath} is not supported because runtime artifacts do not include package files`,
-    );
-  }
-  await typeCheckIntegration(entryPath);
-  const integration = await importBundle(sourceBundle, inputPath);
-  validateIntegration(integration);
-  const manifest = createIntegrationManifest(integration);
-  assertSize("manifest.json", Encoder.encode(JSON.stringify(manifest)), Limits.manifest);
-  const icon = await loadIntegrationIcon(entryPath, integration.icon);
-
-  let output;
-  try {
-    output = await build({
-      ...options,
-      stdin: {
-        contents: `
-          import { isDeepStrictEqual } from "node:util";
-          import integration, { createIntegrationManifest } from "beetl:frozen-integration";
-
-          if (!isDeepStrictEqual(createIntegrationManifest(integration), ${JSON.stringify(manifest)})) {
-            throw new Error("Runtime integration definition does not match its build manifest");
-          }
-          export default integration;
-        `,
-        loader: "js",
-        resolveDir: workingDirectory,
-        sourcefile: "beetl-runtime-entry.js",
-      },
-      plugins: [
-        ...options.plugins,
-        {
-          name: "beetl-frozen-integration",
-          setup(builder) {
-            builder.onResolve({ filter: /^beetl:frozen-integration$/ }, () => ({
-              path: "integration.mjs",
-              namespace: "beetl-frozen",
-            }));
-            builder.onLoad({ filter: /.*/, namespace: "beetl-frozen" }, () => ({
-              contents: sourceBundle,
-              loader: "js",
-            }));
-          },
-        },
-      ],
-    });
-  } catch (error) {
-    throw await integrationBuildError(error, entryPath);
-  }
-
-  for (const input of Object.keys(sourceOutput.metafile.inputs)) {
-    if (input.startsWith("<")) continue;
-    const path = resolve(workingDirectory, input);
-    if (pathWithin(SdkDirectory, path) || path.replaceAll("\\", "/").includes("/node_modules/")) {
-      continue;
-    }
-    if (!pathWithin(workingDirectory, path)) {
-      throw new Error(`Integration source imports outside its package directory: ${path}`);
-    }
-  }
-  const generated = output.outputFiles.find((file) =>
-    file.path.endsWith("integration.mjs"),
-  )?.contents;
-  if (!generated) throw new Error("Bundler did not produce integration.mjs");
-  const bundle = normalizeSourceMap(generated, workingDirectory);
-  assertSize("integration.mjs", bundle, Limits.bundle);
-  return {
-    bundle,
-    integration: await importBundle(bundle, inputPath),
-    manifest,
-    ...(icon === undefined ? {} : { icon }),
-    sdkVersion: SdkVersion,
-  };
-}
-
-function normalizeSourceMap(bundle: Uint8Array, workingDirectory: string): Uint8Array {
-  const source = Decoder.decode(bundle);
-  const match = InlineSourceMapPattern.exec(source);
-  if (!match?.[1]) throw new Error("Bundler did not produce an inline source map");
-  const map = SourceMapSchema.parse(JSON.parse(Buffer.from(match[1], "base64").toString()));
-  const sources = map.sources.map((sourcePath) => {
-    const path = resolve(workingDirectory, sourcePath);
-    if (pathWithin(SdkDirectory, path)) {
-      return `@beetlio/connect/${relative(SdkDirectory, path).replaceAll("\\", "/")}`;
-    }
-    const normalized = path.replaceAll("\\", "/");
-    const dependency = normalized.indexOf("/node_modules/");
-    if (dependency >= 0) return `npm/${normalized.slice(dependency + 14)}`;
-    if (pathWithin(workingDirectory, path)) {
-      return relative(workingDirectory, path).replaceAll("\\", "/");
-    }
-    return sourcePath;
-  });
-  const encoded = Buffer.from(JSON.stringify({ ...map, sources })).toString("base64");
-  return Encoder.encode(
-    `${source.slice(0, match.index)}//# sourceMappingURL=data:application/json;base64,${encoded}\n`,
-  );
-}
-
-function runtimePathDependency(bundle: Uint8Array): string | undefined {
-  const markers: ReadonlyMap<string, string> = new Map(
-    Object.entries(UnsupportedRuntimePaths).map(([name, marker]) => [marker, name]),
-  );
-  const source = ts.createSourceFile(
-    "integration.mjs",
-    Decoder.decode(bundle),
-    ts.ScriptTarget.ES2024,
-    true,
-    ts.ScriptKind.JS,
-  );
-  let unsupported: string | undefined;
-  const visit = (node: ts.Node): void => {
-    if (unsupported !== undefined) return;
-    if (ts.isIdentifier(node) && markers.has(node.text)) {
-      unsupported = markers.get(node.text);
-    } else if (ts.isIdentifier(node) && node.text === RuntimeRequire) {
-      const directCall = ts.isCallExpression(node.parent) && node.parent.expression === node;
-      const declaration = ts.isVariableDeclaration(node.parent) && node.parent.name === node;
-      if (directCall) {
-        if (node.parent.arguments.length !== 1 || !ts.isStringLiteral(node.parent.arguments[0]!)) {
-          unsupported = "Dynamic require";
-        }
-      } else if (!declaration) {
-        unsupported = "Using require as a value";
+    try {
+      if ((await stat(join(directory, "node_modules"))).isDirectory()) {
+        await cp(join(directory, "node_modules"), join(sourcePackage, "node_modules"), {
+          recursive: true,
+        });
       }
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return unsupported;
+
+    await cp(sourcePackage, runtimePackage, {
+      recursive: true,
+      filter: (path) => {
+        const child = relative(sourcePackage, path);
+        return (
+          child === "" ||
+          (!child.split(/[/\\]/).includes("node_modules") && !/\.(?:[cm]?ts|tsx)$/.test(path))
+        );
+      },
+    });
+    await compileIntegration(sourcePackage, runtimePackage);
+    await rename(join(sourcePackage, "node_modules"), join(runtimePackage, "node_modules")).catch(
+      (error: unknown) => {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      },
+    );
+    try {
+      await ExecFile(
+        Npm[0]!,
+        [
+          ...Npm.slice(1),
+          "prune",
+          "--omit=dev",
+          "--ignore-scripts",
+          "--offline",
+          "--no-audit",
+          "--no-fund",
+        ],
+        { cwd: runtimePackage, encoding: "utf8", windowsHide: true },
+      );
+    } catch (error) {
+      throw new Error("Could not prepare production dependencies", { cause: error });
+    }
+
+    const sdkDirectory = join(runtimePackage, "node_modules/@beetlio/connect");
+    await rm(sdkDirectory, { recursive: true, force: true });
+    await mkdir(sdkDirectory, { recursive: true });
+    await Promise.all([
+      copyFile(SdkEntry, join(sdkDirectory, "index.js")),
+      copyFile(SdkManifestEntry, join(sdkDirectory, "manifest.js")),
+      cp(ZodDirectory, join(sdkDirectory, "node_modules/zod"), { recursive: true }),
+    ]);
+    await writeFile(
+      join(sdkDirectory, "package.json"),
+      `${JSON.stringify({
+        name: "@beetlio/connect",
+        version: SdkVersion,
+        type: "module",
+        exports: "./index.js",
+      })}\n`,
+    );
+
+    const evaluationPackage = join(temporary, "evaluation");
+    await cp(runtimePackage, evaluationPackage, { recursive: true });
+    const integration = await importIntegration(
+      join(evaluationPackage, "integration.js"),
+      inputPath,
+    );
+    validateIntegration(integration);
+    const manifest = createIntegrationManifest(integration);
+    const manifestSource = `${JSON.stringify(manifest, null, 2)}\n`;
+    assertSize("manifest.json", Encoder.encode(manifestSource), Limits.manifest);
+    const icon = await loadIntegrationIcon(
+      join(runtimePackage, "integration.js"),
+      integration.icon,
+    );
+    await Promise.all([
+      writeFile(join(runtimePackage, "manifest.json"), manifestSource),
+      writeFile(
+        join(runtimePackage, "integration.mjs"),
+        `import { setSourceMapsSupport } from "node:module";
+import { isDeepStrictEqual } from "node:util";
+import { createIntegrationManifest } from "@beetlio/connect";
+setSourceMapsSupport(true);
+const { default: integration } = await import("./integration.js");
+
+if (!isDeepStrictEqual(createIntegrationManifest(integration), ${JSON.stringify(manifest)})) {
+  throw new Error("Runtime integration definition does not match its build manifest");
 }
 
-async function importBundle(bundle: Uint8Array, source: string): Promise<IntegrationDefinition> {
-  const directory = await mkdtemp(join(tmpdir(), "beetl-connect-"));
-  const path = join(directory, "integration.mjs");
-  try {
-    await writeFile(path, bundle);
-    const module = (await import(`${pathToFileURL(path).href}?${crypto.randomUUID()}`)) as {
-      default?: unknown;
+export default integration;
+`,
+      ),
+    ]);
+
+    const archivePath = join(temporary, "integration-runtime.tgz");
+    await createTar(
+      {
+        cwd: runtimeDirectory,
+        file: archivePath,
+        gzip: true,
+        mtime: new Date(0),
+        portable: true,
+        strict: true,
+      },
+      ["package"],
+    );
+    const archive = new Uint8Array(await readFile(archivePath));
+    assertSize("runtime artifact", archive, Limits.runtime);
+    return {
+      archive,
+      manifest,
+      ...(icon === undefined ? {} : { icon }),
+      sdkVersion: SdkVersion,
     };
-    if (!module.default || typeof module.default !== "object") {
-      throw new Error(`${source} must default-export an integration`);
-    }
-    return module.default as IntegrationDefinition;
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
+
+export async function withIntegration<Value>(
+  archive: Uint8Array,
+  action: (integration: IntegrationDefinition) => Value | Promise<Value>,
+): Promise<Value> {
+  assertSize("runtime artifact", archive, Limits.runtime);
+  const directory = await mkdtemp(join(tmpdir(), "beetl-connect-runtime-"));
+  const archivePath = join(directory, "integration-runtime.tgz");
+  try {
+    await writeFile(archivePath, archive);
+    await extractTar({ cwd: directory, file: archivePath, strict: true });
+    const integration = await importIntegration(
+      join(directory, "package/integration.mjs"),
+      "runtime artifact",
+    );
+    return await action(integration);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 }
 
-async function resolveIntegrationEntry(inputPath: string): Promise<string> {
-  const path = resolve(inputPath);
-  return (await stat(path)).isDirectory() ? join(path, "integration.ts") : path;
-}
-
-function pathWithin(directory: string, path: string): boolean {
-  const child = relative(directory, path);
-  return (
-    child !== ".." && !child.startsWith("../") && !child.startsWith("..\\") && !isAbsolute(child)
-  );
+async function importIntegration(path: string, source: string): Promise<IntegrationDefinition> {
+  let module: { default?: unknown };
+  try {
+    module = (await import(`${pathToFileURL(path).href}?${crypto.randomUUID()}`)) as {
+      default?: unknown;
+    };
+  } catch (error) {
+    throw new Error(
+      `Could not load ${source}${error instanceof Error ? `: ${error.message}` : ""}`,
+      { cause: error },
+    );
+  }
+  if (!module.default || typeof module.default !== "object") {
+    throw new Error(`${source} must default-export an integration`);
+  }
+  return module.default as IntegrationDefinition;
 }
 
 async function loadIntegrationIcon(
@@ -529,49 +489,54 @@ function assertSize(name: string, bytes: Uint8Array, maximum: number): void {
   }
 }
 
-async function typeCheckIntegration(entryPath: string): Promise<void> {
-  const configPath = join(dirname(entryPath), "tsconfig.json");
-  let configured: ts.CompilerOptions = {};
-  if (ts.sys.fileExists(configPath)) {
-    const read = ts.readConfigFile(configPath, ts.sys.readFile);
-    if (read.error !== undefined) throw typeScriptError([read.error], dirname(entryPath));
-    const parsed = ts.parseJsonConfigFileContent(
-      read.config,
-      ts.sys,
-      dirname(configPath),
-      undefined,
-      configPath,
-    );
-    const errors = parsed.errors.filter((diagnostic) => diagnostic.code !== 18003);
-    if (errors.length > 0) throw typeScriptError(errors, dirname(entryPath));
-    configured = parsed.options;
-  }
-
+async function compileIntegration(sourceDirectory: string, outputDirectory: string): Promise<void> {
+  const entryPath = join(sourceDirectory, "integration.ts");
   const options: ts.CompilerOptions = {
     target: ts.ScriptTarget.ES2024,
-    module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
-    ...configured,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    allowJs: true,
     allowImportingTsExtensions: true,
+    declaration: false,
     exactOptionalPropertyTypes: true,
-    noEmit: true,
+    inlineSources: true,
+    noEmit: false,
+    noEmitOnError: true,
     noUncheckedIndexedAccess: true,
+    outDir: outputDirectory,
+    rewriteRelativeImportExtensions: true,
+    rootDir: sourceDirectory,
     skipLibCheck: true,
+    sourceMap: true,
+    sourceRoot: "beetl://source/",
     strict: true,
     types: ["node"],
-    typeRoots: [NodeTypesDirectory, ...(configured.typeRoots ?? [])],
+    typeRoots: [NodeTypesDirectory],
     paths: {
-      ...configured.paths,
       "@beetlio/connect": [SdkTypesEntry],
     },
   };
+  const sourceFiles = ts.sys
+    .readDirectory(sourceDirectory, [".ts", ".mts", ".cts"], ["node_modules"])
+    .filter((path) => !path.replaceAll("\\", "/").includes("/node_modules/"));
+  if (!sourceFiles.includes(entryPath))
+    throw new Error("Integration package must include integration.ts");
+  const program = ts.createProgram(sourceFiles, options);
   const diagnostics = ts
-    .getPreEmitDiagnostics(ts.createProgram([entryPath], options))
+    .getPreEmitDiagnostics(program)
     .filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
-  if (diagnostics.length > 0) throw typeScriptError(diagnostics, dirname(entryPath));
+  if (diagnostics.length > 0) throw typeScriptError(diagnostics, sourceDirectory);
+  const emitted = program.emit();
+  const emitErrors = emitted.diagnostics.filter(
+    (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+  );
+  if (emitErrors.length > 0) throw typeScriptError(emitErrors, sourceDirectory);
 }
 
 function typeScriptError(diagnostics: readonly ts.Diagnostic[], directory: string): Error {
+  const hint = diagnostics.some((diagnostic) => diagnostic.code === 2307)
+    ? "\nInstall dependencies with `npm install` and retry."
+    : "";
   return new Error(
     `TypeScript check failed:\n${ts
       .formatDiagnostics(diagnostics, {
@@ -579,25 +544,6 @@ function typeScriptError(diagnostics: readonly ts.Diagnostic[], directory: strin
         getCurrentDirectory: () => directory,
         getNewLine: () => "\n",
       })
-      .trim()}`,
+      .trim()}${hint}`,
   );
-}
-
-async function integrationBuildError(error: unknown, entryPath: string): Promise<Error> {
-  if (!(error instanceof Error && "errors" in error && Array.isArray(error.errors))) {
-    return error instanceof Error ? error : new Error(String(error));
-  }
-  const messages = await formatMessages(error.errors, { kind: "error", color: false });
-  const missingDependency = error.errors.some((message) => {
-    const specifier = /^Could not resolve "([^"]+)"/.exec(message.text)?.[1];
-    return (
-      specifier !== undefined &&
-      specifier !== basename(entryPath) &&
-      !specifier.startsWith(".") &&
-      !isAbsolute(specifier) &&
-      !specifier.includes(":")
-    );
-  });
-  const hint = missingDependency ? "\nInstall dependencies with `npm install` and retry." : "";
-  return new Error(`${messages.join("").trim()}${hint}`, { cause: error });
 }

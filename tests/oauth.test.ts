@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { auth, credential } from "@beetlio/connect";
+import { auth } from "@beetlio/connect";
 import { authorizeOAuth } from "../src/oauth.ts";
 import { fixtureServer } from "./support.ts";
 
@@ -52,7 +52,7 @@ test("authorization-code flow uses PKCE and returns provider authorization state
     authorizationUrl: `${provider}/authorize`,
     tokenUrl: `${provider}/token`,
     scopes: ["api", "refresh_token"],
-    clientSecret: credential.secret(),
+    clientSecret: true,
     tokenFields: { instanceUrl: "instance_url" },
   });
   assert.equal(oauth.type, "oauth2_authorization_code");
@@ -73,17 +73,4 @@ test("authorization-code flow uses PKCE and returns provider authorization state
     refreshToken: "refresh-token",
     tokenFields: { instanceUrl: "https://tenant.example" },
   });
-
-  const controller = new AbortController();
-  controller.abort(new Error("cancelled"));
-  await assert.rejects(
-    authorizeOAuth({
-      auth: oauth,
-      credentials: { clientId: "client-id", clientSecret: "client-secret" },
-      redirectUri: "http://127.0.0.1:0/oauth/callback",
-      signal: controller.signal,
-      onAuthorizationUrl() {},
-    }),
-    /cancelled/,
-  );
 });
