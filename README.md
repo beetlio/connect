@@ -13,13 +13,15 @@ and validates records, and writes NDJSON.
 
 [Documentation](https://beetlio.github.io/connect/) · [Examples](examples/) · [Contributing](CONTRIBUTING.md)
 
+The hosted process exchange is specified in [Connect runtime protocol v1](docs/host-protocol.md).
+
 The demo runs the included Wikidata integration, fetches five records, and
 inspects the emitted NDJSON.
 
 [![Watch @beetlio/connect sync Wikidata](https://asciinema.org/a/1262370.svg)](https://asciinema.org/a/1262370)
 
 > [!WARNING]
-> This project is experimental and currently at `0.1.0`. APIs and local storage
+> This project is experimental and currently at `0.2.0`. APIs and local storage
 > formats may change.
 
 > [!IMPORTANT]
@@ -32,7 +34,7 @@ inspects the emitted NDJSON.
 - Validates provider responses and output records with Zod
 - Bearer, basic, API-key, token-exchange, custom, and OAuth 2.0 authentication
 - Cursor and offset pagination helpers
-- Managed retries, incremental checkpoints, and atomic snapshots
+- Managed retries, incremental checkpoints, and atomic replace generations
 - Standard npm `.tgz` packages for hosted builds
 - NDJSON output that works with tools such as `jq`, DuckDB, and data pipelines
 
@@ -78,9 +80,8 @@ export default defineIntegration({
     defineSync({
       key: "repositories",
       displayName: "Repositories",
-      mode: "snapshot",
+      mode: "replace",
       records: Repository,
-      primaryKey: ["id"],
       inputs: input.object({
         user: input.string({ label: "GitHub user", default: "octocat" }),
       }),
@@ -109,8 +110,8 @@ head -n 1 repositories.ndjson
 Paths passed to `ctx.fetch()` must be relative to the configured API origin and
 begin with `/`. Connect keeps credentials and OAuth authorization state
 outside integration code and adds authentication when it sends each request.
-Await request promises; requests still running when the integration returns are
-cancelled. Emits and logs already submitted before return are settled in order.
+Await all context promises. Requests still running when the integration returns are cancelled;
+emits and logs already submitted before return are settled in order as cleanup.
 
 ## Commands
 
@@ -161,12 +162,13 @@ compilation are outside the first-release runtime contract.
 Connection and sync configuration must use `input.object()` and the non-secret
 `input.*` field helpers. Built-in authentication owns its credential schema; custom
 authentication uses `credential.*`. Each descriptor directly owns its parser and manifest
-representation; ordinary Zod schemas remain available for records and checkpoints. Use `ctx.fetch()` for managed
+representation; supported Zod schemas define records and representation-preserving JSON-compatible
+Zod schemas define opaque checkpoints. Use `ctx.fetch()` for managed
 authentication, retries, and origin enforcement. Hosted jobs may make direct external
 requests, but those requests receive none of the connection's managed credentials.
 The local CLI is not a sandbox, so only run integrations you trust.
 
-Hosted v1 likewise treats uploaded integrations as tenant-admin-approved executable
+Hosted v1 likewise treats uploaded integrations as operator-approved executable
 code. gVisor isolates the workload from platform infrastructure; it does not prevent
 integration code or an npm dependency from forwarding fetched data to another external
 service. Third-party marketplace integrations require a separate egress policy and are
@@ -217,11 +219,37 @@ as trusted. Incremental sync state remains in the workspace under `.beetl/state`
 ## Output and state
 
 Append syncs are the default: each run writes a new NDJSON file and can resume
-from its latest checkpoint. A sync can instead declare `mode: "snapshot"`; the
-CLI replaces the file selected by `--output` only after the new snapshot
-succeeds. Without `--output`, each run uses a new timestamped filename.
-Checkpoint schemas decode persisted JSON into `ctx.checkpoint`; values supplied to
-`ctx.emit()` are stored in their input form and decoded once when the next run starts.
+from its latest checkpoint. A Replace sync declares `mode: "replace"`; the CLI
+stages the complete local run and replaces the file selected by `--output` only
+after it succeeds. A Merge sync
+declares a non-empty, top-level `primaryKey` and emits upsert records plus explicit
+deleted keys:
+
+```ts
+await ctx.emit({
+  records: [{ id: "updated", name: "Updated" }],
+  deletedKeys: [{ id: "deleted" }],
+  checkpoint: { cursor: "next" },
+});
+```
+
+Merge output is one batch envelope per NDJSON line containing `records` and, when
+present, `deletedKeys`. This preserves the integration contract for local inspection
+without reproducing a destination materializer. Append and Replace output remains one
+record per line. Local runs consume all emitted batches; a hosted controller may end a worker segment
+internally after durably committing a checkpoint-bearing batch. Platform scheduling remains
+invisible to the integration. Without `--output`, each run uses a new timestamped filename.
+
+Record schemas must be Zod object schemas whose output is a non-null, top-level JSON
+object. Nested objects and arrays are allowed. Connect generates the canonical JSON Schema
+in the build manifest and uses the original Zod schema for runtime validation. The downstream
+consumer decides whether that JSON Schema maps to its supported storage types. Merge key fields must be
+present at the top level, required, scalar, and non-null. Merge record schemas cannot use a
+root-level Zod `overwrite()`; normalize individual fields so records and deletion keys use the
+same transformation.
+
+Checkpoint schemas validate without rewriting: the same JSON value is emitted, persisted, and
+supplied as `ctx.checkpoint` on the next run. Decode provider cursors inside `run()` when needed.
 Profiles and connections carry revisions. `configure` preserves revisions when
 nothing changed, while changed inputs and `--reauthorize` create new revisions.
 Automatic OAuth refresh preserves the connection revision. Default checkpoint paths
@@ -243,11 +271,22 @@ Retries apply to safe HTTP methods by default and can be configured per connecti
 malformed or repeated continuations, follows continuations across empty pages, limits pagination to
 10,000 pages, and rejects provider response bodies larger than 16 MiB.
 
+## Migrating from 0.1
+
+Manifest v2 and SDK 0.2 are intentionally breaking. Rename `mode: "snapshot"` to
+`mode: "replace"`; Replace checkpoints now belong to the in-progress generation. Remove
+`primaryKey` from Append and Replace syncs. Syncs that update existing keys should use
+`mode: "merge"`, declare a non-empty `primaryKey`, and emit explicit `deletedKeys` when the
+source reports deletion. Wrap primitive record schemas in a top-level object schema. Hosted sync
+launches now pass `runtimePath` instead of `integrationPath`, `outputPath`, and `statePath`.
+The runtime exchanges batches and commit acknowledgments over NDJSON; the external controller keeps
+publication credentials and the hard deadline outside integration code.
+
 ## Examples
 
 | Integration                                                    | Demonstrates                                                                 |
 | -------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [Basic dummy API](examples/basic/integration.ts)               | Definition, validation, verification, direct fetch, and snapshot output      |
+| [Basic dummy API](examples/basic/integration.ts)               | Definition, validation, verification, direct fetch, and replace output       |
 | [All features dummy API](examples/all-features/integration.ts) | OAuth, configuration, retries, headers, pagination, checkpoints, and logging |
 | [Wikidata](examples/wikidata/integration.ts)                   | A real unauthenticated public API with bounded cursor pagination             |
 
@@ -272,7 +311,7 @@ beetl-connect pack examples/wikidata --output wikidata.tgz
 ```
 
 Replace the example email with your contact information. The command writes a
-timestamped NDJSON snapshot to the current directory.
+timestamped NDJSON replacement to the current directory.
 
 ## Development
 

@@ -49,9 +49,8 @@ export default defineIntegration({
     defineSync({
       key: "entities",
       displayName: "Entities",
-      mode: "snapshot",
+      mode: "replace",
       records: Entity,
-      primaryKey: ["id"],
       inputs: input.object({
         search: input.string({ label: "Search", minLength: 1 }),
         language: input.string({ label: "Language", minLength: 1, default: "en" }),

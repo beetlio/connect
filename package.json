@@ -1,6 +1,6 @@
 {
   "name": "@beetlio/connect",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "CLI for building and running TypeScript API integrations",
   "license": "Apache-2.0",
   "type": "module",

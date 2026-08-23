@@ -24,9 +24,8 @@ export default defineIntegration({
     defineSync({
       key: "items",
       displayName: "Items",
-      mode: "snapshot",
+      mode: "replace",
       records: Item,
-      primaryKey: ["id"],
       async run(ctx) {
         const response = await ctx.fetch("/items");
         if (!response.ok) throw new Error(`Item request failed with ${response.status}`);

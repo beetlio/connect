@@ -45,7 +45,7 @@ export interface InputValueSchema extends InputMetadata {
 export type InputField = InputObjectSchema | InputValueSchema;
 
 export interface IntegrationManifest {
-  readonly manifestVersion: 1;
+  readonly manifestVersion: 2;
   readonly integration: {
     readonly key: string;
     readonly displayName: string;
@@ -67,7 +67,7 @@ export interface IntegrationManifest {
     readonly mode: SyncMode;
     readonly inputs: InputObjectSchema;
     readonly records: JsonSchema;
-    readonly primaryKey: readonly string[];
+    readonly primaryKey?: readonly string[];
     readonly checkpoint?: JsonSchema;
   }[];
 }
@@ -86,7 +86,7 @@ export function createIntegrationManifest(integration: IntegrationDefinition): I
     auth = manifest;
   }
   return {
-    manifestVersion: 1,
+    manifestVersion: 2,
     integration: {
       key: integration.key,
       displayName: integration.displayName,
@@ -106,17 +106,63 @@ export function createIntegrationManifest(integration: IntegrationDefinition): I
         : { pagination: integration.connection.pagination }),
       canVerify: integration.connection.verify !== undefined,
     },
-    syncs: integration.syncs.map((sync) => ({
-      key: sync.key,
-      displayName: sync.displayName,
-      mode: sync.mode ?? "append",
-      inputs: sync.inputs?.manifest ?? EmptyObject,
-      records: jsonSchema(sync.records),
-      primaryKey: sync.primaryKey ?? [],
-      ...(sync.checkpoint === undefined
-        ? {}
-        : { checkpoint: jsonSchema(sync.checkpoint, "input") }),
-    })),
+    syncs: integration.syncs.map((sync) => {
+      const mode = sync.mode ?? "append";
+      if (mode !== "append" && mode !== "replace" && mode !== "merge") {
+        throw new Error(
+          `Sync ${JSON.stringify(sync.key)} has invalid mode ${JSON.stringify(mode)}`,
+        );
+      }
+      const records = jsonSchema(sync.records);
+      const properties = recordProperties(records, `Sync ${JSON.stringify(sync.key)} records`);
+      const declaredPrimaryKey = sync.primaryKey;
+      if (mode !== "merge" && declaredPrimaryKey !== undefined) {
+        throw new Error(`Sync ${JSON.stringify(sync.key)} only merge mode may declare primaryKey`);
+      }
+      const primaryKey = mode === "merge" ? declaredPrimaryKey : undefined;
+      if (mode === "merge") {
+        if (hasRootOverwrite(sync.records)) {
+          throw new Error(
+            `Sync ${JSON.stringify(sync.key)} merge records cannot use root-level overwrite(); normalize individual fields instead`,
+          );
+        }
+        if (!primaryKey || primaryKey.length === 0) {
+          throw new Error(`Sync ${JSON.stringify(sync.key)} merge mode requires a primary key`);
+        }
+        if (new Set(primaryKey).size !== primaryKey.length) {
+          throw new Error(`Sync ${JSON.stringify(sync.key)} primary key fields must be unique`);
+        }
+        const required = new Set(
+          Array.isArray(records.required)
+            ? records.required.filter((value): value is string => typeof value === "string")
+            : [],
+        );
+        for (const key of primaryKey) {
+          const field = properties[key];
+          if (field === undefined) {
+            throw new Error(
+              `Sync ${JSON.stringify(sync.key)} primary key ${JSON.stringify(key)} is not a record field`,
+            );
+          }
+          if (!required.has(key) || !isScalarSchema(field)) {
+            throw new Error(
+              `Sync ${JSON.stringify(sync.key)} primary key ${JSON.stringify(key)} must be required, scalar, and non-null`,
+            );
+          }
+        }
+      }
+      return {
+        key: sync.key,
+        displayName: sync.displayName,
+        mode,
+        inputs: sync.inputs?.manifest ?? EmptyObject,
+        records,
+        ...(primaryKey === undefined ? {} : { primaryKey }),
+        ...(sync.checkpoint === undefined
+          ? {}
+          : { checkpoint: jsonSchema(sync.checkpoint, "input") }),
+      };
+    }),
   };
 }
 
@@ -131,4 +177,37 @@ function jsonSchema(schema: z.ZodType, io: "input" | "output" = "output"): JsonS
       { cause: error },
     );
   }
+}
+
+function recordProperties(schema: JsonSchema, label: string): Readonly<Record<string, JsonSchema>> {
+  if (
+    schema.type !== "object" ||
+    schema.additionalProperties !== false ||
+    !isJsonSchema(schema.properties)
+  ) {
+    throw new Error(`${label} must be a closed object`);
+  }
+  return schema.properties as Readonly<Record<string, JsonSchema>>;
+}
+
+function isScalarSchema(schema: JsonSchema): boolean {
+  return (
+    schema.type === "string" ||
+    schema.type === "integer" ||
+    schema.type === "number" ||
+    schema.type === "boolean"
+  );
+}
+
+function isJsonSchema(value: unknown): value is JsonSchema {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasRootOverwrite(schema: z.ZodObject): boolean {
+  const definition = schema._zod.def as {
+    readonly checks?: readonly {
+      readonly _zod?: { readonly def?: { readonly check?: string } };
+    }[];
+  };
+  return definition.checks?.some((check) => check._zod?.def?.check === "overwrite") ?? false;
 }

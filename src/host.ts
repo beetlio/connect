@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { z } from "zod";
 
 import {
@@ -18,8 +20,10 @@ import {
   type SyncFetchInit,
   type SyncDefinition,
 } from "./index.ts";
+import { createIntegrationManifest } from "./manifest.ts";
 
 const MaxPaginationPages = 10_000;
+const MaxChangesPerBatch = 10_000;
 
 export interface ProviderRequest {
   method: string;
@@ -38,9 +42,12 @@ export interface ProviderResponse {
 export interface EmittedBatch {
   batchId: string;
   sequence: number;
-  records: readonly JsonValue[];
+  records: readonly JsonObject[];
+  deletedKeys?: readonly JsonObject[];
   checkpoint?: JsonValue;
 }
+
+export type EmitAction = "continue" | "yield";
 
 export interface LogEntry {
   level: "debug" | "info" | "warn" | "error";
@@ -50,11 +57,8 @@ export interface LogEntry {
 
 export interface SyncHost {
   request(request: ProviderRequest, signal?: AbortSignal): Promise<ProviderResponse>;
-  emit(batch: EmittedBatch): Promise<void>;
+  emit(batch: EmittedBatch): Promise<EmitAction | void>;
   log(entry: LogEntry): Promise<void>;
-  beginSnapshot?(): Promise<void>;
-  commitSnapshot?(): Promise<void>;
-  abortSnapshot?(): Promise<void>;
 }
 
 export interface RunSyncInput {
@@ -65,8 +69,10 @@ export interface RunSyncInput {
 }
 
 export interface RunSyncResult {
+  outcome: "completed" | "continuation_required";
   batches: number;
   records: number;
+  deleted: number;
   checkpoint?: JsonValue;
 }
 
@@ -89,11 +95,6 @@ export async function runSync(
   if (!sync) {
     throw new Error(`Unknown sync ${JSON.stringify(syncKey)}`);
   }
-  const snapshot = sync.mode === "snapshot";
-  if (snapshot && (!host.beginSnapshot || !host.commitSnapshot || !host.abortSnapshot)) {
-    throw new Error("Snapshot syncs require host snapshot support");
-  }
-
   const connectionConfig = await parse(
     integration.connection.inputs?.schema ?? EmptyConfig,
     input.connectionConfig ?? {},
@@ -104,21 +105,25 @@ export async function runSync(
     input.syncConfig ?? {},
     "sync config",
   );
-  const initialCheckpoint =
-    snapshot || input.checkpoint === undefined
+  const initialCheckpointInput =
+    input.checkpoint === undefined
       ? undefined
-      : await parseCheckpoint(
-          sync,
-          jsonSnapshot(input.checkpoint, "Invalid checkpoint input: must be JSON-compatible"),
-        );
+      : jsonSnapshot(input.checkpoint, "Invalid checkpoint input: must be JSON-compatible");
+  const initialCheckpoint =
+    initialCheckpointInput === undefined
+      ? undefined
+      : await parseCheckpoint(sync, initialCheckpointInput);
   const runSignal = input.signal ?? new AbortController().signal;
   const lifecycle = new AbortController();
   const contextSignal = AbortSignal.any([runSignal, lifecycle.signal]);
+  const continuation = new Error("Worker segment reached a safe continuation boundary");
 
   let sequence = 0;
   let records = 0;
-  let latestCheckpoint = initialCheckpoint;
-  let emitQueue = Promise.resolve();
+  let deleted = 0;
+  let latestCheckpoint = initialCheckpointInput;
+  let continuationRequested = false;
+  let emitQueue: Promise<unknown> = Promise.resolve();
   let logQueue = Promise.resolve();
   let contextOpen = true;
   const rejectClosed = <T>(): Promise<T> => {
@@ -127,34 +132,63 @@ export async function runSync(
     return rejected;
   };
 
-  const emit = (value: { records: readonly unknown[]; checkpoint?: unknown }): Promise<void> => {
+  const emit = (value: {
+    records: readonly unknown[];
+    deletedKeys?: readonly unknown[];
+    checkpoint?: unknown;
+  }): Promise<void> => {
     if (!contextOpen) {
       return rejectClosed();
     }
 
     const queued = emitQueue.then(async () => {
-      const parsedRecords = await Promise.all(
-        value.records.map((record, index) => parse(sync.records, record, `record ${index}`)),
-      );
+      runSignal.throwIfAborted();
+      if (!Array.isArray(value.records)) {
+        throw new Error("Emitted records must be an array");
+      }
+      if (value.deletedKeys !== undefined && !Array.isArray(value.deletedKeys)) {
+        throw new Error("Deleted keys must be an array");
+      }
+      const changes = value.records.length + (value.deletedKeys?.length ?? 0);
+      if (changes > MaxChangesPerBatch) {
+        throw new Error(`Emitted batch exceeds ${MaxChangesPerBatch} record and deletion changes`);
+      }
+      const parsedRecords = (
+        await Promise.all(
+          value.records.map((record, index) => parse(sync.records, record, `record ${index}`)),
+        )
+      ).map((record, index) => {
+        const value = jsonSnapshot(record, `Invalid record ${index}: must be JSON-compatible`);
+        if (!isJsonObject(value)) throw new Error(`Invalid record ${index}: must be an object`);
+        return value;
+      });
+      const deletedKeys = await parseDeletedKeys(sync, value.deletedKeys);
+      validateMergeKeys(sync, parsedRecords, deletedKeys);
       const checkpointInput =
         value.checkpoint === undefined
           ? undefined
           : jsonSnapshot(value.checkpoint, "Invalid checkpoint input: must be JSON-compatible");
-      const checkpoint =
-        checkpointInput === undefined ? undefined : await parseCheckpoint(sync, checkpointInput);
+      if (checkpointInput !== undefined) await parseCheckpoint(sync, checkpointInput);
       runSignal.throwIfAborted();
       const batch: EmittedBatch = {
         batchId: crypto.randomUUID(),
         sequence,
         records: parsedRecords,
+        ...(deletedKeys.length === 0 ? {} : { deletedKeys }),
         ...(checkpointInput === undefined ? {} : { checkpoint: checkpointInput }),
       };
-
-      await host.emit(batch);
+      const action = (await host.emit(batch)) ?? "continue";
+      if (action === "yield" && checkpointInput === undefined) {
+        throw new Error("The controller cannot request continuation without a checkpoint");
+      }
       sequence += 1;
       records += parsedRecords.length;
-      if (checkpoint !== undefined) {
-        latestCheckpoint = checkpoint;
+      deleted += deletedKeys.length;
+      if (checkpointInput !== undefined) latestCheckpoint = checkpointInput;
+      if (action === "yield") {
+        continuationRequested = true;
+        lifecycle.abort(continuation);
+        throw continuation;
       }
     });
     emitQueue = queued;
@@ -205,59 +239,33 @@ export async function runSync(
     log: logger,
   };
 
-  // The public type carries stronger per-integration inference than this runtime seam.
-  let snapshotStarted = false;
+  runSignal.throwIfAborted();
+  let runError: unknown;
+  let runFailedBeforeContinuation = false;
   try {
-    runSignal.throwIfAborted();
-    if (snapshot) {
-      await host.beginSnapshot!();
-      snapshotStarted = true;
-    }
-    let runError: unknown;
-    let runFailed = false;
-    try {
-      await sync.run(context);
-    } catch (error) {
-      runError = error;
-      runFailed = true;
-    } finally {
-      contextOpen = false;
-      lifecycle.abort(new Error("Sync context is closed"));
-    }
-
-    const [emitResult, logResult] = await Promise.allSettled([emitQueue, logQueue]);
-    if (runFailed) {
-      throw runError;
-    }
-    if (emitResult?.status === "rejected") {
-      throw emitResult.reason;
-    }
-    if (logResult?.status === "rejected") {
-      throw logResult.reason;
-    }
-    runSignal.throwIfAborted();
-    if (snapshotStarted) {
-      await host.commitSnapshot!();
-    }
-
-    return {
-      batches: sequence,
-      records,
-      ...(latestCheckpoint === undefined ? {} : { checkpoint: latestCheckpoint }),
-    };
+    await sync.run(context);
   } catch (error) {
-    if (snapshotStarted) {
-      try {
-        await host.abortSnapshot!();
-      } catch (abortError) {
-        throw new AggregateError(
-          [error, abortError],
-          "Snapshot run failed and cleanup also failed",
-        );
-      }
-    }
-    throw error;
+    runError = error;
+    runFailedBeforeContinuation = !continuationRequested;
+  } finally {
+    contextOpen = false;
+    lifecycle.abort(new Error("Sync context is closed"));
   }
+
+  const [emitResult, logResult] = await Promise.allSettled([emitQueue, logQueue]);
+  if (!continuationRequested) runSignal.throwIfAborted();
+  if (runFailedBeforeContinuation) throw runError;
+  if (!continuationRequested && emitResult.status === "rejected") {
+    throw emitResult.reason;
+  }
+  if (!continuationRequested && logResult.status === "rejected") throw logResult.reason;
+  return {
+    outcome: continuationRequested ? "continuation_required" : "completed",
+    batches: sequence,
+    records,
+    deleted,
+    ...(latestCheckpoint === undefined ? {} : { checkpoint: latestCheckpoint }),
+  };
 }
 
 export async function verifyConnection(
@@ -521,23 +529,33 @@ export function validateIntegration(integration: IntegrationDefinition): void {
     if (!sync.displayName.trim()) {
       throw new Error("Sync display name cannot be empty");
     }
-    if (sync.mode !== undefined && sync.mode !== "append" && sync.mode !== "snapshot") {
+    if (
+      sync.mode !== undefined &&
+      sync.mode !== "append" &&
+      sync.mode !== "replace" &&
+      sync.mode !== "merge"
+    ) {
       throw new Error(`Invalid sync mode ${JSON.stringify(sync.mode)}`);
     }
-    if (sync.mode === "snapshot" && sync.checkpoint !== undefined) {
-      throw new Error("Snapshot syncs cannot declare checkpoints");
+    const primaryKey = (sync as { readonly primaryKey?: readonly unknown[] }).primaryKey;
+    if (sync.mode === "merge" && (!primaryKey || primaryKey.length === 0)) {
+      throw new Error("Merge syncs require a primary key");
+    }
+    if (sync.mode !== "merge" && primaryKey !== undefined) {
+      throw new Error("Only merge syncs can declare a primary key");
     }
     const primaryKeys = new Set<string>();
-    for (const path of sync.primaryKey ?? []) {
-      if (!path.trim() || path.split(".").some((segment) => !segment)) {
-        throw new Error(`Invalid primary key path ${JSON.stringify(path)}`);
+    for (const field of primaryKey ?? []) {
+      if (typeof field !== "string" || !field.trim() || field.includes(".")) {
+        throw new Error(`Invalid primary key field ${JSON.stringify(field)}`);
       }
-      if (primaryKeys.has(path)) {
-        throw new Error(`Duplicate primary key path ${JSON.stringify(path)}`);
+      if (primaryKeys.has(field)) {
+        throw new Error(`Duplicate primary key field ${JSON.stringify(field)}`);
       }
-      primaryKeys.add(path);
+      primaryKeys.add(field);
     }
   }
+  createIntegrationManifest(integration);
 }
 
 function validateConfigurationInputs(
@@ -988,11 +1006,75 @@ async function parse<T>(
     JsonValue;
 }
 
-async function parseCheckpoint(sync: SyncDefinition, value: unknown): Promise<JsonValue> {
+async function parseDeletedKeys(
+  sync: SyncDefinition,
+  value: readonly unknown[] | undefined,
+): Promise<JsonObject[]> {
+  if (value === undefined) return [];
+  if (sync.mode !== "merge") {
+    throw new Error("Only merge syncs can emit deleted keys");
+  }
+
+  const fields = sync.primaryKey!;
+  const schema = z.strictObject(
+    Object.fromEntries(fields.map((field) => [field, sync.records.shape[field]!])),
+  );
+  return Promise.all(
+    value.map(async (candidate, index) => {
+      const parsed = await parse(schema, candidate, `deleted key ${index}`);
+      if (!isJsonObject(parsed) || Object.values(parsed).some((item) => !isJsonScalar(item))) {
+        throw new Error(`Invalid deleted key ${index}: values must be scalar and non-null`);
+      }
+      return parsed;
+    }),
+  );
+}
+
+function validateMergeKeys(
+  sync: SyncDefinition,
+  records: readonly JsonObject[],
+  deletedKeys: readonly JsonObject[],
+): void {
+  if (sync.mode !== "merge") return;
+  const primaryKey = sync.primaryKey!;
+  const identities = new Set<string>();
+  for (const [index, record] of records.entries()) {
+    const values = primaryKey.map((field) => record[field]);
+    if (values.some((value) => !isJsonScalar(value))) {
+      throw new Error(`Invalid record ${index}: merge primary keys must be scalar and non-null`);
+    }
+    const identity = JSON.stringify(values);
+    if (identities.has(identity)) {
+      throw new Error(`Duplicate merge key in record ${index}`);
+    }
+    identities.add(identity);
+  }
+  for (const [index, key] of deletedKeys.entries()) {
+    const identity = JSON.stringify(primaryKey.map((field) => key[field]));
+    if (identities.has(identity)) {
+      throw new Error(`Duplicate or conflicting merge deletion key ${index}`);
+    }
+    identities.add(identity);
+  }
+}
+
+function isJsonScalar(value: JsonValue | undefined): value is string | number | boolean {
+  return typeof value === "string" || typeof value === "boolean" || typeof value === "number";
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return isJsonValue(value) && value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function parseCheckpoint(sync: SyncDefinition, value: JsonValue): Promise<JsonValue> {
   if (!sync.checkpoint) {
     throw new Error(`Sync ${JSON.stringify(sync.key)} does not declare a checkpoint`);
   }
-  return parse(sync.checkpoint, value, "checkpoint");
+  const parsed = await parse(sync.checkpoint, value, "checkpoint");
+  if (!isDeepStrictEqual(parsed, value)) {
+    throw new Error("Checkpoint schemas must preserve the serialized JSON value");
+  }
+  return value;
 }
 
 function jsonSnapshot(value: unknown, errorMessage: string): JsonValue {

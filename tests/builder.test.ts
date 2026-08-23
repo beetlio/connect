@@ -12,7 +12,7 @@ const source = (displayName: string) => `
     key: "builder-invariant",
     displayName: ${displayName},
     connection: { origin: "https://api.example.com" },
-    syncs: [{ key: "items", displayName: "Items", records: z.string(), async run() {} }],
+    syncs: [{ key: "items", displayName: "Items", records: z.object({ value: z.string() }), async run() {} }],
   });
 `;
 
@@ -90,10 +90,10 @@ test("runtime archives preserve npm modules and package assets", async (t) => {
           syncs: [{
             key: "items",
             displayName: "Items",
-            records: z.string(),
+            records: z.object({ value: z.string() }),
             async run(ctx) {
               const local = await readFile(new URL("./message.txt", import.meta.url), "utf8");
-              await ctx.emit({ records: [local + read()] });
+              await ctx.emit({ records: [{ value: local + read() }] });
             },
           }],
         });
@@ -105,8 +105,8 @@ test("runtime archives preserve npm modules and package assets", async (t) => {
   await withIntegration(built.archive, async (integration) => {
     let emitted: unknown;
     await integration.syncs[0]!.run({
-      emit(value: { records: readonly string[] }) {
-        emitted = value.records[0];
+      emit(value: { records: readonly { value: string }[] }) {
+        emitted = value.records[0]?.value;
         return Promise.resolve();
       },
     } as never);

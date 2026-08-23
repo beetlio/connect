@@ -3,7 +3,13 @@ import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { AuthDefinition, JsonObject, JsonValue, ProviderOriginDefinition } from "./index.ts";
+import type {
+  AuthDefinition,
+  JsonObject,
+  JsonValue,
+  ProviderOriginDefinition,
+  SyncMode,
+} from "./index.ts";
 import { refreshOAuthAuthorization, type OAuthAuthorizationState } from "./oauth.ts";
 import {
   resolveRetry,
@@ -26,6 +32,7 @@ export interface LocalHostOptions {
   authorizationState?: OAuthAuthorizationState;
   outputPath: string;
   statePath: string;
+  mode?: SyncMode;
   fetch?: typeof globalThis.fetch;
   signal?: AbortSignal;
   onLog?: (entry: LogEntry) => void;
@@ -45,7 +52,8 @@ export class LocalHost implements SyncHost {
   #exchanging: Promise<boolean> | undefined;
   readonly #outputPath: string;
   readonly #statePath: string;
-  #snapshotPath: string | undefined;
+  readonly #mode: SyncMode;
+  #replacePath: string | undefined;
   readonly #fetch: typeof globalThis.fetch;
   readonly #signal: AbortSignal | undefined;
   readonly #onLog: (entry: LogEntry) => void;
@@ -65,6 +73,7 @@ export class LocalHost implements SyncHost {
     );
     this.#outputPath = options.outputPath;
     this.#statePath = options.statePath;
+    this.#mode = options.mode ?? "append";
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#signal = options.signal;
     this.#onLog = options.onLog ?? ((entry) => console.error(JSON.stringify(entry)));
@@ -142,12 +151,18 @@ export class LocalHost implements SyncHost {
     }
   }
 
-  async emit(batch: EmittedBatch): Promise<void> {
-    const outputPath = this.#snapshotPath ?? this.#outputPath;
+  async emit(batch: EmittedBatch): Promise<"continue"> {
+    const outputPath = this.#replacePath ?? this.#outputPath;
     await mkdir(dirname(outputPath), { recursive: true });
     const file = await open(outputPath, "a", 0o600);
     try {
-      const data = batch.records.map((record) => `${JSON.stringify(record)}\n`).join("");
+      const data =
+        this.#mode === "merge"
+          ? `${JSON.stringify({
+              records: batch.records,
+              ...(batch.deletedKeys === undefined ? {} : { deletedKeys: batch.deletedKeys }),
+            })}\n`
+          : batch.records.map((record) => `${JSON.stringify(record)}\n`).join("");
       if (data) {
         await file.writeFile(data);
       }
@@ -157,39 +172,38 @@ export class LocalHost implements SyncHost {
     }
 
     if (batch.checkpoint !== undefined) {
-      await this.#replaceCheckpoint(batch.checkpoint);
+      if (this.#replacePath === undefined) await this.#writeCheckpoint(batch.checkpoint);
     }
+    return "continue";
   }
 
-  async beginSnapshot(): Promise<void> {
-    if (this.#snapshotPath !== undefined) {
-      throw new Error("A snapshot is already in progress");
-    }
+  async beginReplace(): Promise<void> {
+    if (this.#replacePath !== undefined) return;
     const path = `${this.#outputPath}.tmp-${process.pid}-${randomUUID()}`;
-    this.#snapshotPath = path;
+    this.#replacePath = path;
     try {
       await mkdir(dirname(path), { recursive: true });
       const file = await open(path, "wx", 0o600);
       await file.close();
     } catch (error) {
-      this.#snapshotPath = undefined;
+      this.#replacePath = undefined;
       await rm(path, { force: true });
       throw error;
     }
   }
 
-  async commitSnapshot(): Promise<void> {
-    const path = this.#snapshotPath;
+  async commitReplace(): Promise<void> {
+    const path = this.#replacePath;
     if (path === undefined) {
-      throw new Error("No snapshot is in progress");
+      throw new Error("No replace is in progress");
     }
     await rename(path, this.#outputPath);
-    this.#snapshotPath = undefined;
+    this.#replacePath = undefined;
   }
 
-  async abortSnapshot(): Promise<void> {
-    const path = this.#snapshotPath;
-    this.#snapshotPath = undefined;
+  async abortReplace(): Promise<void> {
+    const path = this.#replacePath;
+    this.#replacePath = undefined;
     if (path !== undefined) {
       await rm(path, { force: true });
     }
@@ -373,7 +387,7 @@ export class LocalHost implements SyncHost {
     return true;
   }
 
-  async #replaceCheckpoint(checkpoint: JsonValue): Promise<void> {
+  async #writeCheckpoint(checkpoint: JsonValue): Promise<void> {
     await replacePrivateFile(this.#statePath, `${JSON.stringify(checkpoint)}\n`);
   }
 }

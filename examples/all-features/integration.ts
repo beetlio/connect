@@ -50,6 +50,7 @@ export default defineIntegration({
     defineSync({
       key: "contacts",
       displayName: "Contacts",
+      mode: "merge",
       records: Contact,
       primaryKey: ["id"],
       checkpoint: z.object({
@@ -84,7 +85,6 @@ export default defineIntegration({
       key: "events",
       displayName: "Events",
       records: Event,
-      primaryKey: ["id"],
       checkpoint: z.object({
         watermark: z.object({ lastSeenId: z.string() }),
       }),

@@ -28,7 +28,7 @@
           ><img src="./beetl-logo.svg" alt="" />@beetlio/connect</a
         >
         <span class="docs-label">Documentation</span>
-        <span class="version">v0.1.0</span>
+        <span class="version">v0.2.0</span>
         <nav aria-label="Project links">
           <a href="https://github.com/beetlio/connect">GitHub</a>
           <a href="https://github.com/beetlio/connect/blob/main/CONTRIBUTING.md">Contributing</a>
@@ -87,7 +87,7 @@
           <div class="notice warning">
             <strong>Experimental</strong>
             <p>
-              The project is currently version 0.1.0. Public APIs and local storage formats may
+              The project is currently version 0.2.0. Public APIs and local storage formats may
               change.
             </p>
           </div>
@@ -170,9 +170,8 @@ export default defineIntegration({
     defineSync({
       key: "repositories",
       displayName: "Repositories",
-      mode: "snapshot",
+      mode: "replace",
       records: Repository,
-      primaryKey: ["id"],
       inputs: input.object({
         user: input.string({ label: "GitHub user", default: "octocat" }),
       }),
@@ -201,7 +200,10 @@ export default defineIntegration({
             Connection and sync configuration uses <code>input.object()</code> and the non-secret
             <code>input.*</code> field helpers. Built-in authentication owns its credential schema;
             custom authentication uses <code>credential.*</code>. Each descriptor directly owns its
-            parser and manifest representation. Records and checkpoints use ordinary Zod schemas.
+            parser and manifest representation. Records use supported Zod object schemas; Connect
+            generates their canonical JSON Schema in manifest v2 and validates values with the
+            original Zod schema at runtime. Checkpoint schemas must preserve their serialized JSON
+            values.
           </p>
         </section>
 
@@ -321,16 +323,39 @@ head -n 1 repositories.ndjson</code></pre>
           <p>
             Append is the default mode. Each emitted batch is appended to the output file. If the
             sync declares a checkpoint schema, the latest emitted checkpoint is persisted and can be
-            supplied to the next run. Checkpoint schemas decode persisted JSON into
-            <code>ctx.checkpoint</code>; values supplied to <code>ctx.emit()</code> are stored in
-            their input form and decoded once when the next run starts.
+            supplied to the next run. Checkpoint schemas validate without rewriting: the same JSON
+            value is emitted, persisted, and supplied as <code>ctx.checkpoint</code>.
           </p>
 
-          <h3>Snapshot syncs</h3>
+          <h3>Replace syncs</h3>
           <p>
-            A sync with <code>mode: "snapshot"</code> writes to a temporary file. Connect replaces
-            the previous output only after the run and all pending writes succeed. Snapshot syncs
-            cannot declare checkpoints.
+            A local sync with <code>mode: "replace"</code> writes to a staged file and replaces the
+            previous output only after the complete run succeeds. Hosted generation ownership
+            belongs to the downstream materializer.
+          </p>
+
+          <h3>Merge syncs</h3>
+          <p>
+            A sync with <code>mode: "merge"</code> declares a non-empty top-level
+            <code>primaryKey</code>. Calls to <code>ctx.emit()</code> contain upsert
+            <code>records</code> and may contain explicit <code>deletedKeys</code>. Local Merge
+            output mirrors each emitted batch as one NDJSON envelope; the downstream system owns
+            table materialization.
+          </p>
+
+          <h3>Record schemas and continuation</h3>
+          <p>
+            Records are non-null top-level JSON objects; nested objects and arrays are allowed.
+            Connect emits the Zod output schema as JSON Schema, while each consumer validates its
+            supported storage subset. Merge keys must be required, scalar, and non-null. A
+            controller may end a hosted worker segment after committing a checkpoint-bearing batch;
+            this remains private host policy and <code>ctx.emit()</code> continues to return
+            <code>Promise&lt;void&gt;</code>.
+          </p>
+          <p>
+            Hosted batches and commit acknowledgments use a duplex NDJSON protocol. The integration
+            runtime never receives destination publication credentials. An external controller owns
+            publication, the hard process deadline, and termination.
           </p>
 
           <h3>Pagination</h3>
@@ -483,7 +508,7 @@ const { archive, manifest, icon, sdkVersion } = await buildIntegration("/workspa
             or native compilation are outside the first-release runtime contract.
           </p>
           <p>
-            Hosted v1 treats uploaded integrations as tenant-admin-approved executable code. gVisor
+            Hosted v1 treats uploaded integrations as operator-approved executable code. gVisor
             isolates workloads from platform infrastructure, but it does not prevent integration
             code or an npm dependency from forwarding fetched data elsewhere. Third-party
             marketplace integrations require a separate egress policy and are outside the first
@@ -517,7 +542,7 @@ const { archive, manifest, icon, sdkVersion } = await buildIntegration("/workspa
               </div>
               <p>
                 Shows definition, record validation, connection verification, direct fetch, and
-                snapshot output.
+                replace output.
               </p>
               <a href="https://github.com/beetlio/connect/blob/main/examples/basic/integration.ts"
                 >View source</a
@@ -638,7 +663,7 @@ npm test</code></pre>
 
     <footer>
       <div><strong>@beetlio/connect</strong><span>A Beetl project · Apache License 2.0</span></div>
-      <p>Documentation for the experimental 0.1.0 release.</p>
+      <p>Documentation for the experimental 0.2.0 release.</p>
     </footer>
   </body>
 </html>

@@ -243,24 +243,24 @@ test("provider responses have a hard size limit", async () => {
   assert.equal(response.body.byteLength, 0);
 });
 
-test("snapshot output is replaced only after a successful run", async (t) => {
-  const directory = await fixtureDirectory(t, "beetl-snapshot");
+test("replace output is published only after a successful run", async (t) => {
+  const directory = await fixtureDirectory(t, "beetl-replace");
   const outputPath = join(directory, "items.ndjson");
   let records = [{ id: 1 }, { id: 2 }];
   let fail = false;
   const integration = defineIntegration({
-    key: "snapshot",
-    displayName: "Snapshot",
+    key: "replace",
+    displayName: "Replace",
     connection: { origin: "https://api.example.com" },
     syncs: [
       defineSync({
         key: "items",
         displayName: "Items",
-        mode: "snapshot",
+        mode: "replace",
         records: z.object({ id: z.number() }),
         async run(ctx) {
           await ctx.emit({ records });
-          if (fail) throw new Error("snapshot failed");
+          if (fail) throw new Error("replace failed");
         },
       }),
     ],
@@ -269,16 +269,67 @@ test("snapshot output is replaced only after a successful run", async (t) => {
     origin: integration.connection.origin,
     outputPath,
     statePath: join(directory, "state.json"),
+    mode: "replace",
     onLog: () => undefined,
   });
+  const run = async () => {
+    await host.beginReplace();
+    try {
+      const result = await runSync(integration, "items", {}, host);
+      await host.commitReplace();
+      return result;
+    } catch (error) {
+      await host.abortReplace();
+      throw error;
+    }
+  };
 
   await writeFile(outputPath, '{"id":0}\n');
-  await runSync(integration, "items", {}, host);
+  await run();
   assert.equal(await readFile(outputPath, "utf8"), '{"id":1}\n{"id":2}\n');
 
   records = [{ id: 3 }];
   fail = true;
-  await assert.rejects(runSync(integration, "items", {}, host), /snapshot failed/);
+  await assert.rejects(run(), /replace failed/);
   assert.equal(await readFile(outputPath, "utf8"), '{"id":1}\n{"id":2}\n');
   assert.deepEqual(await readdir(directory), ["items.ndjson"]);
+});
+
+test("merge local output mirrors emitted batch records and deleted keys", async (t) => {
+  const directory = await fixtureDirectory(t, "beetl-merge");
+  const outputPath = join(directory, "items.ndjson");
+  const integration = defineIntegration({
+    key: "merge-output",
+    displayName: "Merge output",
+    connection: { origin: "https://api.example.com" },
+    syncs: [
+      defineSync({
+        key: "items",
+        displayName: "Items",
+        mode: "merge",
+        primaryKey: ["id"],
+        records: z.object({ id: z.string(), name: z.string() }),
+        async run(ctx) {
+          await ctx.emit({
+            records: [{ id: "upserted", name: "Updated" }],
+            deletedKeys: [{ id: "deleted" }],
+          });
+        },
+      }),
+    ],
+  });
+  const host = new LocalHost({
+    origin: integration.connection.origin,
+    outputPath,
+    statePath: join(directory, "state.json"),
+    mode: "merge",
+    onLog: () => undefined,
+  });
+
+  await runSync(integration, "items", {}, host);
+  const output = JSON.parse((await readFile(outputPath, "utf8")).trim());
+  assert.deepEqual(output, {
+    records: [{ id: "upserted", name: "Updated" }],
+    deletedKeys: [{ id: "deleted" }],
+  });
 });

@@ -24,6 +24,7 @@ import type {
   IntegrationDefinition,
   IntegrationManifest,
   JsonObject,
+  SyncMode,
 } from "./index.ts";
 import { runSync, verifyConnection } from "./host.ts";
 import { LocalHost, replacePrivateFile, resolveProviderOrigin } from "./local-host.ts";
@@ -220,6 +221,7 @@ async function main(args = process.argv.slice(2)): Promise<void> {
 
     if (options.command === "sync") {
       const syncKey = selectSyncKey(integration, options.syncKey);
+      const sync = integration.syncs.find((candidate) => candidate.key === syncKey)!;
       let configuration = await resolveProfile(integration, manifest, syncKey, options.profile);
       let connectionPath = join(
         UserConfigDirectory,
@@ -273,25 +275,42 @@ async function main(args = process.argv.slice(2)): Promise<void> {
               const host = createLocalHost(integration, manifest, connection, {
                 outputPath,
                 statePath,
+                mode: sync.mode ?? "append",
                 signal: controller.signal,
                 onConnectionChanged: (updated) =>
                   replacePrivateFile(connectionPath, `${JSON.stringify(updated, null, 2)}\n`),
               });
               try {
-                const result = await runSync(
-                  integration,
-                  syncKey,
-                  {
-                    connectionConfig: connection.inputs,
-                    syncConfig: configuration.inputs,
-                    checkpoint: await host.loadCheckpoint(),
-                    signal: controller.signal,
-                  },
-                  host,
-                );
-                console.log(
-                  `Emitted ${result.records} records in ${result.batches} batches to ${outputPath}`,
-                );
+                const replace = sync.mode === "replace";
+                if (replace) await host.beginReplace();
+                try {
+                  const checkpoint = replace ? undefined : await host.loadCheckpoint();
+                  const result = await runSync(
+                    integration,
+                    syncKey,
+                    {
+                      connectionConfig: connection.inputs,
+                      syncConfig: configuration.inputs,
+                      ...(checkpoint === undefined ? {} : { checkpoint }),
+                      signal: controller.signal,
+                    },
+                    host,
+                  );
+                  if (replace) await host.commitReplace();
+                  console.log(
+                    `Emitted ${result.records} records${result.deleted === 0 ? "" : ` and ${result.deleted} deletes`} in ${result.batches} batches to ${outputPath}`,
+                  );
+                } catch (error) {
+                  try {
+                    if (replace) await host.abortReplace();
+                  } catch (cleanupError) {
+                    throw new AggregateError(
+                      [error, cleanupError],
+                      "Replace run failed and cleanup also failed",
+                    );
+                  }
+                  throw error;
+                }
               } finally {
                 await host.settleAuthentication();
               }
@@ -664,6 +683,7 @@ function createLocalHost(
   options: {
     outputPath: string;
     statePath: string;
+    mode?: SyncMode;
     signal: AbortSignal;
     onConnectionChanged(connection: StoredConnection): void | Promise<void>;
   },

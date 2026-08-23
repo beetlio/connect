@@ -88,8 +88,10 @@ test("all-features example verifies, paginates, checkpoints, and resumes", async
     assert.deepEqual(
       await runSync(integration, "contacts", { connectionConfig, syncConfig }, host),
       {
+        outcome: "completed",
         batches: 2,
         records: 3,
+        deleted: 0,
         checkpoint: { pagination: { offset: 3 } },
       },
     );
@@ -100,8 +102,10 @@ test("all-features example verifies, paginates, checkpoints, and resumes", async
       host,
     );
     assert.deepEqual(firstEvents, {
+      outcome: "completed",
       batches: 2,
       records: 3,
+      deleted: 0,
       checkpoint: { watermark: { lastSeenId: "event_3" } },
     });
 
@@ -114,8 +118,10 @@ test("all-features example verifies, paginates, checkpoints, and resumes", async
         host,
       ),
       {
+        outcome: "completed",
         batches: 1,
         records: 1,
+        deleted: 0,
         checkpoint: { watermark: { lastSeenId: "event_4" } },
       },
     );

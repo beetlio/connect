@@ -563,7 +563,8 @@ export type PaginationOverride =
   | ({ readonly type?: "offset" } & Partial<Omit<OffsetPagination, "type">>)
   | ({ readonly type?: "next-url" } & Partial<Omit<NextUrlPagination, "type">>);
 
-type RecordSchema = z.ZodType;
+type RecordSchema = z.ZodObject;
+type PageRecordSchema = z.ZodType;
 type CheckpointSchema = z.ZodType;
 type ConfigSchema = ConfigurationObject;
 
@@ -578,7 +579,7 @@ export interface PaginationPage<RecordValue> {
   readonly response: PaginationResponseMetadata;
 }
 
-export interface PaginateOptions<Records extends RecordSchema> {
+export interface PaginateOptions<Records extends PageRecordSchema> {
   readonly path: string;
   readonly records: Records;
   readonly pagination?: PaginationOverride;
@@ -602,8 +603,7 @@ export interface ConnectionContext<ConnectionConfigValue extends object> {
 
 export interface SyncContext<
   RecordInput,
-  CheckpointInput,
-  CheckpointOutput,
+  CheckpointValue,
   ConfigValue extends object,
   ConnectionConfigValue extends object = JsonObject,
 > {
@@ -611,13 +611,17 @@ export interface SyncContext<
     readonly connection: ConnectionConfigValue;
     readonly sync: ConfigValue;
   };
-  readonly checkpoint: CheckpointOutput | undefined;
+  readonly checkpoint: CheckpointValue | undefined;
   readonly signal: AbortSignal;
   fetch(path: string, init?: SyncFetchInit): Promise<Response>;
-  paginate<const Records extends RecordSchema>(
+  paginate<const Records extends PageRecordSchema>(
     options: PaginateOptions<Records>,
   ): AsyncGenerator<PaginationPage<z.input<Records>>, void, void>;
-  emit(value: { records: readonly RecordInput[]; checkpoint?: CheckpointInput }): Promise<void>;
+  emit(value: {
+    records: readonly RecordInput[];
+    deletedKeys?: readonly JsonObject[];
+    checkpoint?: CheckpointValue;
+  }): Promise<void>;
   readonly log: IntegrationLogger;
 }
 
@@ -632,7 +636,7 @@ type ConfigurationOutput<Shape extends ConfigurationShape> = {
 type ConfigOutput<Config extends ConfigSchema | undefined> =
   Config extends ConfigurationObject<infer Shape> ? ConfigurationOutput<Shape> : JsonObject;
 
-export type SyncMode = "append" | "snapshot";
+export type SyncMode = "append" | "replace" | "merge";
 
 export interface SyncDefinition<
   Records extends RecordSchema = RecordSchema,
@@ -651,7 +655,6 @@ export interface SyncDefinition<
     context: SyncContext<
       z.input<Records>,
       Checkpoint extends CheckpointSchema ? z.input<Checkpoint> : never,
-      Checkpoint extends CheckpointSchema ? z.output<Checkpoint> : never,
       ConfigOutput<Config>,
       ConnectionConfigValue
     >,

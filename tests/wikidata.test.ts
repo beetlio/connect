@@ -64,7 +64,7 @@ test("Wikidata example builds through the public builder and follows continuatio
         },
         host,
       ),
-      { batches: 2, records: 3 },
+      { outcome: "completed", batches: 2, records: 3, deleted: 0 },
     );
 
     assert.deepEqual(
