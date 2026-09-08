@@ -313,6 +313,36 @@ beetl-connect pack examples/wikidata --output wikidata.tgz
 Replace the example email with your contact information. The command writes a
 timestamped NDJSON replacement to the current directory.
 
+## Embedding a host
+
+Host applications can use the supported package entry points:
+
+```ts
+import {
+  LocalHost,
+  resolveProviderOrigin,
+  type LocalHostOptions,
+} from "@beetlio/connect/local-host";
+import {
+  beginOAuthAuthorization,
+  completeOAuthAuthorization,
+  refreshOAuthAuthorization,
+  type OAuthAuthorizationState,
+} from "@beetlio/connect/oauth";
+```
+
+`LocalHost` accepts an optional `onAuthorizationRefreshRequested(signal)` callback.
+It awaits this callback once per shared OAuth refresh, before sending the token
+request. A host can acquire its refresh claim here; rejecting the callback prevents
+that exchange. The signal belongs to the host, so cancelling one provider request
+cannot cancel a refresh that other requests still need. Use it to cancel any I/O
+performed by the callback.
+
+After the exchange, the existing `onAuthorizationStateChanged(state)` callback is
+awaited before the host adopts the new credentials and provider origin. Together,
+the callbacks support **claim → exchange → persist → use**, without intercepting
+HTTP 401 responses. Omitting the new callback preserves local CLI behavior.
+
 ## Development
 
 ```sh

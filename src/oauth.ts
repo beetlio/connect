@@ -5,9 +5,9 @@ import * as oauth from "oauth4webapi";
 
 import type { AuthDefinition } from "./index.ts";
 
-type OAuthDefinition = Extract<AuthDefinition, { type: "oauth2_authorization_code" }>;
+export type OAuthDefinition = Extract<AuthDefinition, { type: "oauth2_authorization_code" }>;
 
-interface OAuthRequestOptions {
+export interface OAuthRequestOptions {
   auth: OAuthDefinition;
   credentials: Readonly<Record<string, string>>;
   fetch?: typeof globalThis.fetch;

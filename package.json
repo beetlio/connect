@@ -31,6 +31,14 @@
     "./builder": {
       "types": "./dist/artifact.d.ts",
       "default": "./dist/artifact.js"
+    },
+    "./local-host": {
+      "types": "./dist/local-host.d.ts",
+      "default": "./dist/local-host.js"
+    },
+    "./oauth": {
+      "types": "./dist/oauth.d.ts",
+      "default": "./dist/oauth.js"
     }
   },
   "engines": {

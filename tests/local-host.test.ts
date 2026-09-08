@@ -5,7 +5,7 @@ import test from "node:test";
 
 import { auth, credential, defineIntegration, defineSync, z } from "@beetlio/connect";
 import { runSync, type ProviderRequest } from "@beetlio/connect/host";
-import { LocalHost } from "../src/local-host.ts";
+import { LocalHost } from "@beetlio/connect/local-host";
 import { fixtureDirectory } from "./support.ts";
 
 const Request: ProviderRequest = { method: "GET", path: "/events", headers: [] };
@@ -155,6 +155,7 @@ test("OAuth refresh is single-flight and isolated from waiter cancellation", asy
     tokenFields: { instanceUrl: "instance_url" },
   });
   let refreshes = 0;
+  let claims = 0;
   let saved:
     | {
         readonly accessToken: string;
@@ -177,13 +178,18 @@ test("OAuth refresh is single-flight and isolated from waiter cancellation", asy
     },
     outputPath: "unused",
     statePath: "unused",
+    async onAuthorizationRefreshRequested(signal) {
+      assert.equal(signal, undefined); // Individual waiter cancellation is not host cancellation.
+      claims += 1;
+      notifyRefreshStarted();
+      await refreshGate;
+    },
     onAuthorizationStateChanged: (authorizationState) => void (saved = authorizationState),
     fetch: async (input, init) => {
       const url = String(input);
       if (url === "https://provider.example/token") {
         refreshes += 1;
-        notifyRefreshStarted();
-        await refreshGate;
+        assert.equal(claims, 1);
         return Response.json({
           access_token: "fresh-token",
           token_type: "Bearer",
@@ -210,12 +216,14 @@ test("OAuth refresh is single-flight and isolated from waiter cancellation", asy
   const settlement = host.settleAuthentication().then(() => void (settled = true));
   await Promise.resolve();
   assert.equal(settled, false);
+  assert.equal(refreshes, 0);
   releaseRefresh();
 
   await settlement;
   assert.match(String(await cancelled), /request cancelled/);
   assert.equal((await active).status, 204);
   assert.equal(refreshes, 1);
+  assert.equal(claims, 1);
   assert.deepEqual(saved, {
     accessToken: "fresh-token",
     refreshToken: "refresh-token",
@@ -333,3 +341,54 @@ test("merge local output mirrors emitted batch records and deleted keys", async 
     deletedKeys: [{ id: "deleted" }],
   });
 });
+
+for (const failure of ["denied", "aborted"] as const) {
+  test(`OAuth refresh ${failure} at the claim hook never exchanges tokens`, async () => {
+    const controller = new AbortController();
+    const reason = new Error(failure);
+    let exchanges = 0;
+    let commits = 0;
+    let claims = 0;
+    const host = new LocalHost({
+      origin: "https://provider.example",
+      auth: auth.oauth2AuthorizationCode({
+        issuer: "https://provider.example",
+        authorizationUrl: "https://provider.example/authorize",
+        tokenUrl: "https://provider.example/token",
+        scopes: [],
+      }),
+      credentials: { clientId: "client-id" },
+      authorizationState: {
+        accessToken: "old-token",
+        refreshToken: "refresh-token",
+        tokenFields: {},
+      },
+      outputPath: "unused",
+      statePath: "unused",
+      signal: controller.signal,
+      async onAuthorizationRefreshRequested(signal) {
+        assert.equal(signal, controller.signal);
+        claims += 1;
+        await Promise.resolve();
+        if (failure === "denied") throw reason;
+        controller.abort(reason);
+      },
+      onAuthorizationStateChanged() {
+        commits += 1;
+      },
+      fetch: async (input, init) => {
+        if (String(input) === "https://provider.example/token") {
+          exchanges += 1;
+          return Response.json({ access_token: "new-token", token_type: "Bearer" });
+        }
+        assert.equal(new Headers(init?.headers).get("authorization"), "Bearer old-token");
+        return new Response(null, { status: 401 });
+      },
+    });
+    await assert.rejects(host.request(Request), (error) => error === reason);
+    await host.settleAuthentication();
+    assert.equal(claims, 1);
+    assert.equal(exchanges, 0);
+    assert.equal(commits, 0);
+  });
+}

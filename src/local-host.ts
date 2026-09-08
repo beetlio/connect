@@ -36,6 +36,8 @@ export interface LocalHostOptions {
   fetch?: typeof globalThis.fetch;
   signal?: AbortSignal;
   onLog?: (entry: LogEntry) => void;
+  /** Await permission before exchanging a refresh token. Rejection prevents the exchange. */
+  onAuthorizationRefreshRequested?: (signal?: AbortSignal) => void | Promise<void>;
   onAuthorizationStateChanged?: (state: OAuthAuthorizationState) => void | Promise<void>;
 }
 
@@ -57,6 +59,7 @@ export class LocalHost implements SyncHost {
   readonly #fetch: typeof globalThis.fetch;
   readonly #signal: AbortSignal | undefined;
   readonly #onLog: (entry: LogEntry) => void;
+  readonly #onAuthorizationRefreshRequested: LocalHostOptions["onAuthorizationRefreshRequested"];
   readonly #onAuthorizationStateChanged: (state: OAuthAuthorizationState) => void | Promise<void>;
 
   constructor(options: LocalHostOptions) {
@@ -77,6 +80,7 @@ export class LocalHost implements SyncHost {
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#signal = options.signal;
     this.#onLog = options.onLog ?? ((entry) => console.error(JSON.stringify(entry)));
+    this.#onAuthorizationRefreshRequested = options.onAuthorizationRefreshRequested;
     this.#onAuthorizationStateChanged = options.onAuthorizationStateChanged ?? (() => undefined);
   }
 
@@ -367,6 +371,9 @@ export class LocalHost implements SyncHost {
     if (this.#auth.type !== "oauth2_authorization_code" || !this.#authorizationState) {
       return false;
     }
+    signal?.throwIfAborted();
+    await this.#onAuthorizationRefreshRequested?.(signal);
+    signal?.throwIfAborted();
     const authorizationState = await refreshOAuthAuthorization({
       auth: this.#auth,
       credentials: this.#credentials,

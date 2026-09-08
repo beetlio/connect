@@ -10,7 +10,9 @@
     "paths": {
       "@beetlio/connect": ["./src/index.ts"],
       "@beetlio/connect/builder": ["./src/artifact.ts"],
-      "@beetlio/connect/host": ["./src/host.ts"]
+      "@beetlio/connect/host": ["./src/host.ts"],
+      "@beetlio/connect/local-host": ["./src/local-host.ts"],
+      "@beetlio/connect/oauth": ["./src/oauth.ts"]
     },
     "strict": true,
     "target": "ES2024",

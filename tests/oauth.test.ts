@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { auth } from "@beetlio/connect";
-import { authorizeOAuth } from "../src/oauth.ts";
+import { authorizeOAuth } from "@beetlio/connect/oauth";
 import { fixtureServer } from "./support.ts";
 
 test("authorization-code flow uses PKCE and returns provider authorization state", async (t) => {
