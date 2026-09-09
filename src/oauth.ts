@@ -9,6 +9,7 @@ export type OAuthDefinition = Extract<AuthDefinition, { type: "oauth2_authorizat
 
 export interface OAuthRequestOptions {
   auth: OAuthDefinition;
+  origin?: string;
   credentials: Readonly<Record<string, string>>;
   fetch?: typeof globalThis.fetch;
   signal?: AbortSignal;
@@ -241,21 +242,34 @@ function oauthRedirect(value: string): URL {
 }
 
 function oauthContext(options: OAuthRequestOptions) {
-  const issuer = new URL(options.auth.issuer);
-  if (issuer.protocol !== "https:" && !isLoopback(issuer.hostname)) {
+  const resolve = (value: string) => {
+    if (value.startsWith("//") || value.includes("\\") || /[\x00-\x20\x7f]/.test(value))
+      throw new Error("Invalid OAuth URL");
+    const url = new URL(value, options.origin);
+    if (url.username || url.password || url.hash) throw new Error("Invalid OAuth URL");
+    return url;
+  };
+  const issuer = resolve(options.auth.issuer);
+  if (
+    issuer.protocol !== "https:" &&
+    !(issuer.protocol === "http:" && isLoopback(issuer.hostname))
+  ) {
     throw new Error("OAuth issuers require HTTPS");
   }
-  const authorizationUrl = new URL(options.auth.authorizationUrl);
-  if (authorizationUrl.protocol !== "https:" && !isLoopback(authorizationUrl.hostname)) {
+  const authorizationUrl = resolve(options.auth.authorizationUrl);
+  if (
+    authorizationUrl.protocol !== "https:" &&
+    !(authorizationUrl.protocol === "http:" && isLoopback(authorizationUrl.hostname))
+  ) {
     throw new Error("OAuth authorization requests require HTTPS");
   }
-  const tokenUrl = new URL(options.auth.tokenUrl);
+  const tokenUrl = resolve(options.auth.tokenUrl);
   const insecureTokenUrl = tokenUrl.protocol === "http:" && isLoopback(tokenUrl.hostname);
   if (tokenUrl.protocol !== "https:" && !insecureTokenUrl) {
     throw new Error("OAuth token requests require HTTPS");
   }
   const server = {
-    issuer: options.auth.issuer,
+    issuer: options.auth.issuer.startsWith("/") ? issuer.href : options.auth.issuer,
     authorization_endpoint: authorizationUrl.href,
     token_endpoint: tokenUrl.href,
   } satisfies oauth.AuthorizationServer;

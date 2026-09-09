@@ -246,7 +246,13 @@ export class LocalHost implements SyncHost {
     if (this.#auth.type === "token_exchange") {
       const accessToken = this.#tokenExchangeState?.accessToken;
       if (accessToken === undefined) throw new Error("Authentication token exchange failed");
-      headers.set("authorization", `Bearer ${accessToken}`);
+      for (const [name, field] of Object.entries(this.#auth.requestHeaders ?? {})) {
+        headers.set(name, this.#credential(field));
+      }
+      headers.set(
+        this.#auth.tokenHeader ?? "authorization",
+        `${this.#auth.tokenPrefix ?? "Bearer "}${accessToken}`,
+      );
       return;
     }
     if (this.#auth.type === "basic") {
@@ -316,22 +322,35 @@ export class LocalHost implements SyncHost {
     for (const [name, field] of Object.entries(this.#auth.headers)) {
       headers.set(name, this.#credential(field));
     }
+    if (this.#auth.basic !== undefined) {
+      const { username, password } = this.#auth.basic;
+      const formComponent = (name: string) =>
+        new URLSearchParams({ value: this.#credential(name) }).toString().slice(6);
+      headers.set(
+        "authorization",
+        `Basic ${Buffer.from(`${formComponent(username)}:${formComponent(password)}`).toString("base64")}`,
+      );
+    }
+    let requestBody: string | undefined;
+    if (this.#auth.body !== undefined) {
+      const values = { ...this.#auth.body.values };
+      for (const [name, field] of Object.entries(this.#auth.body.fields)) {
+        values[name] = this.#credential(field);
+      }
+      const form = this.#auth.body.encoding === "form";
+      headers.set("content-type", form ? "application/x-www-form-urlencoded" : "application/json");
+      requestBody = form ? new URLSearchParams(values).toString() : JSON.stringify(values);
+    }
     const response = await this.#fetch(url, {
       method: "POST",
       headers,
       redirect: "manual",
+      ...(requestBody === undefined ? {} : { body: requestBody }),
       ...(signal === undefined ? {} : { signal }),
     });
     const responseBody = await readResponseBody(response);
     if (!response.ok) {
-      const detail = new TextDecoder()
-        .decode(responseBody)
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 1_000);
-      throw new Error(
-        `Token exchange failed with ${response.status}${detail ? ` (${detail})` : ""}`,
-      );
+      throw new Error(`Token exchange failed with ${response.status}`);
     }
     let body: unknown;
     try {
@@ -341,7 +360,19 @@ export class LocalHost implements SyncHost {
     }
     const accessToken = valueAtPath(body, this.#auth.tokenPath);
     const expiresAtValue = valueAtPath(body, this.#auth.expiresAtPath);
-    const expiresAt = typeof expiresAtValue === "string" ? Date.parse(expiresAtValue) : NaN;
+    const lifetime =
+      this.#auth.expiresInPath === undefined
+        ? this.#auth.expiresInSeconds
+        : valueAtPath(body, this.#auth.expiresInPath);
+    const relativeExpiration =
+      this.#auth.expiresInPath !== undefined || this.#auth.expiresInSeconds !== undefined;
+    const expiresAt = !relativeExpiration
+      ? typeof expiresAtValue === "string"
+        ? Date.parse(expiresAtValue)
+        : NaN
+      : typeof lifetime === "number" && lifetime > 0
+        ? Date.now() + lifetime * 1_000
+        : NaN;
     if (typeof accessToken !== "string" || !accessToken || !Number.isFinite(expiresAt)) {
       throw new Error("Token exchange response is missing a valid token or expiration time");
     }
@@ -376,6 +407,7 @@ export class LocalHost implements SyncHost {
     signal?.throwIfAborted();
     const authorizationState = await refreshOAuthAuthorization({
       auth: this.#auth,
+      origin: this.#origin.origin,
       credentials: this.#credentials,
       authorizationState: this.#authorizationState,
       fetch: this.#fetch,
@@ -418,12 +450,15 @@ export function resolveProviderOrigin(
     value = tokenField;
   } else {
     const selected = connectionConfig[definition.input];
-    if (typeof selected !== "string" || definition.values[selected] === undefined) {
+    if (
+      typeof selected !== "string" ||
+      ("values" in definition && definition.values[selected] === undefined)
+    ) {
       throw new Error(
         `Connection input ${JSON.stringify(definition.input)} has no provider origin`,
       );
     }
-    value = definition.values[selected];
+    value = "values" in definition ? definition.values[selected]! : selected;
   }
   return providerOrigin(value, authenticated);
 }

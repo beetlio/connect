@@ -418,7 +418,7 @@ async function configureIntegration(
       const requestedOrigin =
         origin === undefined ? undefined : resolveProviderOrigin(origin.href).origin;
       const stored = await readConnection(connectionPath, integration.key, connectionName);
-      const existingConnection =
+      let existingConnection =
         stored !== undefined &&
         connectionMatchesProvider(integration, manifest, stored) &&
         (requestedOrigin === undefined || requestedOrigin === stored.provider.origin)
@@ -451,6 +451,18 @@ async function configureIntegration(
         throw new Error(`Invalid sync inputs: ${z.prettifyError(parsedSyncInputs.error)}`);
       }
 
+      if (existingConnection !== undefined) {
+        const selectedOrigin = resolveProviderOrigin(
+          requestedOrigin ?? existingConnection.origin ?? integration.connection.origin,
+          existingConnection.authorizationState,
+          integration.connection.auth !== undefined,
+          JsonObjectSchema.parse(parsedConnectionInputs.data),
+        ).origin;
+        if (selectedOrigin !== existingConnection.provider.origin) {
+          existingConnection = undefined;
+        }
+      }
+
       const credentials =
         existingConnection !== undefined && !reauthorize
           ? existingConnection.credentials
@@ -467,12 +479,26 @@ async function configureIntegration(
       process.once("SIGINT", abort);
       try {
         const configuredOrigin = requestedOrigin ?? existingConnection?.origin;
+        const oauthOrigin =
+          integration.connection.auth?.type !== "oauth2_authorization_code"
+            ? undefined
+            : (configuredOrigin ??
+              (typeof integration.connection.origin !== "string" &&
+              "oauthTokenField" in integration.connection.origin
+                ? undefined
+                : resolveProviderOrigin(
+                    integration.connection.origin,
+                    undefined,
+                    true,
+                    JsonObjectSchema.parse(parsedConnectionInputs.data),
+                  ).origin));
         const authorizationState =
           integration.connection.auth?.type === "oauth2_authorization_code"
             ? existingConnection?.authorizationState !== undefined && !reauthorize
               ? existingConnection.authorizationState
               : await authorizeOAuth({
                   auth: integration.connection.auth,
+                  ...(oauthOrigin === undefined ? {} : { origin: oauthOrigin }),
                   credentials: parsedCredentials,
                   redirectUri: LocalOAuthRedirectUri,
                   fetch: ProviderFetch,

@@ -394,6 +394,16 @@ export function validateIntegration(integration: IntegrationDefinition): void {
     for (const value of Object.values(origin.values)) {
       providerOrigin(value, auth.type !== "none");
     }
+  } else if ("input" in origin) {
+    const field = integration.connection.inputs?.shape[origin.input];
+    if (
+      !origin.input.trim() ||
+      field?.manifest.type !== "string" ||
+      field.optional ||
+      field.manifest.format !== "url"
+    ) {
+      throw new Error("Provider origin must reference a required URL connection input");
+    }
   }
 
   const credentialKeys = new Set(Object.keys(auth.credentials.shape));
@@ -433,30 +443,69 @@ export function validateIntegration(integration: IntegrationDefinition): void {
     throw new Error("Custom authentication must inject at least one header or query parameter");
   }
   if (auth.type === "token_exchange") {
-    if (Object.keys(auth.headers).length === 0) {
-      throw new Error("Token exchange authentication must inject at least one header");
+    if (
+      Object.keys(auth.headers).length === 0 &&
+      !auth.basic &&
+      Object.keys(auth.body?.fields ?? {}).length === 0
+    ) {
+      throw new Error(
+        "Token exchange authentication must inject credentials into headers, a body, or basic authentication",
+      );
     }
     if (
       !auth.tokenUrl.startsWith("/") ||
       auth.tokenUrl.startsWith("//") ||
-      auth.tokenUrl.includes("\\")
+      auth.tokenUrl.includes("\\") ||
+      /[\x00-\x20\x7f#]/.test(auth.tokenUrl)
     ) {
       throw new Error("Token exchange URL must be a relative-origin path beginning with /");
     }
     if (
-      [auth.tokenPath, auth.expiresAtPath].some(
-        (path) => !path.trim() || path.split(".").some((segment) => !segment),
-      )
+      [
+        auth.tokenPath,
+        auth.expiresAtPath,
+        ...(auth.expiresInPath === undefined ? [] : [auth.expiresInPath]),
+      ].some((path) => !path.trim() || path.split(".").some((segment) => !segment))
     ) {
       throw new Error("Token exchange response paths cannot be empty");
+    }
+    if (
+      auth.expiresInSeconds !== undefined &&
+      (!Number.isFinite(auth.expiresInSeconds) || auth.expiresInSeconds <= 0)
+    ) {
+      throw new Error("Token exchange lifetime must be positive seconds");
+    }
+    if (auth.expiresInPath !== undefined && auth.expiresInSeconds !== undefined) {
+      throw new Error("Token exchange must select only one relative expiration source");
+    }
+    if (auth.body !== undefined && auth.body.encoding !== "json" && auth.body.encoding !== "form") {
+      throw new Error("Token exchange body encoding must be json or form");
+    }
+    if (
+      Object.keys(auth.body?.fields ?? {}).some(
+        (name) => !name.trim() || Object.hasOwn(auth.body?.values ?? {}, name),
+      )
+    ) {
+      throw new Error(
+        "Token exchange body fields must be non-empty and cannot overlap literal values",
+      );
+    }
+    new Headers().set(auth.tokenHeader ?? "authorization", `${auth.tokenPrefix ?? "Bearer "}token`);
+    if (
+      auth.basic !== undefined &&
+      auth.credentials.shape[auth.basic.password]?.manifest.writeOnly !== true
+    ) {
+      throw new Error("Token exchange basic password must be secret");
     }
   }
   const headerNames =
     auth.type === "api_key" && auth.in === "header"
       ? [auth.name]
-      : auth.type === "custom" || auth.type === "token_exchange"
-        ? Object.keys(auth.headers)
-        : [];
+      : auth.type === "token_exchange"
+        ? [...Object.keys(auth.headers), ...Object.keys(auth.requestHeaders ?? {})]
+        : auth.type === "custom"
+          ? Object.keys(auth.headers)
+          : [];
   for (const name of headerNames) {
     try {
       new Headers().set(name, "value");
@@ -477,6 +526,18 @@ export function validateIntegration(integration: IntegrationDefinition): void {
   }
   if (auth.type === "oauth2_authorization_code") {
     for (const value of [auth.issuer, auth.authorizationUrl, auth.tokenUrl]) {
+      if (/[\x00-\x20\x7f#]/.test(value)) throw new Error("Invalid OAuth URL");
+      if (
+        value.startsWith("/") &&
+        !value.startsWith("//") &&
+        !value.includes("\\") &&
+        !value.includes("#")
+      ) {
+        if (typeof origin !== "string" && "oauthTokenField" in origin) {
+          throw new Error("Relative OAuth URLs require an origin available before authorization");
+        }
+        continue;
+      }
       const url = new URL(value);
       const loopback =
         url.hostname === "localhost" ||
@@ -661,15 +722,17 @@ async function* paginateRequests<Records extends z.ZodType>(
 ): AsyncGenerator<PaginationPage<z.input<Records>>, void, void> {
   const pagination = resolvePagination(defaults, options.pagination);
   let pages = 0;
-  const fetchPage = (path: string) => {
+  const fetchPage = async (path: string) => {
     pages += 1;
     if (pages > MaxPaginationPages) {
       throw new Error(`Pagination exceeded ${MaxPaginationPages} pages`);
     }
-    return fetch(path, {
+    const response = await fetch(path, {
       ...(options.headers === undefined ? {} : { headers: options.headers }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
+    if (!response.ok) await options.onResponseError?.(response.clone());
+    return response;
   };
 
   if (pagination.type === "next-url") {
@@ -889,7 +952,13 @@ function credentialReferences(auth: AuthDefinition): readonly string[] {
   if (auth.type === "oauth2_authorization_code") {
     return ["clientId", ...(auth.usesClientSecret ? ["clientSecret"] : [])];
   }
-  if (auth.type === "token_exchange") return Object.values(auth.headers);
+  if (auth.type === "token_exchange")
+    return [
+      ...Object.values(auth.headers),
+      ...Object.values(auth.body?.fields ?? {}),
+      ...Object.values(auth.requestHeaders ?? {}),
+      ...(auth.basic === undefined ? [] : [auth.basic.username, auth.basic.password]),
+    ];
   return [...Object.values(auth.headers), ...Object.values(auth.query)];
 }
 

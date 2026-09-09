@@ -7,6 +7,8 @@ import type {
 } from "./manifest.ts";
 
 export { z };
+export { storageRecord } from "./storage.ts";
+export { createRecordBatcher } from "./batching.ts";
 export type { JsonValue };
 
 export type JsonObject = { [key: string]: JsonValue | undefined };
@@ -393,10 +395,25 @@ export type RetryDefinition = false | RetryPolicy;
 export type ProviderOriginDefinition =
   | string
   | { readonly oauthTokenField: string }
+  | { readonly input: string }
   | {
       readonly input: string;
       readonly values: Readonly<Record<string, string>>;
     };
+
+export interface TokenExchangeOptions {
+  readonly body?: {
+    readonly encoding: "json" | "form";
+    readonly fields: Readonly<Record<string, string>>;
+    readonly values?: Readonly<Record<string, string>>;
+  };
+  readonly basic?: { readonly username: string; readonly password: string };
+  readonly expiresInPath?: string;
+  readonly expiresInSeconds?: number;
+  readonly tokenHeader?: string;
+  readonly tokenPrefix?: string;
+  readonly requestHeaders?: Readonly<Record<string, string>>;
+}
 
 export type AuthManifest =
   | { type: "none" }
@@ -416,13 +433,13 @@ export type AuthManifest =
       usesClientSecret: boolean;
       tokenFields: Readonly<Record<string, string>>;
     }
-  | {
+  | ({
       type: "token_exchange";
       tokenUrl: string;
       headers: Readonly<Record<string, string>>;
       tokenPath: string;
       expiresAtPath: string;
-    }
+    } & TokenExchangeOptions)
   | {
       type: "custom";
       headers: Readonly<Record<string, string>>;
@@ -496,20 +513,23 @@ export const auth = {
     };
   },
 
-  tokenExchange<const Shape extends CredentialShape>(options: {
-    credentials: CredentialObject<Shape>;
-    tokenUrl: string;
-    headers: Readonly<Record<string, string>>;
-    tokenPath?: string;
-    expiresAtPath?: string;
-  }): AuthDefinition {
+  tokenExchange<const Shape extends CredentialShape>(
+    options: {
+      credentials: CredentialObject<Shape>;
+      tokenUrl: string;
+      headers?: Readonly<Record<string, string>>;
+      tokenPath?: string;
+      expiresAtPath?: string;
+    } & TokenExchangeOptions,
+  ): AuthDefinition {
+    const { credentials, headers, tokenPath, expiresAtPath, ...exchange } = options;
     return {
+      ...exchange,
       type: "token_exchange",
-      credentials: options.credentials,
-      tokenUrl: options.tokenUrl,
-      headers: options.headers,
-      tokenPath: options.tokenPath ?? "token",
-      expiresAtPath: options.expiresAtPath ?? "expires_at",
+      credentials,
+      headers: headers ?? {},
+      tokenPath: tokenPath ?? "token",
+      expiresAtPath: expiresAtPath ?? "expires_at",
     };
   },
 
@@ -580,6 +600,8 @@ export interface PaginationPage<RecordValue> {
 }
 
 export interface PaginateOptions<Records extends PageRecordSchema> {
+  /** Explain a failed provider response before the generic pagination error. */
+  readonly onResponseError?: (response: Response) => Promise<void>;
   readonly path: string;
   readonly records: Records;
   readonly pagination?: PaginationOverride;

@@ -343,6 +343,8 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
     await Promise.all([
       copyFile(SdkEntry, join(sdkDirectory, "index.js")),
       copyFile(SdkManifestEntry, join(sdkDirectory, "manifest.js")),
+      copyFile(new URL("./storage.js", import.meta.url), join(sdkDirectory, "storage.js")),
+      copyFile(new URL("./batching.js", import.meta.url), join(sdkDirectory, "batching.js")),
       cp(ZodDirectory, join(sdkDirectory, "node_modules/zod"), { recursive: true }),
     ]);
     await writeFile(

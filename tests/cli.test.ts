@@ -14,12 +14,29 @@ const Provider = {
 };
 
 function runCli(cwd: string, ...args: string[]) {
+  const home = join(cwd, "user-home");
+  const configHome = join(cwd, "user-config");
   const result = spawnSync(process.execPath, [CliPath, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, XDG_CONFIG_HOME: join(cwd, "user-config") },
+    env: {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      XDG_CONFIG_HOME: configHome,
+      APPDATA: configHome,
+      LOCALAPPDATA: configHome,
+    },
   });
   return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
+}
+
+function configDirectory(cwd: string) {
+  return process.platform === "darwin"
+    ? join(cwd, "user-home/Library/Preferences/beetl-connect")
+    : process.platform === "win32"
+      ? join(cwd, "user-config/beetl-connect/Config")
+      : join(cwd, "user-config/beetl-connect");
 }
 
 test("CLI syncs legacy connections after adding mapped origin defaults", async (t) => {
@@ -190,14 +207,8 @@ test("CLI configures and syncs a source integration", async (t) => {
     `,
   );
 
-  const profile = join(
-    workingDirectory,
-    "user-config/beetl-connect/profiles/fixture/items/default.json",
-  );
-  const connection = join(
-    workingDirectory,
-    "user-config/beetl-connect/connections/fixture/primary.json",
-  );
+  const profile = join(configDirectory(workingDirectory), "profiles/fixture/items/default.json");
+  const connection = join(configDirectory(workingDirectory), "connections/fixture/primary.json");
   const configured = runCli(
     workingDirectory,
     "configure",
@@ -263,7 +274,7 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
   assert.equal(missingProfile.status, 1);
   assert.match(missingProfile.stderr, /Profile "prodution" does not exist/);
 
-  const profiles = join(directory, "user-config/beetl-connect/profiles/multiple");
+  const profiles = join(configDirectory(directory), "profiles/multiple");
   const configuredFirst = runCli(directory, "configure", directory, "first");
   assert.equal(configuredFirst.status, 0, configuredFirst.stderr);
   await access(join(profiles, "first/default.json"));
@@ -272,10 +283,7 @@ test("CLI requires a sync key only when the choice is ambiguous", async (t) => {
   assert.equal(selected.status, 0, selected.stderr);
   assert.deepEqual(JSON.parse((await readFile(output, "utf8")).trim()), { id: "second" });
   const savedConnection = JSON.parse(
-    await readFile(
-      join(directory, "user-config/beetl-connect/connections/multiple/default.json"),
-      "utf8",
-    ),
+    await readFile(join(configDirectory(directory), "connections/multiple/default.json"), "utf8"),
   );
   assert.deepEqual(savedConnection.provider, Provider);
   assert.match(savedConnection.revision, /^[0-9a-f-]{36}$/);
@@ -320,14 +328,8 @@ test("CLI reports integration source locations and error causes", async (t) => {
     `,
   );
 
-  const connectionPath = join(
-    directory,
-    "user-config/beetl-connect/connections/errors/default.json",
-  );
-  const profilePath = join(
-    directory,
-    "user-config/beetl-connect/profiles/errors/items/default.json",
-  );
+  const connectionPath = join(configDirectory(directory), "connections/errors/default.json");
+  const profilePath = join(configDirectory(directory), "profiles/errors/items/default.json");
   const storedConnection = {
     integration: "errors",
     name: "default",

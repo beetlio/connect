@@ -19,7 +19,7 @@ import {
   type EmittedBatch,
   type SyncHost,
 } from "./host.ts";
-import { LocalHost, replacePrivateFile } from "./local-host.ts";
+import { LocalHost, replacePrivateFile, resolveProviderOrigin } from "./local-host.ts";
 import {
   beginOAuthAuthorization,
   completeOAuthAuthorization,
@@ -76,11 +76,13 @@ const Request = z.discriminatedUnion("operation", [
   SourceRequest.extend({ operation: z.literal("inspect") }),
   SourceRequest.extend({
     operation: z.literal("oauth_start"),
+    connectionConfig: JsonObject.default({}),
     credentials: Credentials,
     redirectUri: z.url(),
   }),
   SourceRequest.extend({
     operation: z.literal("oauth_callback"),
+    connectionConfig: JsonObject.default({}),
     credentials: Credentials,
     redirectUri: z.url(),
     callbackUrl: z.url(),
@@ -132,9 +134,24 @@ async function main(): Promise<void> {
           throw new Error("Integration does not use OAuth authorization code authentication");
         }
         await oauth.credentials.schema.parseAsync(request.credentials);
+        const provider = integration.connection.origin;
+        const needsOrigin = [oauth.issuer, oauth.authorizationUrl, oauth.tokenUrl].some((value) =>
+          value.startsWith("/"),
+        );
+        const connectionConfig =
+          needsOrigin && typeof provider !== "string" && "input" in provider
+            ? await (integration.connection.inputs?.schema ?? z.strictObject({})).parseAsync(
+                request.connectionConfig,
+              )
+            : request.connectionConfig;
+        const origin =
+          !needsOrigin || (typeof provider !== "string" && "oauthTokenField" in provider)
+            ? undefined
+            : resolveProviderOrigin(provider, undefined, true, connectionConfig).origin;
         if (request.operation === "oauth_start") {
           const authorization = await beginOAuthAuthorization({
             auth: oauth,
+            ...(origin === undefined ? {} : { origin }),
             credentials: request.credentials,
             redirectUri: request.redirectUri,
             fetch: HostFetch,
@@ -144,6 +161,7 @@ async function main(): Promise<void> {
         }
         const authorizationState = await completeOAuthAuthorization({
           auth: oauth,
+          ...(origin === undefined ? {} : { origin }),
           credentials: request.credentials,
           redirectUri: request.redirectUri,
           callbackUrl: request.callbackUrl,

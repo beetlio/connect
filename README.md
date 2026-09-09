@@ -207,6 +207,30 @@ therefore do not belong in uploaded integration source.
 short-lived bearer token. The host caches the token until its declared expiration and
 automatically exchanges it again before expiry or after a 401 response.
 
+For session or client-credentials APIs, token exchange also accepts a `body` with `encoding`
+(`json` or `form`), credential-name mappings in `fields`, and static strings in `values`.
+Optional `basic` maps credential names to the exchange's username/password. Use `expiresInPath`
+for a numeric lifetime in the response, or `expiresInSeconds` for a documented fixed session
+lifetime. `tokenHeader`/`tokenPrefix` select the resulting session header; `requestHeaders` maps
+original credentials required alongside that session on data requests. Credential values remain
+inside the host. Existing header-only exchanges and absolute expiration paths continue to work.
+
+Account-specific providers may declare `origin: { input: "origin" }` with a required connection
+string input using `format: "url"`. The host validates an HTTPS origin (or loopback HTTP), without
+userinfo, paths or query strings. OAuth issuer, authorization and token URLs can then be paths
+relative to that origin. Both hosted authorization requests include `connectionConfig`; refresh
+uses the same resolved account. An origin learned only from the token response still requires
+absolute OAuth endpoints.
+
+`storageRecord(sourceObjectSchema)` adapts provider schemas to fixed storage columns. It validates
+the original source values, keeps typed nested objects/arrays and scalar columns, and serializes
+dynamic maps or heterogeneous structured values as JSON text. Mixed primitive IDs or amounts use
+text; optional and nullable fields remain optional or nullable. Use it for the sync's `records`
+declaration while continuing to parse API responses with the original source schema. It requires
+a plain object without root refinements or open catchall columns, and retains strict-root rejection
+of unknown keys when the source is strict. This projection avoids dynamic or mixed-type JSON schemas
+that the hosted tabular storage cannot represent.
+
 Profiles and named connections are stored with owner-only permissions in the
 operating system's user configuration directory: `$XDG_CONFIG_HOME/beetl-connect`
 on Linux, `~/Library/Preferences/beetl-connect` on macOS, and
@@ -240,6 +264,12 @@ record per line. Local runs consume all emitted batches; a hosted controller may
 internally after durably committing a checkpoint-bearing batch. Platform scheduling remains
 invisible to the integration. Without `--output`, each run uses a new timestamped filename.
 
+For snapshots that hydrate individual records or flatten child resources, use
+`const output = createRecordBatcher(ctx.emit)`, send arrays through `output.emit({ records })`,
+and call `await output.flush()` after the scan succeeds. The helper groups at most 100 records
+with a 1-MiB JSON input target; a larger single record is sent separately and remains subject to
+host limits. Do not use it for checkpointed batches, whose acknowledgments must stay immediate.
+
 Record schemas must be Zod object schemas whose output is a non-null, top-level JSON
 object. Nested objects and arrays are allowed. Connect generates the canonical JSON Schema
 in the build manifest and uses the original Zod schema for runtime validation. The downstream
@@ -267,6 +297,9 @@ optionally set `hasMorePath` when a response boolean explicitly controls whether
 continues. Page schemas validate provider values without rewriting them; the sync record schema
 normalizes records once at `ctx.emit()`. Integrations can also issue requests directly for custom
 pagination and checkpoint strategies.
+Set `onResponseError: async (response) => { ... }` to translate unsuccessful paginated responses
+into provider-specific setup or permission guidance. It receives a response clone; if it returns
+without throwing, normal pagination error handling still applies.
 Retries apply to safe HTTP methods by default and can be configured per connection. The CLI rejects
 malformed or repeated continuations, follows continuations across empty pages, limits pagination to
 10,000 pages, and rejects provider response bodies larger than 16 MiB.
