@@ -1,7 +1,7 @@
 {
   "name": "@beetlio/connect",
-  "version": "0.2.0",
-  "description": "CLI for building and running TypeScript API integrations",
+  "version": "0.3.0",
+  "description": "TypeScript SDK for authoring integrations for the Beetl data processing platform",
   "license": "Apache-2.0",
   "type": "module",
   "repository": {
@@ -15,12 +15,12 @@
   },
   "files": [
     "dist",
-    "compatibility",
+    "compatibility/frozen",
     "docs/compatibility.md",
     "docs/host-protocol.md"
   ],
   "bin": {
-    "beetl-connect": "dist/cli.js"
+    "beetl-connect": "dist/cli/main.js"
   },
   "exports": {
     ".": {
@@ -34,14 +34,6 @@
     "./builder": {
       "types": "./dist/artifact.d.ts",
       "default": "./dist/artifact.js"
-    },
-    "./local-host": {
-      "types": "./dist/local-host.d.ts",
-      "default": "./dist/local-host.js"
-    },
-    "./oauth": {
-      "types": "./dist/oauth.d.ts",
-      "default": "./dist/oauth.js"
     }
   },
   "engines": {
@@ -49,16 +41,16 @@
   },
   "scripts": {
     "clean": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "prebuild": "npm run clean --silent",
-    "build": "tsc -p tsconfig.build.json",
-    "postbuild": "node compatibility/build.mjs",
-    "check": "npm run format:check && npm run build --silent && tsc --noEmit",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "npm run build --silent && node --test tests/*.test.ts",
-    "test:compatibility": "npm run build --silent && node dist/cli.js compatibility",
-    "test:package": "npm run build --silent && node compatibility/check-package.mjs",
-    "prepack": "npm run build"
+    "typecheck": "tsc --noEmit",
+    "check": "npm run format:check && npm run typecheck",
+    "test": "npm run build && npm run test:sdk && npm run test:package",
+    "test:sdk": "node --test \"tests/*.test.ts\"",
+    "test:compatibility": "node compatibility/build.mjs && node dist/cli/main.js compatibility",
+    "test:package": "node compatibility/build.mjs && node compatibility/check-package.mjs",
+    "prepack": "npm run build && node compatibility/build.mjs"
   },
   "dependencies": {
     "@inquirer/password": "^5.1.1",
@@ -67,7 +59,7 @@
     "@types/node": "24.2.0",
     "env-paths": "^4.0.0",
     "oauth4webapi": "^3.8.6",
-    "sharp": "^0.35.3",
+    "sharp": "^0.35.4",
     "tar": "^7.5.22",
     "typescript": "^5.9.3",
     "zod": "^4.4.3"

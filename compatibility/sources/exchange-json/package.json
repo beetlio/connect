@@ -1,9 +1,0 @@
-{
-  "name": "compatibility-exchange-json",
-  "version": "0.0.0",
-  "private": true,
-  "type": "module",
-  "files": [
-    "integration.ts"
-  ]
-}

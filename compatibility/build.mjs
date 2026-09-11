@@ -1,6 +1,5 @@
-import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { buildIntegration } from "../dist/artifact.js";
@@ -16,38 +15,50 @@ const scenarios = JSON.parse(await readFile(new URL("scenarios.json", root), "ut
 const fixtures = [];
 
 for (const fixture of scenarios.fixtures) {
-  const historical = provenance.artifacts.find(({ id }) => id === fixture.id);
-  const source = new URL(`sources/${fixture.id}/`, root);
+  const source = new URL(`sources/${fixture.id}/`, output);
+  const name = `compatibility-${fixture.id}`;
 
-  let artifact, manifest, sdk, digest;
+  await mkdir(source, { recursive: true });
+  await Promise.all([
+    copyFile(new URL("sources/shared.ts", root), new URL("shared.ts", source)),
+    copyFile(new URL(`sources/${fixture.id}.ts`, root), new URL("integration.ts", source)),
+    writeFile(
+      new URL("package.json", source),
+      JSON.stringify(
+        {
+          name,
+          version: "0.0.0",
+          private: true,
+          type: "module",
+          files: ["integration.ts", "shared.ts"],
+        },
+        null,
+        2,
+      ) + "\n",
+    ),
+    writeFile(
+      new URL("package-lock.json", source),
+      JSON.stringify(
+        {
+          name,
+          version: "0.0.0",
+          lockfileVersion: 3,
+          packages: { "": { name, version: "0.0.0" } },
+        },
+        null,
+        2,
+      ) + "\n",
+    ),
+  ]);
 
-  if (historical) {
-    artifact = `../../compatibility/frozen/${historical.file}`;
-    digest = sha256(await readFile(new URL(artifact, output)));
+  const built = await buildIntegration(fileURLToPath(source));
+  const artifact = `${fixture.id}.tgz`;
 
-    assert.equal(digest, historical.sha256, "Frozen artifact changed");
-    assert.equal(
-      sha256(await readFile(new URL("integration.ts", source))),
-      historical.sourceSha256,
-      "Frozen source changed",
-    );
+  await writeFile(new URL(artifact, output), built.archive);
 
-    manifest = historical.manifest;
-    sdk = {
-      version: provenance.sdkVersion,
-      commit: provenance.sdkCommit,
-      lockSha256: provenance.sdkLockSha256,
-    };
-  } else {
-    const built = await buildIntegration(fileURLToPath(source));
-
-    artifact = `${fixture.id}.tgz`;
-    await writeFile(new URL(artifact, output), built.archive);
-
-    digest = sha256(built.archive);
-    manifest = built.manifest;
-    sdk = { version: built.sdkVersion };
-  }
+  const digest = sha256(built.archive);
+  const manifest = built.manifest;
+  const sdk = { version: built.sdkVersion };
 
   fixtures.push({
     ...fixture,
@@ -55,7 +66,7 @@ for (const fixture of scenarios.fixtures) {
     sha256: digest,
     sdk,
     manifest,
-    source: `../../compatibility/sources/${fixture.id}/`,
+    source: `sources/${fixture.id}/`,
     hostContractVersion: manifest.hostContractVersion ?? 1,
   });
 }
@@ -64,9 +75,15 @@ await writeFile(
   new URL("inventory.json", output),
   JSON.stringify(
     {
-      formatVersion: 1,
+      formatVersion: 2,
       pathBase: "Resolve artifact and source paths relative to this inventory file.",
       fixtures,
+      rejectedArtifacts: provenance.artifacts.map((artifact) => ({
+        artifact: `../../compatibility/frozen/${artifact.file}`,
+        sha256: artifact.sha256,
+        sdkCommit: provenance.sdkCommit,
+        expectedError: "Unsupported manifest version 2",
+      })),
     },
     null,
     2,

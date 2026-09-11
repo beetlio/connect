@@ -22,20 +22,27 @@ import { create as createTar, extract as extractTar } from "tar";
 import ts from "typescript";
 import { z } from "zod";
 
+import { type IntegrationDefinition } from "./index.ts";
 import {
-  createIntegrationManifest,
-  type IntegrationDefinition,
+  IntegrationManifestSchema,
+  assertSupportedHostContractVersion,
+  parseIntegration,
   type IntegrationManifest,
-} from "./index.ts";
-import { assertSupportedHostContractVersion, validateIntegration } from "./host.ts";
+} from "./manifest.ts";
+
+export {
+  createIntegrationManifest,
+  type InputField,
+  type InputObjectSchema,
+  type InputValueSchema,
+  type IntegrationManifest,
+} from "./manifest.ts";
 
 const Require = createRequire(import.meta.url);
 
 /** JSON inventory; resolve each artifact/source path relative to this URL. */
 export const compatibilityFixturesUrl = new URL("./compatibility/inventory.json", import.meta.url);
 
-const SdkEntry = fileURLToPath(new URL("./index.js", import.meta.url));
-const SdkManifestEntry = fileURLToPath(new URL("./manifest.js", import.meta.url));
 const SdkTypesEntry = fileURLToPath(new URL("./index.d.ts", import.meta.url));
 const SdkVersion = z
   .object({ version: z.string().min(1) })
@@ -90,6 +97,7 @@ const Npm =
   process.platform === "win32"
     ? [process.execPath, join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")]
     : ["npm"];
+
 setSourceMapsSupport(true);
 
 export interface BuiltIntegrationIcon {
@@ -113,16 +121,20 @@ export interface PackedIntegration {
 
 export async function packIntegration(inputDirectory: string): Promise<PackedIntegration> {
   const directory = await realpath(resolve(inputDirectory));
+
   if (!(await stat(directory)).isDirectory()) {
     throw new Error("pack requires an integration package directory");
   }
+
   let packageSource: string;
   let lockfile: Uint8Array;
+
   try {
     const [definition, locked] = await Promise.all([
       readFile(join(directory, "package.json"), "utf8"),
       readFile(join(directory, "package-lock.json")),
     ]);
+
     packageSource = definition;
     lockfile = new Uint8Array(locked);
   } catch (error) {
@@ -130,25 +142,34 @@ export async function packIntegration(inputDirectory: string): Promise<PackedInt
       cause: error,
     });
   }
+
   assertSize("package-lock.json", lockfile, Limits.expanded);
+
   let packageDefinition: z.output<typeof PackageDefinitionSchema>;
   let lockedDefinition: z.output<typeof PackageDefinitionSchema>;
+
   try {
     packageDefinition = PackageDefinitionSchema.parse(JSON.parse(packageSource));
+
     const packageLock = PackageLockSchema.parse(JSON.parse(new TextDecoder().decode(lockfile)));
+
     lockedDefinition = PackageDefinitionSchema.parse(packageLock.packages[""]);
   } catch (error) {
     throw new Error("Integration package metadata is invalid", { cause: error });
   }
+
   if (packageDefinition.workspaces !== undefined) {
     throw new Error("Integration packages cannot declare npm workspaces");
   }
+
   if (packageDefinition.type !== "module") {
     throw new Error('Integration package.json requires "type": "module"');
   }
+
   if (packageDefinition.files === undefined) {
     throw new Error('Integration package.json requires an explicit "files" allowlist');
   }
+
   for (const path of packageDefinition.files) {
     if (
       path === "." ||
@@ -161,15 +182,19 @@ export async function packIntegration(inputDirectory: string): Promise<PackedInt
       throw new Error(`Integration package files entry ${JSON.stringify(path)} is too broad`);
     }
   }
+
   const declaredFiles = packageDefinition.files.map((path) => path.replace(/\/+$/, ""));
+
   if (
     packageDefinition.bundledDependencies !== undefined ||
     packageDefinition.bundleDependencies !== undefined
   ) {
     throw new Error("Integration packages cannot bundle node_modules");
   }
+
   for (const field of DependencyFields) {
     const dependencies = packageDefinition[field] ?? {};
+
     for (const [name, specifier] of Object.entries(dependencies)) {
       if (!RegistryDependencyPattern.test(specifier)) {
         throw new Error(
@@ -177,7 +202,9 @@ export async function packIntegration(inputDirectory: string): Promise<PackedInt
         );
       }
     }
+
     const locked = lockedDefinition[field] ?? {};
+
     if (
       Object.keys(dependencies).length !== Object.keys(locked).length ||
       Object.entries(dependencies).some(([name, specifier]) => locked[name] !== specifier)
@@ -187,8 +214,10 @@ export async function packIntegration(inputDirectory: string): Promise<PackedInt
   }
 
   const destination = await mkdtemp(join(tmpdir(), "beetl-connect-pack-"));
+
   try {
     let stdout: string;
+
     try {
       const result = await ExecFile(
         Npm[0]!,
@@ -204,30 +233,41 @@ export async function packIntegration(inputDirectory: string): Promise<PackedInt
         ],
         { cwd: directory, encoding: "utf8", maxBuffer: 5 * 1024 * 1024, windowsHide: true },
       );
+
       stdout = result.stdout;
     } catch (error) {
       throw new Error("Could not pack integration with npm", { cause: error });
     }
+
     let value: unknown;
+
     try {
       value = JSON.parse(stdout);
     } catch (error) {
       throw new Error("npm returned an invalid pack result", { cause: error });
     }
+
     const parsed = NpmPackResultSchema.safeParse(value);
+
     if (!parsed.success) {
       throw new Error(`Invalid npm pack result: ${z.prettifyError(parsed.error)}`);
     }
+
     const packed = parsed.data[0]!;
+
     if (packed.size > Limits.archive) {
       throw new Error("Integration package exceeds 25 MiB");
     }
+
     const files = new Set(packed.files.map(({ path }) => path));
+
     if (!files.has("integration.ts")) {
       throw new Error("npm package must include integration.ts");
     }
+
     const privateFile = [...files].find((path) => {
       const segments = path.split("/");
+
       return (
         segments.some(
           (segment) =>
@@ -235,26 +275,33 @@ export async function packIntegration(inputDirectory: string): Promise<PackedInt
         ) || path.endsWith(".ndjson")
       );
     });
+
     if (privateFile !== undefined) {
       throw new Error(`Integration package contains private runtime file ${privateFile}`);
     }
+
     const undeclaredFile = [...files].find(
       (path) =>
         path !== "package.json" &&
         !/^(?:readme|licen[cs]e)(?:\..*)?$/i.test(path) &&
         !declaredFiles.some((declared) => path === declared || path.startsWith(`${declared}/`)),
     );
+
     if (undeclaredFile !== undefined) {
       throw new Error(`npm included ${undeclaredFile} outside the package files allowlist`);
     }
+
     if (packed.unpackedSize + lockfile.byteLength > Limits.expanded) {
       throw new Error("Integration package expands beyond 50 MiB");
     }
+
     if (basename(packed.filename) !== packed.filename) {
       throw new Error("npm returned an invalid package filename");
     }
+
     const archive = join(destination, packed.filename);
     const unpacked = join(destination, "unpacked");
+
     await mkdir(unpacked);
     await extractTar({ cwd: unpacked, file: archive, strict: true });
     await writeFile(join(unpacked, "package", "package-lock.json"), lockfile);
@@ -269,8 +316,11 @@ export async function packIntegration(inputDirectory: string): Promise<PackedInt
       },
       ["package"],
     );
+
     const bytes = new Uint8Array(await readFile(archive));
+
     assertSize("integration package", bytes, Limits.archive);
+
     return {
       bytes,
       filename: packed.filename,
@@ -283,17 +333,21 @@ export async function packIntegration(inputDirectory: string): Promise<PackedInt
 
 export async function buildIntegration(inputPath: string): Promise<BuiltIntegration> {
   const directory = await realpath(resolve(inputPath));
+
   if (!(await stat(directory)).isDirectory()) {
     throw new Error("build requires an integration package directory");
   }
+
   const packed = await packIntegration(directory);
   const temporary = await mkdtemp(join(tmpdir(), "beetl-connect-build-"));
+
   try {
     const sourceArchive = join(temporary, packed.filename);
     const sourceDirectory = join(temporary, "source");
     const sourcePackage = join(sourceDirectory, "package");
     const runtimeDirectory = join(temporary, "runtime");
     const runtimePackage = join(runtimeDirectory, "package");
+
     await Promise.all([writeFile(sourceArchive, packed.bytes), mkdir(sourceDirectory)]);
     await extractTar({ cwd: sourceDirectory, file: sourceArchive, strict: true });
 
@@ -311,6 +365,7 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
       recursive: true,
       filter: (path) => {
         const child = relative(sourcePackage, path);
+
         return (
           child === "" ||
           (!child.split(/[/\\]/).includes("node_modules") && !/\.(?:[cm]?ts|tsx)$/.test(path))
@@ -323,6 +378,7 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
         if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
       },
     );
+
     try {
       await ExecFile(
         Npm[0]!,
@@ -342,13 +398,13 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
     }
 
     const sdkDirectory = join(runtimePackage, "node_modules/@beetlio/connect");
+
     await rm(sdkDirectory, { recursive: true, force: true });
     await mkdir(sdkDirectory, { recursive: true });
     await Promise.all([
-      copyFile(SdkEntry, join(sdkDirectory, "index.js")),
-      copyFile(SdkManifestEntry, join(sdkDirectory, "manifest.js")),
-      copyFile(new URL("./storage.js", import.meta.url), join(sdkDirectory, "storage.js")),
-      copyFile(new URL("./batching.js", import.meta.url), join(sdkDirectory, "batching.js")),
+      ...["index", "manifest", "records", "auth", "forms", "http", "json"].map((name) =>
+        copyFile(new URL(`./${name}.js`, import.meta.url), join(sdkDirectory, `${name}.js`)),
+      ),
       cp(ZodDirectory, join(sdkDirectory, "node_modules/zod"), { recursive: true }),
     ]);
     await writeFile(
@@ -362,26 +418,32 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
     );
 
     const evaluationPackage = join(temporary, "evaluation");
+
     await cp(runtimePackage, evaluationPackage, { recursive: true });
-    const integration = await importIntegration(
+
+    const { integration, manifest } = await importIntegration(
       join(evaluationPackage, "integration.js"),
       inputPath,
     );
-    validateIntegration(integration);
-    const manifest = createIntegrationManifest(integration);
+
+    IntegrationManifestSchema.parse(manifest);
+
     const manifestSource = `${JSON.stringify(manifest, null, 2)}\n`;
+
     assertSize("manifest.json", Encoder.encode(manifestSource), Limits.manifest);
+
     const icon = await loadIntegrationIcon(
       join(runtimePackage, "integration.js"),
       integration.icon,
     );
+
     await Promise.all([
       writeFile(join(runtimePackage, "manifest.json"), manifestSource),
       writeFile(
         join(runtimePackage, "integration.mjs"),
         `import { setSourceMapsSupport } from "node:module";
 import { isDeepStrictEqual } from "node:util";
-import { createIntegrationManifest } from "@beetlio/connect";
+import { createIntegrationManifest } from "./node_modules/@beetlio/connect/manifest.js";
 setSourceMapsSupport(true);
 const { default: integration } = await import("./integration.js");
 
@@ -395,6 +457,7 @@ export default integration;
     ]);
 
     const archivePath = join(temporary, "integration-runtime.tgz");
+
     await createTar(
       {
         cwd: runtimeDirectory,
@@ -406,8 +469,11 @@ export default integration;
       },
       ["package"],
     );
+
     const archive = new Uint8Array(await readFile(archivePath));
+
     assertSize("runtime artifact", archive, Limits.runtime);
+
     return {
       archive,
       manifest,
@@ -424,38 +490,50 @@ export async function withIntegration<Value>(
   action: (integration: IntegrationDefinition) => Value | Promise<Value>,
 ): Promise<Value> {
   assertSize("runtime artifact", archive, Limits.runtime);
+
   const directory = await mkdtemp(join(tmpdir(), "beetl-connect-runtime-"));
   const archivePath = join(directory, "integration-runtime.tgz");
+
   try {
     await writeFile(archivePath, archive);
     await extractTar({ cwd: directory, file: archivePath, strict: true });
 
+    const manifestValue: unknown = JSON.parse(
+      await readFile(join(directory, "package/manifest.json"), "utf8"),
+    );
     const manifest = z
       .object({
         manifestVersion: z.unknown(),
         hostContractVersion: z.unknown().optional(),
       })
-      .parse(JSON.parse(await readFile(join(directory, "package/manifest.json"), "utf8")));
+      .parse(manifestValue);
 
-    if (manifest.manifestVersion !== 2) {
+    if (manifest.manifestVersion !== 3) {
       throw new Error(
-        `Unsupported manifest version ${JSON.stringify(manifest.manifestVersion)}; supported: 2. Upgrade the execution host SDK or rebuild with a supported SDK.`,
+        `Unsupported manifest version ${JSON.stringify(manifest.manifestVersion)}; supported: 3. Upgrade the execution host SDK or rebuild with a supported SDK.`,
       );
     }
-    assertSupportedHostContractVersion(manifest.hostContractVersion);
 
-    const integration = await importIntegration(
+    assertSupportedHostContractVersion(manifest.hostContractVersion);
+    IntegrationManifestSchema.parse(manifestValue);
+
+    const { integration } = await importIntegration(
       join(directory, "package/integration.mjs"),
       "runtime artifact",
     );
+
     return await action(integration);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 }
 
-async function importIntegration(path: string, source: string): Promise<IntegrationDefinition> {
+async function importIntegration(
+  path: string,
+  source: string,
+): Promise<ReturnType<typeof parseIntegration>> {
   let module: { default?: unknown };
+
   try {
     module = (await import(`${pathToFileURL(path).href}?${crypto.randomUUID()}`)) as {
       default?: unknown;
@@ -466,10 +544,12 @@ async function importIntegration(path: string, source: string): Promise<Integrat
       { cause: error },
     );
   }
+
   if (!module.default || typeof module.default !== "object") {
     throw new Error(`${source} must default-export an integration`);
   }
-  return module.default as IntegrationDefinition;
+
+  return parseIntegration(module.default);
 }
 
 async function loadIntegrationIcon(
@@ -477,26 +557,35 @@ async function loadIntegrationIcon(
   declared: string | undefined,
 ): Promise<BuiltIntegrationIcon | undefined> {
   if (declared === undefined) return;
+
   if (declared !== "icon.png" && declared !== "icon.webp") {
     throw new Error("Integration icon must be icon.png or icon.webp beside integration.ts");
   }
+
   let bytes: Uint8Array;
+
   try {
     bytes = new Uint8Array(await readFile(join(dirname(entryPath), declared)));
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       throw new Error(`Integration declares missing ${declared}`);
     }
+
     throw error;
   }
+
   assertSize(declared, bytes, Limits.icon);
+
   try {
     const image = sharp(bytes, { failOn: "warning", limitInputPixels: 4096 ** 2 });
+
     if ((await image.metadata()).format !== declared.slice(5)) throw new Error();
+
     await image.raw().toBuffer();
   } catch {
     throw new Error(`${declared} does not contain a valid ${declared.slice(5)} image`);
   }
+
   return {
     filename: declared,
     mediaType: declared === "icon.png" ? "image/png" : "image/webp",
@@ -524,6 +613,9 @@ async function compileIntegration(sourceDirectory: string, outputDirectory: stri
     noEmit: false,
     noEmitOnError: true,
     noUncheckedIndexedAccess: true,
+    noImplicitReturns: true,
+    noFallthroughCasesInSwitch: true,
+    erasableSyntaxOnly: true,
     outDir: outputDirectory,
     rewriteRelativeImportExtensions: true,
     rootDir: sourceDirectory,
@@ -540,17 +632,22 @@ async function compileIntegration(sourceDirectory: string, outputDirectory: stri
   const sourceFiles = ts.sys
     .readDirectory(sourceDirectory, [".ts", ".mts", ".cts"], ["node_modules"])
     .filter((path) => !path.replaceAll("\\", "/").includes("/node_modules/"));
+
   if (!sourceFiles.includes(entryPath))
     throw new Error("Integration package must include integration.ts");
+
   const program = ts.createProgram(sourceFiles, options);
   const diagnostics = ts
     .getPreEmitDiagnostics(program)
     .filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+
   if (diagnostics.length > 0) throw typeScriptError(diagnostics, sourceDirectory);
+
   const emitted = program.emit();
   const emitErrors = emitted.diagnostics.filter(
     (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
   );
+
   if (emitErrors.length > 0) throw typeScriptError(emitErrors, sourceDirectory);
 }
 
@@ -558,6 +655,7 @@ function typeScriptError(diagnostics: readonly ts.Diagnostic[], directory: strin
   const hint = diagnostics.some((diagnostic) => diagnostic.code === 2307)
     ? "\nInstall dependencies with `npm install` and retry."
     : "";
+
   return new Error(
     `TypeScript check failed:\n${ts
       .formatDiagnostics(diagnostics, {

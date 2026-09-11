@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,6 +41,110 @@ try {
 
   const installed = join(consumer, "node_modules/@beetlio/connect");
   const definition = JSON.parse(await readFile(join(installed, "package.json"), "utf8"));
+
+  assert.deepEqual(Object.keys(definition.exports).sort(), [".", "./builder", "./host"]);
+
+  await writeFile(
+    join(consumer, "consumer.ts"),
+    `
+import { auth, defineIntegration, z } from "@beetlio/connect";
+import {
+  buildIntegration,
+  compatibilityFixturesUrl,
+  createIntegrationManifest,
+} from "@beetlio/connect/builder";
+import {
+  beginOAuthAuthorization,
+  createProvider,
+  prepareOAuthAuthorization,
+  runSync,
+  type CommitAction,
+} from "@beetlio/connect/host";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+
+const integration = defineIntegration({
+  key: "consumer",
+  displayName: "Consumer",
+  connection: { origin: "https://example.com", auth: auth.bearer() },
+  syncs: (sync) => ({
+    items: sync({
+      records: z.object({ id: z.string() }),
+      inputs: z.strictObject({ id: z.string() }),
+      checkpoint: z.number(),
+      async *run(ctx) {
+        yield { records: [{ id: ctx.config.sync.id }], checkpoint: 1 };
+      },
+    }),
+  }),
+});
+const provider = createProvider(integration.connection, { credentials: { token: "test" } });
+const action: CommitAction = "continue";
+
+const oauth = await prepareOAuthAuthorization({
+  origin: { type: "input", input: "tenant" },
+  inputs: z.strictObject({ tenant: z.url() }),
+  auth: auth.oauth2({ issuer: "/", authorizationUrl: "/authorize", tokenUrl: "/token", scopes: [] }),
+}, { connectionConfig: { tenant: "https://tenant.example.com" }, credentials: { clientId: "client" } });
+const authorization = await beginOAuthAuthorization({
+  ...oauth,
+  redirectUri: "https://app.example.com/callback",
+});
+
+assert.equal(new URL(authorization.authorizationUrl).origin, "https://tenant.example.com");
+
+createIntegrationManifest(integration);
+await runSync(integration, { sync: "items", syncConfig: { id: "1" } }, {
+  ...provider,
+  async commit(batch) {
+    assert.deepEqual(batch.records, [{ id: "1" }]);
+    return action;
+  },
+});
+
+const inventory = z.object({
+  fixtures: z.array(z.object({ source: z.string(), manifest: z.json() })).min(1),
+}).parse(JSON.parse(await readFile(compatibilityFixturesUrl, "utf8")));
+const fixture = inventory.fixtures[0]!;
+const built = await buildIntegration(fileURLToPath(new URL(fixture.source, compatibilityFixturesUrl)));
+
+assert.deepEqual(built.manifest, fixture.manifest);
+`,
+  );
+  await exec(
+    process.execPath,
+    [
+      join(consumer, "node_modules/typescript/bin/tsc"),
+      "--noEmit",
+      "--strict",
+      "--exactOptionalPropertyTypes",
+      "--noUncheckedIndexedAccess",
+      "--noImplicitReturns",
+      "--erasableSyntaxOnly",
+      "--target",
+      "ES2024",
+      "--module",
+      "NodeNext",
+      "consumer.ts",
+    ],
+    { ...options, cwd: consumer },
+  );
+
+  await exec(process.execPath, ["consumer.ts"], { ...options, cwd: consumer });
+
+  // The installed process entry point must load and report protocol errors.
+  const host = spawnSync(process.execPath, [join(installed, "dist/server-host.js")], {
+    ...options,
+    cwd: consumer,
+    encoding: "utf8",
+    input: '{"protocolVersion":999}\n',
+    timeout: 15_000,
+  });
+
+  assert.equal(host.status, 1, host.stderr);
+  assert.equal(host.stdout, "");
+  assert.match(host.stderr, /Unsupported execution protocol version 999.*supported: 1.*Upgrade/);
 
   const result = await exec(
     process.execPath,

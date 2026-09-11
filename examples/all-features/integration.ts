@@ -1,19 +1,19 @@
-import { auth, defineIntegration, input, z } from "@beetlio/connect";
+import { auth, defineIntegration, z } from "@beetlio/connect";
 
 const Contact = z.object({
   id: z.string(),
   email: z.string(),
   updatedAt: z.string(),
 });
-
 const Event = z.object({
   id: z.string(),
   type: z.string(),
   createdAt: z.string(),
 });
-
-const PageConfig = input.object({
-  pageSize: input.integer({ label: "Page size", min: 1, max: 100, default: 50 }),
+const PageConfig = z.strictObject({
+  pageSize: z.number().int().min(1).max(100).default(50).meta({
+    title: "Page size",
+  }),
 });
 
 export default defineIntegration({
@@ -21,10 +21,12 @@ export default defineIntegration({
   displayName: "All features dummy API",
   connection: {
     origin: "https://api.example.com",
-    inputs: input.object({
-      workspace: input.string({ label: "Workspace", minLength: 1 }),
+    inputs: z.strictObject({
+      workspace: z.string().min(1).meta({
+        title: "Workspace",
+      }),
     }),
-    auth: auth.oauth2AuthorizationCode({
+    auth: auth.oauth2({
       clientSecret: true,
       issuer: "https://auth.example.com",
       authorizationUrl: "https://auth.example.com/oauth/authorize",
@@ -42,13 +44,14 @@ export default defineIntegration({
       const response = await ctx.fetch(
         `/v1/me?workspace=${encodeURIComponent(ctx.config.workspace)}`,
       );
+
       if (!response.ok) throw new Error(`Verification failed with ${response.status}`);
+
       await ctx.log.info("Connection verified");
     },
   },
-  syncs: (defineSync) => [
-    defineSync({
-      key: "contacts",
+  syncs: (defineSync) => ({
+    contacts: defineSync({
       displayName: "Contacts",
       mode: "merge",
       records: Contact,
@@ -57,63 +60,67 @@ export default defineIntegration({
         pagination: z.object({ offset: z.number().int().nonnegative() }),
       }),
       inputs: PageConfig,
-      async run(ctx) {
+      async *run(ctx) {
         let offset = ctx.checkpoint?.pagination.offset ?? 0;
+
         for await (const page of ctx.paginate({
-          path: `/v1/contacts?workspace=${encodeURIComponent(ctx.config.connection.workspace)}`,
-          records: Contact,
-          headers: { "x-api-version": "2026-08-01" },
-          pagination: {
-            type: "offset",
-            offsetParameter: "offset",
-            limitParameter: "limit",
-            limit: ctx.config.sync.pageSize,
-            responsePath: "data",
-            initialOffset: offset,
+          request: {
+            path: `/v1/contacts?workspace=${encodeURIComponent(ctx.config.connection.workspace)}`,
+            query: { offset, limit: ctx.config.sync.pageSize },
+            headers: { "x-api-version": "2026-08-01" },
           },
+          schema: z.object({ data: z.array(Contact) }),
+          next: ({ data, request }) =>
+            data.data.length < ctx.config.sync.pageSize
+              ? undefined
+              : { ...request, query: { offset: offset, limit: ctx.config.sync.pageSize } },
         })) {
-          offset += page.records.length;
-          await ctx.emit({
-            records: page.records,
+          offset += page.data.data.length;
+          yield {
+            records: page.data.data,
             checkpoint: { pagination: { offset } },
-          });
+          };
         }
+
         await ctx.log.info("Emitted contacts");
       },
     }),
-    defineSync({
-      key: "events",
+    events: defineSync({
       displayName: "Events",
       records: Event,
       checkpoint: z.object({
         watermark: z.object({ lastSeenId: z.string() }),
       }),
       inputs: PageConfig,
-      async run(ctx) {
+      async *run(ctx) {
         const params = new URLSearchParams({
           workspace: ctx.config.connection.workspace,
           ...(ctx.checkpoint === undefined ? {} : { since: ctx.checkpoint.watermark.lastSeenId }),
         });
+
         for await (const page of ctx.paginate({
-          path: `/v1/events?${params}`,
-          records: Event,
-          pagination: {
-            type: "cursor",
-            cursorParameter: "after",
-            cursorPath: "paging.next",
-            limitParameter: "limit",
-            limit: ctx.config.sync.pageSize,
-            responsePath: "data",
-          },
+          request: { path: `/v1/events?${params}`, query: { limit: ctx.config.sync.pageSize } },
+          schema: z.object({
+            data: z.array(Event),
+            paging: z.object({ next: z.string().optional() }),
+          }),
+          next: ({ data, request }) =>
+            data.paging.next === undefined
+              ? undefined
+              : { ...request, query: { after: data.paging.next, limit: ctx.config.sync.pageSize } },
         })) {
-          const lastSeenId = page.records.at(-1)!.id;
-          await ctx.emit({
-            records: page.records,
+          const lastSeenId = page.data.data.at(-1)?.id;
+
+          if (lastSeenId === undefined) continue;
+
+          yield {
+            records: page.data.data,
             checkpoint: { watermark: { lastSeenId } },
-          });
+          };
         }
+
         await ctx.log.info("Emitted events");
       },
     }),
-  ],
+  }),
 });

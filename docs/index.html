@@ -5,666 +5,401 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Build and run TypeScript API integrations from the command line with Connect."
+      content="Author API integrations for the Beetl data processing platform with the Beetl Connect SDK. Installation, authentication, pagination, and local development."
     />
-    <meta name="theme-color" content="#ffffff" />
-    <meta property="og:title" content="Connect CLI documentation" />
-    <meta
-      property="og:description"
-      content="Create API integrations, fetch validated records, and write NDJSON from your terminal."
-    />
-    <meta property="og:type" content="website" />
-    <meta property="og:url" content="https://beetlio.github.io/connect/" />
-    <link rel="canonical" href="https://beetlio.github.io/connect/" />
+    <title>User guide · Beetl Connect SDK</title>
+    <link rel="icon" href="./beetl-logo.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./styles.css" />
-    <title>Connect CLI documentation</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/asciinema-player@3.17.0/dist/bundle/asciinema-player.css"
+    />
   </head>
   <body>
     <a class="skip-link" href="#content">Skip to content</a>
-
-    <header class="topbar">
-      <div class="topbar-inner">
-        <a class="project-name" href="#overview"
-          ><img src="./beetl-logo.svg" alt="" />@beetlio/connect</a
-        >
-        <span class="docs-label">Documentation</span>
-        <span class="version">v0.2.0</span>
-        <nav aria-label="Project links">
-          <a href="https://github.com/beetlio/connect">GitHub</a>
-          <a href="https://github.com/beetlio/connect/blob/main/CONTRIBUTING.md">Contributing</a>
-        </nav>
-      </div>
+    <header>
+      <a class="brand" href="#content"><img src="./beetl-logo.svg" alt="" />Beetl Connect SDK</a>
+      <nav aria-label="Project links"><a href="https://github.com/beetlio/connect">GitHub</a></nav>
     </header>
-
-    <details class="mobile-nav">
-      <summary>Documentation sections</summary>
-      <nav aria-label="Mobile documentation navigation">
-        <a href="#overview">Overview</a>
-        <a href="#installation">Installation</a>
-        <a href="#authoring">Create an integration</a>
-        <a href="#running">Run it</a>
-        <a href="#cli">CLI reference</a>
-        <a href="#authentication">Authentication</a>
-        <a href="#syncs">Sync behavior</a>
-        <a href="#examples">Examples</a>
-        <a href="#wikidata">Wikidata</a>
-        <a href="#scope">Current scope</a>
-      </nav>
-    </details>
-
     <div class="layout">
-      <aside class="sidebar">
-        <nav aria-label="Documentation navigation">
-          <p>Getting started</p>
-          <a href="#overview">Overview</a>
-          <a href="#installation">Installation</a>
-          <a href="#authoring">Create an integration</a>
-          <a href="#running">Run it</a>
-
-          <p>CLI reference</p>
-          <a href="#cli">Commands and options</a>
+      <aside>
+        <nav aria-label="User guide">
+          <strong>User guide</strong>
+          <a href="#getting-started">Get started</a>
+          <a href="#configuration">Configuration</a>
           <a href="#authentication">Authentication</a>
-          <a href="#syncs">Sync behavior</a>
-
-          <p>Examples</p>
-          <a href="#examples">Included examples</a>
-          <a href="#wikidata">Wikidata sync</a>
-
-          <p>Project</p>
-          <a href="#scope">Current scope</a>
+          <a href="#requests">Requests &amp; pagination</a>
+          <a href="#records">Records &amp; checkpoints</a>
+          <a href="#cli">Local development</a>
+          <a href="#examples">Examples &amp; reference</a>
         </nav>
       </aside>
-
       <main id="content">
-        <section id="overview" class="document-header">
-          <p class="breadcrumb">Getting started</p>
-          <h1>Build API integrations from your terminal</h1>
-          <p class="lead">
-            Connect is a CLI for creating TypeScript integrations, fetching data from APIs, and
-            writing validated records as NDJSON.
-          </p>
-
-          <div class="notice warning">
-            <strong>Experimental</strong>
-            <p>
-              The project is currently version 0.2.0. Supported APIs and execution contracts follow
-              the <a href="./compatibility.md">compatibility policy</a>, including reusable host
-              fixtures and a documented breaking-release process.
-            </p>
-          </div>
-
-          <dl class="facts">
-            <div>
-              <dt>Command</dt>
-              <dd><code>beetl-connect</code></dd>
-            </div>
-            <div>
-              <dt>Record output</dt>
-              <dd>NDJSON</dd>
-            </div>
-            <div>
-              <dt>Integrations</dt>
-              <dd>TypeScript + Zod</dd>
-            </div>
-            <div>
-              <dt>License</dt>
-              <dd>Apache 2.0</dd>
-            </div>
-          </dl>
-
-          <h2>From API to NDJSON</h2>
+        <h1>Beetl Connect SDK</h1>
+        <p class="lead">
+          A TypeScript library for authoring API integrations for the Beetl data processing
+          platform.
+        </p>
+        <p>
+          Define a connection and one or more syncs. Each sync fetches provider data and yields
+          record batches. Connect handles authentication, retries, validation, and checkpoints.
+        </p>
+        <section id="getting-started">
+          <h2>Get started</h2>
           <p>
-            Define an API's inputs, authentication, record schema, and sync behavior in one
-            <code>integration.ts</code> file. The CLI validates it, runs it, persists checkpoints,
-            and writes the records.
+            Use <strong>Node.js 24.2 or newer</strong>. In a new directory, create
+            <code>package.json</code>:
           </p>
-          <pre><code>beetl-connect configure .
-beetl-connect sync . --output records.ndjson
-beetl-connect pack .</code></pre>
-        </section>
+          <pre><code class="language-json">{
+  &quot;name&quot;: &quot;my-integration&quot;,
+  &quot;version&quot;: &quot;0.0.0&quot;,
+  &quot;private&quot;: true,
+  &quot;type&quot;: &quot;module&quot;,
+  &quot;files&quot;: [&quot;integration.ts&quot;]
+}</code></pre>
+          <p>Install the SDK:</p>
+          <pre><code class="language-sh">npm install --save-dev @beetlio/connect</code></pre>
+          <p>Create <code>integration.ts</code>. This integration reads one public GitHub user:</p>
+          <pre><code class="language-ts" id="quickstart-code">import { defineIntegration, z } from &quot;@beetlio/connect&quot;;
 
-        <section id="installation">
-          <h2>Installation</h2>
-          <p>
-            Node.js 24.2 or newer is required. The package includes the SDK and everything needed by
-            the CLI.
-          </p>
-
-          <h3>Global CLI</h3>
-          <p>
-            To make <code>beetl-connect</code> available system-wide, install the same package
-            globally:
-          </p>
-          <pre><code>npm install --global @beetlio/connect</code></pre>
-
-          <h3>Project-local CLI</h3>
-          <p>Install Connect in an integration project and run it with <code>npx</code>:</p>
-          <pre><code>npm install --save-dev @beetlio/connect
-npx beetl-connect --help</code></pre>
-          <p>
-            Integrations are npm packages. Set <code>"type": "module"</code>, add an explicit
-            <code>"files": ["integration.ts", "src"]</code> allowlist, and commit the
-            <code>package-lock.json</code> maintained by npm.
-          </p>
-        </section>
-
-        <section id="authoring">
-          <h2>Create an integration</h2>
-          <p>
-            Create <code>integration.ts</code>. This complete example fetches a GitHub user's public
-            repositories.
-          </p>
-
-          <pre><code>import { defineIntegration, input, z } from "@beetlio/connect";
-
-const Repository = z.object({
-  id: z.number(),
-  name: z.string(),
-  html_url: z.url(),
-});
+const User = z.object({ id: z.number(), login: z.string() });
 
 export default defineIntegration({
-  key: "github",
-  displayName: "GitHub repositories",
-  connection: { origin: "https://api.github.com" },
-  syncs: (defineSync) =&gt; [
-    defineSync({
-      key: "repositories",
-      displayName: "Repositories",
-      mode: "replace",
-      records: Repository,
-      inputs: input.object({
-        user: input.string({ label: "GitHub user", default: "octocat" }),
-      }),
-      async run(ctx) {
-        const user = encodeURIComponent(ctx.config.sync.user);
-        const response = await ctx.fetch(`/users/${user}/repos?per_page=100`);
-        if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
-        await ctx.emit({
-          records: z.array(Repository).parse(await response.json()),
-        });
+  key: &quot;github&quot;,
+  displayName: &quot;GitHub&quot;,
+  connection: { origin: &quot;https://api.github.com&quot; },
+  syncs: (sync) =&gt; ({
+    users: sync({
+      mode: &quot;replace&quot;,
+      records: User,
+      async *run(ctx) {
+        const user = await ctx.json(&quot;/users/octocat&quot;, User);
+
+        yield { records: [user] };
       },
     }),
-  ],
+  }),
 });</code></pre>
-
-          <h3>Provider request boundary</h3>
+          <p>Configure it, then write the result to a local file:</p>
+          <pre><code class="language-sh">npx beetl-connect configure . users
+npx beetl-connect sync . users --output users.ndjson</code></pre>
+          <p>The output is one JSON object per line. Run only trusted integration code locally.</p>
+          <figure>
+            <div
+              id="demo-player"
+              role="region"
+              aria-label="Terminal recording of the GitHub quickstart"
+            ></div>
+            <noscript
+              ><img
+                src="./demo.gif"
+                alt="The configure and sync commands produce a GitHub user record in users.ndjson."
+            /></noscript>
+            <figcaption>The quickstart running with the local CLI.</figcaption>
+          </figure>
+        </section>
+        <section id="configuration">
+          <h2>Configuration</h2>
           <p>
-            Paths passed to <code>ctx.fetch()</code> must be relative to the configured origin and
-            begin with <code>/</code>. Absolute and scheme-relative URLs are rejected. Request
-            promises must be awaited; requests still running when the integration returns are
-            cancelled. Emits and logs already submitted before return are settled in order.
+            Put shared settings in <code>connection.inputs</code> and per-sync settings in the
+            sync's <code>inputs</code>. Both use <code>z.strictObject()</code>:
           </p>
-
-          <h3>Runtime validation</h3>
+          <pre><code class="language-ts">inputs: z.strictObject({
+  workspace: z.string().min(1).meta({ title: &quot;Workspace ID&quot; }),
+  limit: z.number().int().min(1).max(100).default(25),
+}),</code></pre>
           <p>
-            Connection and sync configuration uses <code>input.object()</code> and the non-secret
-            <code>input.*</code> field helpers. Built-in authentication owns its credential schema;
-            custom authentication uses <code>credential.*</code>. Each descriptor directly owns its
-            parser and manifest representation. Records use supported Zod object schemas; Connect
-            generates their canonical JSON Schema in manifest v2 and validates values with the
-            original Zod schema at runtime. Checkpoint schemas must preserve their serialized JSON
-            values.
+            Read them as <code>ctx.config.connection</code> and <code>ctx.config.sync</code>. A
+            connection's <code>verify(ctx)</code> reads its inputs directly from
+            <code>ctx.config</code>.
+          </p>
+          <p>
+            Strings, numbers, booleans, enums, arrays, nested strict objects, optional fields, and
+            validated defaults produce portable forms. Use
+            <code>.meta({ title, description })</code> for labels and help. For free-form JSON, use
+            <code>z.json().meta({ "x-beetl-widget": "json" })</code>.
+          </p>
+          <p>
+            Input schemas cannot use transforms or custom refinements that a form cannot represent.
+            Credentials belong in <code>connection.auth</code>, not ordinary inputs.
+          </p>
+          <h3>Provider origins</h3>
+          <p>
+            Use a fixed origin such as <code>https://api.example.com</code>, or select it from
+            connection inputs:
+          </p>
+          <pre><code class="language-ts">origin: {
+  type: &quot;environment&quot;,
+  input: &quot;environment&quot;,
+  values: { live: &quot;https://api.example.com&quot;, test: &quot;https://sandbox.example.com&quot; },
+},
+inputs: z.strictObject({ environment: z.enum([&quot;live&quot;, &quot;test&quot;]) }),</code></pre>
+          <p>
+            For a tenant URL, use <code>{ type: "input", input: "baseUrl" }</code> with a required
+            URL input. OAuth can derive the origin from
+            <code>{ type: "oauth", oauthTokenField: "instanceUrl" }</code>, provided that field is
+            mapped in <code>auth.oauth2({ tokenFields: … })</code>. Authenticated origins require
+            HTTPS, except for loopback development.
           </p>
         </section>
-
-        <section id="running">
-          <h2>Configure and run it</h2>
-          <p>
-            Configure the integration, then run it. Calling <code>sync</code> first opens the same
-            configuration flow when the default profile or connection is missing.
-          </p>
-          <pre><code>beetl-connect configure . repositories
-beetl-connect sync . repositories --output repositories.ndjson
-head -n 1 repositories.ndjson</code></pre>
-          <p>
-            Use <code>--profile name</code> for another saved configuration, or
-            <code>configure</code> to update one explicitly. Without <code>--output</code>, Connect
-            writes a timestamped NDJSON file in the current directory.
-          </p>
-        </section>
-
         <section id="authentication">
           <h2>Authentication</h2>
           <p>
-            Authentication is declared on the connection. The CLI collects its credentials and adds
-            authentication to provider requests. Integration code never receives credentials or
-            provider-issued OAuth state directly.
+            Import <code>auth</code> from <code>@beetlio/connect</code> and set
+            <code>connection.auth</code>. Omit it for public APIs.
           </p>
-
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Type</th>
-                  <th>Declaration</th>
-                  <th>Request behavior</th>
+                  <th>Helper</th>
+                  <th>Use</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>None</td>
-                  <td><code>auth.none()</code></td>
-                  <td>No authentication added</td>
-                </tr>
-                <tr>
-                  <td>Bearer</td>
                   <td><code>auth.bearer()</code></td>
-                  <td>Adds an Authorization bearer token</td>
+                  <td>Bearer token</td>
                 </tr>
                 <tr>
-                  <td>Basic</td>
                   <td><code>auth.basic()</code></td>
-                  <td>Adds HTTP Basic authentication</td>
+                  <td>Username and password</td>
                 </tr>
                 <tr>
-                  <td>API key</td>
-                  <td><code>auth.apiKey(...)</code></td>
-                  <td>Adds a header or query parameter</td>
+                  <td><code>auth.apiKey({ in: "header", name: "x-api-key" })</code></td>
+                  <td>API key in a header or query parameter</td>
                 </tr>
                 <tr>
-                  <td>Custom</td>
-                  <td><code>auth.custom(...)</code></td>
-                  <td>Maps multiple credentials to headers or query parameters</td>
+                  <td><code>auth.oauth2({ issuer, authorizationUrl, tokenUrl, scopes })</code></td>
+                  <td>Authorization code flow with PKCE and refresh</td>
                 </tr>
                 <tr>
-                  <td>Token exchange</td>
-                  <td><code>auth.tokenExchange(...)</code></td>
-                  <td>Exchanges credentials for a cached, expiring bearer token</td>
+                  <td><code>auth.tokenExchange({ credentials, request, response })</code></td>
+                  <td>Exchange credentials for a session token</td>
                 </tr>
                 <tr>
-                  <td>OAuth 2.0</td>
-                  <td><code>auth.oauth2AuthorizationCode(...)</code></td>
-                  <td>Uses an access token and can refresh after a 401</td>
+                  <td><code>auth.custom({ credentials, headers, query })</code></td>
+                  <td>Provider-specific credential placement</td>
                 </tr>
               </tbody>
             </table>
           </div>
+          <p>
+            Built-in helpers define their credential fields. Custom and token-exchange credentials
+            are strict objects of strings. Mark sensitive fields with <code>secret()</code>;
+            credential defaults are not allowed.
+          </p>
+          <pre><code class="language-ts">import { auth, secret, z } from &quot;@beetlio/connect&quot;;
 
-          <div class="notice info">
-            <strong>Transport requirement</strong>
-            <p>
-              Authenticated requests require HTTPS. Loopback HTTP is allowed for local tests and
-              fixtures.
-            </p>
+const authentication = auth.tokenExchange({
+  credentials: z.strictObject({ apiKey: secret(z.string().min(1)) }),
+  request: {
+    path: &quot;/token&quot;,
+    body: { encoding: &quot;json&quot;, fields: { key: { credential: &quot;apiKey&quot; } } },
+  },
+  response: {
+    tokenPath: &quot;access_token&quot;,
+    expiry: { type: &quot;relative&quot;, path: &quot;expires_in&quot; },
+  },
+});</code></pre>
+          <p>
+            Assign <code>authentication</code> to <code>connection.auth</code>. The SDK obtains and
+            reuses the token; sync code keeps calling <code>ctx.fetch</code> or
+            <code>ctx.json</code> without handling credentials.
+          </p>
+          <p>
+            For OAuth, add <code>clientSecret: true</code> when the provider requires one. Endpoints
+            may be absolute or provider-relative if the origin is known before authorization. The
+            CLI prompts for credentials and prints the authorization URL.
+          </p>
+          <h3>Verify a connection</h3>
+          <p>
+            Add <code>async verify(ctx)</code> to the connection and make a small authenticated
+            request. Throw if access is invalid. <code>configure</code> runs verification before
+            saving the profile.
+          </p>
+        </section>
+        <section id="requests">
+          <h2>Requests &amp; pagination</h2>
+          <p>
+            <code>ctx.fetch(path, init?)</code> returns a Response.
+            <code>ctx.json(path, schema, init?)</code> parses successful JSON with Zod and throws
+            <code>HttpError</code> for HTTP failures. The error includes <code>status</code>,
+            bounded <code>detail</code>, and an optional <code>requestId</code>.
+          </p>
+          <p>
+            Requests accept provider-relative paths or same-origin HTTP URLs. The provider enforces
+            origin boundaries and does not follow redirects. By default, transient failures on GET,
+            HEAD, and OPTIONS get up to three attempts. Set <code>connection.retry</code> to tune
+            the policy, or <code>false</code> to disable retries.
+          </p>
+          <p>For an API returning <code>{ items, next }</code>, add a paginated sync like this:</p>
+          <pre><code class="language-ts">items: sync({
+  records: z.object({ id: z.string() }),
+  checkpoint: z.object({ cursor: z.string().nullable() }),
+  async *run(ctx) {
+    const cursor = ctx.checkpoint?.cursor;
+
+    for await (const page of ctx.paginate({
+      request: { path: &quot;/items&quot;, query: cursor ? { cursor } : {} },
+      schema: z.object({
+        items: z.array(z.object({ id: z.string() })),
+        next: z.string().nullable(),
+      }),
+      next: ({ data }) =&gt; data.next === null
+        ? undefined
+        : { path: &quot;/items&quot;, query: { cursor: data.next } },
+    })) {
+      yield { records: page.data.items, checkpoint: { cursor: page.data.next } };
+    }
+  },
+}),</code></pre>
+          <p>
+            <code>next</code> receives parsed data, response status and headers, the request, and
+            the page index. Return the next request or <code>undefined</code> to finish. Empty pages
+            can continue; repeated requests and more than 10,000 pages fail.
+          </p>
+          <p>
+            Await context calls and use <code>ctx.signal</code> for other async work. Log through
+            <code>ctx.log</code> so hosts can route messages consistently.
+          </p>
+        </section>
+        <section id="records">
+          <h2>Records &amp; checkpoints</h2>
+          <p>
+            A sync's <code>records</code> schema describes each output row. Use a Zod object whose
+            output can be represented as JSON Schema. Provider-response schemas may transform data
+            before it becomes a record.
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Mode</th>
+                  <th>Meaning</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>append</code> (default)</td>
+                  <td>Add records to existing data.</td>
+                </tr>
+                <tr>
+                  <td><code>replace</code></td>
+                  <td>Publish a completed generation as the new dataset.</td>
+                </tr>
+                <tr>
+                  <td><code>merge</code></td>
+                  <td>
+                    Update rows by a required <code>primaryKey</code>. Yield
+                    <code>deletedKeys</code> to remove rows.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
           <p>
-            Built-in authentication declarations own their credential schemas. Bearer and API keys
-            are non-empty secrets, Basic auth permits an empty password, and OAuth uses
-            <code>clientSecret: true</code> for confidential clients. Use
-            <code>credential.string()</code> and <code>credential.secret()</code> only for custom
-            and token-exchange authentication, with <code>minLength</code> when empty values are not
-            valid.
+            Merge keys must be required, scalar, non-null fields. Each deletion contains exactly
+            those fields. Only merge syncs accept deletions.
           </p>
-
-          <h3>Named connections</h3>
           <p>
-            <code>configure</code> collects connection and sync inputs as one JSON object and
-            prompts separately for credentials so secret fields remain masked. It authenticates and
-            verifies before saving either object. Existing credentials and OAuth state are retained
-            unless <code>--reauthorize</code> is supplied. Integration code sees none of these
-            secrets.
+            Use <code>yield* batchRecords(records)</code> for record-only streams: it groups up to
+            100 records or about 1 MiB per batch. A larger record is emitted alone. Use
+            <code>storageRecord(providerSchema)</code> when dynamic JSON fields need fixed storage
+            columns.
           </p>
-          <pre><code>beetl-connect configure . repositories --connection default \
-  --inputs '{"connection":{},"sync":{"user":"octocat"}}'</code></pre>
           <p>
-            The local authorization-code flow uses
-            <code>http://localhost:53682/oauth/callback</code>; register that redirect URI with the
-            provider. It uses PKCE and either a public client or <code>client_secret_post</code>.
-            Hosted authorization does not use the loopback address: the platform owns its public
-            callback, exchanges the code, and stores the resulting authorization state. Redirect
-            addresses therefore do not belong in uploaded integration source.
+            For resumable work, declare a <code>checkpoint</code> schema and yield the position to
+            resume <em>after</em> each batch. The host commits records and checkpoint before asking
+            for more data. A failed commit does not advance the checkpoint.
+          </p>
+          <p>
+            Checkpoints are opaque JSON; absent and <code>null</code> are different. Validation must
+            preserve their exact value. A host can stop after a checkpoint-bearing batch; the
+            generator's <code>finally</code> runs before execution returns.
           </p>
         </section>
-
-        <section id="syncs">
-          <h2>Sync behavior</h2>
-
-          <h3>Append syncs</h3>
-          <p>
-            Append is the default mode. Each emitted batch is appended to the output file. If the
-            sync declares a checkpoint schema, the latest emitted checkpoint is persisted and can be
-            supplied to the next run. Checkpoint schemas validate without rewriting: the same JSON
-            value is emitted, persisted, and supplied as <code>ctx.checkpoint</code>.
-          </p>
-
-          <h3>Replace syncs</h3>
-          <p>
-            A local sync with <code>mode: "replace"</code> writes to a staged file and replaces the
-            previous output only after the complete run succeeds. Hosted generation ownership
-            belongs to the downstream materializer.
-          </p>
-
-          <h3>Merge syncs</h3>
-          <p>
-            A sync with <code>mode: "merge"</code> declares a non-empty top-level
-            <code>primaryKey</code>. Calls to <code>ctx.emit()</code> contain upsert
-            <code>records</code> and may contain explicit <code>deletedKeys</code>. Local Merge
-            output mirrors each emitted batch as one NDJSON envelope; the downstream system owns
-            table materialization.
-          </p>
-
-          <h3>Record schemas and continuation</h3>
-          <p>
-            Records are non-null top-level JSON objects; nested objects and arrays are allowed.
-            Connect emits the Zod output schema as JSON Schema, while each consumer validates its
-            supported storage subset. Merge keys must be required, scalar, and non-null. A
-            controller may end a hosted worker segment after committing a checkpoint-bearing batch;
-            this remains private host policy and <code>ctx.emit()</code> continues to return
-            <code>Promise&lt;void&gt;</code>.
-          </p>
-          <p>
-            Hosted batches and commit acknowledgments use a duplex NDJSON protocol. The integration
-            runtime never receives destination publication credentials. An external controller owns
-            publication, the hard process deadline, and termination.
-          </p>
-
-          <h3>Pagination</h3>
-          <p>
-            <code>ctx.paginate()</code> supports cursor, offset, and provider-supplied next-URL
-            pagination. It validates page records and includes response status and normalized
-            headers on each yielded page without rewriting provider values. The sync record schema
-            normalizes records once at <code>ctx.emit()</code>. An optional
-            <code>hasMorePath</code> points to a response boolean that explicitly controls whether
-            pagination continues. Continuations are followed across empty pages; malformed or
-            repeated continuations fail the sync, and a run is limited to 10,000 pages. Integrations
-            can use <code>ctx.fetch()</code> directly when a provider requires a different strategy.
-          </p>
-
-          <h3>Retries</h3>
-          <p>
-            The CLI retries safe methods for common transient HTTP statuses and transport failures.
-            A connection can override or disable the policy. Provider response bodies are limited to
-            16 MiB.
-          </p>
-          <pre><code>retry: {
-  maxAttempts: 5,
-  statuses: [429, 502, 503, 504],
-  methods: ["GET"],
-  initialDelayMs: 500,
-  maxDelayMs: 30_000,
-}</code></pre>
-        </section>
-
         <section id="cli">
-          <h2>CLI reference</h2>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Command</th>
-                  <th>Description</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>
-                    <code
-                      >configure &lt;integration&gt; [key] [--profile &lt;name&gt;] [--connection
-                      &lt;name&gt;] [--origin &lt;url&gt;] [--inputs &lt;json&gt;]
-                      [--reauthorize]</code
-                    >
-                  </td>
-                  <td>Configure inputs, authenticate, and verify.</td>
-                </tr>
-                <tr>
-                  <td><code>sync &lt;integration&gt; [key]</code></td>
-                  <td>
-                    Run one sync and write NDJSON records. The key is optional for a single-sync
-                    integration.
-                  </td>
-                </tr>
-                <tr>
-                  <td><code>pack &lt;integration&gt;</code></td>
-                  <td>Create an npm package for a hosted build.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <h3>Common options</h3>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Option</th>
-                  <th>Purpose</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td><code>--connection name</code></td>
-                  <td>Use a named connection instead of <code>default</code></td>
-                </tr>
-                <tr>
-                  <td><code>--profile name</code></td>
-                  <td>Use a named profile instead of <code>default</code></td>
-                </tr>
-                <tr>
-                  <td><code>--origin url</code></td>
-                  <td>Override the provider origin for <code>configure</code></td>
-                </tr>
-                <tr>
-                  <td><code>--inputs json</code></td>
-                  <td>Provide <code>connection</code> and <code>sync</code> input objects</td>
-                </tr>
-                <tr>
-                  <td><code>--reauthorize</code></td>
-                  <td>Collect credentials and authorize again</td>
-                </tr>
-                <tr>
-                  <td><code>--output path</code></td>
-                  <td>Override the NDJSON output path</td>
-                </tr>
-                <tr>
-                  <td><code>--state path</code></td>
-                  <td>Override the checkpoint state path</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div class="notice info">
-            <strong>Trusted code</strong>
-            <p>
-              Integrations are executable code. Only configure, pack, or run integrations you trust.
-              Hosted builds must treat uploaded source packages as untrusted.
-            </p>
-          </div>
+          <h2>Local development</h2>
           <p>
-            <code>pack</code> accepts a self-contained npm application containing
-            <code>integration.ts</code>, <code>package.json</code>, and the committed
-            <code>package-lock.json</code>. It uses <code>npm pack --ignore-scripts</code> for npm's
-            standard file selection, then adds the lockfile to the resulting <code>.tgz</code>.
-            <code>package.json</code> must contain an explicit <code>files</code> allowlist. Connect
-            rejects npm-selected files outside it and private runtime paths at any depth, then
-            prints the included files. Package metadata, README, and license files remain implicit.
-            Registry dependencies and npm aliases are supported; <code>pack</code> rejects local
-            paths, workspaces, Git repositories, and remote tarballs. Dependency declarations must
-            exactly match the lockfile root.
+            <code>configure</code> saves connection settings and a sync profile. Supply inputs
+            interactively or as JSON:
           </p>
-          <pre><code>{ "files": ["integration.ts", "src", "icon.png"] }</code></pre>
+          <pre><code class="language-sh">npx beetl-connect configure . users --profile demo \
+  --inputs &#x27;{&quot;connection&quot;:{},&quot;sync&quot;:{}}&#x27;
+npx beetl-connect sync . users --profile demo --output users.ndjson</code></pre>
           <p>
-            The npm package is transport, not a trusted build artifact: <code>pack</code> does not
-            compile or execute the integration. A hosted platform must safely unpack it in an
-            untrusted build job, enforce package limits, run <code>npm ci --ignore-scripts</code>,
-            validate the exact upload, and call the same builder used by the local CLI:
-          </p>
-          <pre><code>import { buildIntegration } from "@beetlio/connect/builder";
-
-const { archive, manifest, icon, sdkVersion } = await buildIntegration("/workspace/integration");</code></pre>
-          <p>
-            The builder compiles the package into a Node.js 24.2 module tree, prunes development
-            dependencies with npm, adds the runtime SDK, and returns an immutable
-            <code>.tgz</code> archive. ESM, CommonJS dependencies, package assets,
-            <code>__dirname</code>, and <code>import.meta.url</code> retain their ordinary Node
-            behavior because dependencies are not forced into one JavaScript file. Runtime jobs
-            extract and execute the archive in gVisor on an isolated node pool. Local
-            <code>sync</code> uses the same builder and archive loader. Use
-            <code>ctx.fetch()</code> for managed authentication, retries, and origin enforcement;
-            direct external requests receive none of the connection's managed credentials.
+            Use <code>--connection</code> to share a named connection across profiles,
+            <code>--origin</code> to override the provider origin, and <code>--reauthorize</code> to
+            collect credentials again. Credentials are owner-readable files in the operating
+            system's user configuration directory; they are not encrypted.
           </p>
           <p>
-            Builds never run dependency lifecycle scripts. Packages that require install-time code
-            or native compilation are outside the first-release runtime contract.
+            <code>sync</code> saves checkpoints under <code>.beetl/state/</code> by default.
+            Override that with <code>--state</code>. Append and replace write record NDJSON; replace
+            publishes the file only after success. Merge writes batch envelopes containing records
+            and deletions.
+          </p>
+          <h3>Package for Beetl</h3>
+          <pre><code class="language-sh">npx beetl-connect pack . --output github.tgz</code></pre>
+          <p>
+            Keep <code>integration.ts</code>, <code>package.json</code>, and the lockfile in the
+            project. List source and assets in <code>package.json</code>'s
+            <code>files</code> allowlist. Registry dependencies are supported; local paths,
+            workspaces, Git dependencies, and remote tarballs are not.
           </p>
           <p>
-            Hosted v1 treats uploaded integrations as operator-approved executable code. gVisor
-            isolates workloads from platform infrastructure, but it does not prevent integration
-            code or an npm dependency from forwarding fetched data elsewhere. Third-party
-            marketplace integrations require a separate egress policy and are outside the first
-            release.
-          </p>
-          <p>
-            Profiles and named connections are stored with owner-only permissions in the operating
-            system's user configuration directory: <code>$XDG_CONFIG_HOME/beetl-connect</code> on
-            Linux, <code>~/Library/Preferences/beetl-connect</code> on macOS, and
-            <code>%APPDATA%\beetl-connect\Config</code> on Windows. Connections contain credentials
-            and OAuth authorization state where applicable. Saved secrets are bound to the provider
-            origin and authentication definition. Connections are not encrypted. Profiles and
-            connections carry revisions; changed inputs and explicit reauthorization create new
-            revisions, while automatic OAuth refresh preserves them. Sync checkpoints remain under
-            <code>.beetl/state</code> and are isolated by the built artifact digest and those
-            revisions. Only one local process may use a state path at a time. Configuration and
-            OAuth-backed syncs also lock their named connection so authorization refresh cannot
-            race. Concurrent operations fail instead of waiting. If a process is forcibly killed,
-            remove its adjacent <code>.lock</code> file only after confirming no operation still
-            uses it.
+            The archive contains source for a hosted build. Packing does not execute the
+            integration. Check the printed file list before sharing it. Run
+            <code>npx beetl-connect &lt;command&gt; --help</code> for all options.
           </p>
         </section>
-
         <section id="examples">
-          <h2>Included examples</h2>
-          <div class="example-list">
-            <article>
-              <div>
-                <h3>Basic dummy API</h3>
-                <span>Minimal</span>
-              </div>
-              <p>
-                Shows definition, record validation, connection verification, direct fetch, and
-                replace output.
-              </p>
-              <a href="https://github.com/beetlio/connect/blob/main/examples/basic/integration.ts"
-                >View source</a
+          <h2>Examples &amp; reference</h2>
+          <ul>
+            <li>
+              <a href="https://github.com/beetlio/connect/tree/main/examples/basic">Basic</a> — a
+              small integration with verification.
+            </li>
+            <li>
+              <a href="https://github.com/beetlio/connect/tree/main/examples/all-features"
+                >All features</a
               >
-            </article>
-            <article>
-              <div>
-                <h3>All-features dummy API</h3>
-                <span>Reference</span>
-              </div>
-              <p>
-                Shows OAuth declarations, connection and sync configuration, retries, custom
-                headers, cursor and offset pagination, checkpoints, and logging.
-              </p>
-              <a
-                href="https://github.com/beetlio/connect/blob/main/examples/all-features/integration.ts"
-                >View source</a
-              >
-            </article>
-            <article>
-              <div>
-                <h3>Wikidata</h3>
-                <span>Public API</span>
-              </div>
-              <p>
-                Shows an unauthenticated public API, required client identification, bounded
-                results, and cursor pagination.
-              </p>
-              <a
-                href="https://github.com/beetlio/connect/blob/main/examples/wikidata/integration.ts"
-                >View source</a
-              >
-            </article>
-          </div>
+              — OAuth, configuration, pagination, and checkpoints.
+            </li>
+            <li>
+              <a href="https://github.com/beetlio/connect/tree/main/examples/wikidata">Wikidata</a>
+              — a public API integration you can run locally.
+            </li>
+          </ul>
           <p>
-            The dummy integrations use the reserved <code>api.example.com</code> domain. Their tests
-            use local HTTP fixture servers.
-          </p>
-        </section>
-
-        <section id="wikidata">
-          <h2>Running the Wikidata sync</h2>
-          <p>
-            The <code>entities</code> sync calls Wikidata's <code>wbsearchentities</code> API. It
-            returns search-result metadata rather than complete claims or relationships.
-          </p>
-          <p>
-            Local commands use the <code>default</code> profile. If it does not exist, the CLI
-            prompts for one JSON object containing the declared inputs before continuing.
-          </p>
-          <pre><code>beetl-connect sync examples/wikidata entities</code></pre>
-          <p>For automation, supply the same validated input object non-interactively:</p>
-          <pre><code>beetl-connect configure examples/wikidata entities \
-  --inputs '{"connection":{"userAgent":"my-wikidata-sync/1.0 (me@example.com)"},"sync":{"search":"open source","language":"en","maxResults":25}}'
-beetl-connect sync examples/wikidata entities</code></pre>
-
-          <h3>Output record</h3>
-          <pre><code>{
-  "id": "Q39162",
-  "label": "open source",
-  "description": "philosophy about free redistribution and access to a product",
-  "aliases": [],
-  "url": "https://www.wikidata.org/wiki/Q39162"
-}</code></pre>
-          <p>
-            <code>maxResults</code> defaults to 100 and accepts values from 1 through 500.
-            <code>pageSize</code> defaults to 25 and accepts values from 1 through 50.
-          </p>
-          <p>
-            Wikidata structured data is available under
-            <a href="https://www.wikidata.org/wiki/Wikidata:Licensing">CC0</a>. Automated clients
-            must follow Wikimedia's
-            <a
-              href="https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_API_Usage_Guidelines"
-              >API usage guidelines</a
+            The basic and all-features examples use mocked APIs in tests. For host implementers, see
+            the
+            <a href="https://github.com/beetlio/connect/blob/main/ARCHITECTURE.md">architecture</a>,
+            <a href="https://github.com/beetlio/connect/blob/main/docs/compatibility.md"
+              >compatibility contract</a
+            >, and
+            <a href="https://github.com/beetlio/connect/blob/main/docs/host-protocol.md"
+              >process protocol</a
             >.
           </p>
+          <p>SDK 0.3 supports manifest v3 and host contract v3. The process protocol is v1.</p>
         </section>
-
-        <section id="scope">
-          <h2>Current scope</h2>
-          <p>
-            Connect is a standalone local CLI and integration toolkit. It supports named
-            connections. Local connection files are owner-readable but are not encrypted, and there
-            is no registry or sandbox for untrusted integrations.
-          </p>
-
-          <h2>Development commands</h2>
-          <pre><code>npm run build
-npm run check
-npm test</code></pre>
-          <p>
-            See
-            <a href="https://github.com/beetlio/connect/blob/main/CONTRIBUTING.md"
-              >CONTRIBUTING.md</a
-            >
-            for contribution requirements.
-          </p>
-        </section>
+        <footer>
+          <a href="https://github.com/beetlio/connect/blob/main/CONTRIBUTING.md">Contribute</a
+          ><a href="https://github.com/beetlio/connect/blob/main/SECURITY.md">Security</a
+          ><span>Apache-2.0</span>
+        </footer>
       </main>
-
-      <aside class="page-toc">
-        <nav aria-label="On this page">
-          <p>On this page</p>
-          <a href="#overview">Overview</a>
-          <a href="#installation">Installation</a>
-          <a href="#authoring">Create an integration</a>
-          <a href="#running">Run it</a>
-          <a href="#cli">CLI reference</a>
-          <a href="#authentication">Authentication</a>
-          <a href="#syncs">Sync behavior</a>
-          <a href="#examples">Examples</a>
-          <a href="#wikidata">Wikidata</a>
-          <a href="#scope">Current scope</a>
-        </nav>
-      </aside>
     </div>
-
-    <footer>
-      <div><strong>@beetlio/connect</strong><span>A Beetl project · Apache License 2.0</span></div>
-      <p>Documentation for the experimental 0.2.0 release.</p>
-    </footer>
+    <script src="https://cdn.jsdelivr.net/npm/asciinema-player@3.17.0/dist/bundle/asciinema-player.min.js"></script>
+    <script>
+      AsciinemaPlayer.create("./demo.cast", document.getElementById("demo-player"), {
+        autoPlay: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+        loop: true,
+        fit: "width",
+        theme: "asciinema",
+      });
+    </script>
   </body>
 </html>

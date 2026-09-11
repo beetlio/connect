@@ -7,40 +7,33 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { z } from "zod";
 import { extract } from "tar";
+import { z } from "zod";
 
 import { buildIntegration, withIntegration } from "./artifact.ts";
-import type { IntegrationDefinition } from "./index.ts";
+import { BatchSchema, RunResultSchema } from "./execution-schema.ts";
+import { replacePrivateFile } from "./file-sink.ts";
 import {
   runSync,
   verifyConnection,
-  type EmitAction,
+  type CommitAction,
   type EmittedBatch,
   type SyncHost,
 } from "./host.ts";
-import { LocalHost, replacePrivateFile } from "./local-host.ts";
-import { resolveOAuthOrigin } from "./oauth-origin.ts";
+import type { IntegrationDefinition } from "./index.ts";
+import { IntegrationManifestSchema } from "./manifest.ts";
 import {
+  OAuthAuthorizationStateSchema,
   beginOAuthAuthorization,
   completeOAuthAuthorization,
+  prepareOAuthAuthorization,
   type OAuthAuthorizationState,
 } from "./oauth.ts";
+import { createProvider, withAuthenticationSettlement } from "./provider.ts";
 
 const JsonObject = z.record(z.string(), z.json());
 const Credentials = z.record(z.string(), z.string());
-const AuthorizationState = z
-  .strictObject({
-    accessToken: z.string().min(1),
-    refreshToken: z.string().min(1).nullish(),
-    tokenFields: z.record(z.string(), z.string()),
-  })
-  .transform(({ accessToken, refreshToken, tokenFields }): OAuthAuthorizationState => ({
-    accessToken,
-    ...(refreshToken == null ? {} : { refreshToken }),
-    tokenFields,
-  }));
-const OptionalAuthorizationState = AuthorizationState.nullish().transform(
+const OptionalAuthorizationState = OAuthAuthorizationStateSchema.nullish().transform(
   (authorizationState) => authorizationState ?? undefined,
 );
 const HostFetch = globalThis.fetch.bind(globalThis);
@@ -68,7 +61,9 @@ const RuntimeSyncRequest = z.strictObject({
   authorizationState: OptionalAuthorizationState,
   checkpoint: z.json().optional(),
 });
+
 type RuntimeSyncRequest = z.output<typeof RuntimeSyncRequest>;
+
 const BatchCommitted = z.strictObject({
   protocolVersion: z.literal(1),
   kind: z.literal("batch_committed"),
@@ -112,88 +107,126 @@ const Request = z.discriminatedUnion("operation", [
 async function main(): Promise<void> {
   const readMessage = createMessageReader(process.stdin);
   let workingDirectory: string | undefined;
+
   try {
     const message = await readMessage("Host request", 4 * 1024 * 1024);
+
     assertProtocolVersion(message, true);
 
     const request = Request.parse(message);
     const directory = await mkdtemp(join(tmpdir(), "beetl-connect-server-host-"));
+
     workingDirectory = directory;
+
     if (request.operation === "sync") {
       process.stdout.write = IntegrationWrite;
       await withIntegration(new Uint8Array(await readFile(request.runtimePath)), (integration) =>
         runRuntimeSync(integration, request, readMessage),
       );
+
       return;
     }
+
     const integrationPath = await prepareIntegrationPath(request.integrationPath, directory);
     const { archive, manifest } = await buildIntegration(integrationPath);
 
     if (request.operation === "inspect") {
-      await replacePrivateFile(request.resultPath, JSON.stringify({ manifest }));
+      await replacePrivateFile(
+        request.resultPath,
+        JSON.stringify({ manifest: IntegrationManifestSchema.parse(manifest) }),
+      );
+
       return;
     }
+
     await withIntegration(archive, async (integration) => {
       if (request.operation === "oauth_start" || request.operation === "oauth_callback") {
-        const oauth = integration.connection.auth;
-        if (oauth?.type !== "oauth2_authorization_code") {
-          throw new Error("Integration does not use OAuth authorization code authentication");
-        }
-        await oauth.credentials.schema.parseAsync(request.credentials);
-        const origin = await resolveOAuthOrigin(integration.connection, request.connectionConfig);
+        const options = await prepareOAuthAuthorization(integration.connection, {
+          connectionConfig: request.connectionConfig,
+          credentials: request.credentials,
+          fetch: HostFetch,
+        });
+
         if (request.operation === "oauth_start") {
           const authorization = await beginOAuthAuthorization({
-            auth: oauth,
-            ...(origin === undefined ? {} : { origin }),
-            credentials: request.credentials,
+            ...options,
             redirectUri: request.redirectUri,
-            fetch: HostFetch,
           });
-          await replacePrivateFile(request.resultPath, JSON.stringify(authorization));
+
+          await replacePrivateFile(
+            request.resultPath,
+            JSON.stringify(
+              z
+                .strictObject({
+                  authorizationUrl: z.url(),
+                  state: z.string(),
+                  codeVerifier: z.string(),
+                })
+                .parse(authorization),
+            ),
+          );
+
           return;
         }
+
         const authorizationState = await completeOAuthAuthorization({
-          auth: oauth,
-          ...(origin === undefined ? {} : { origin }),
-          credentials: request.credentials,
+          ...options,
           redirectUri: request.redirectUri,
           callbackUrl: request.callbackUrl,
           state: request.state,
           codeVerifier: request.codeVerifier,
-          fetch: HostFetch,
         });
-        await replacePrivateFile(request.resultPath, JSON.stringify({ authorizationState }));
+
+        await replacePrivateFile(
+          request.resultPath,
+          JSON.stringify({
+            authorizationState: OAuthAuthorizationStateSchema.parse(authorizationState),
+          }),
+        );
+
         return;
       }
 
       const connectionConfig = await (
-        integration.connection.inputs?.schema ?? z.strictObject({})
+        integration.connection.inputs ?? z.strictObject({})
       ).parseAsync(request.connectionConfig);
 
       let authorizationState: OAuthAuthorizationState | undefined = request.authorizationState;
-      const host = new LocalHost({
-        origin: integration.connection.origin,
+      const host = createProvider(integration.connection, {
         connectionConfig,
-        ...(integration.connection.auth === undefined ? {} : { auth: integration.connection.auth }),
         credentials: request.credentials,
         ...(authorizationState === undefined ? {} : { authorizationState }),
         fetch: HostFetch,
-        onLog: (entry) => console.error(JSON.stringify(entry)),
         onAuthorizationStateChanged: (state) => void (authorizationState = state),
       });
 
-      await (integration.connection.auth?.credentials.schema ?? z.strictObject({})).parseAsync(
+      await (integration.connection.auth?.credentials ?? z.strictObject({})).parseAsync(
         request.credentials,
       );
+
       for (const selected of request.syncs) {
-        const sync = integration.syncs.find((candidate) => candidate.key === selected.key);
+        const sync = integration.syncs[selected.key];
+
         if (sync === undefined) throw new Error(`Unknown sync ${JSON.stringify(selected.key)}`);
-        await (sync.inputs?.schema ?? z.strictObject({})).parseAsync(selected.configuration);
+
+        await (sync.inputs ?? z.strictObject({})).parseAsync(selected.configuration);
       }
-      if (manifest.connection.canVerify) {
-        await verifyConnection(integration, { connectionConfig }, host);
-      }
-      await host.settleAuthentication();
+
+      await withAuthenticationSettlement(host, async () => {
+        if (!manifest.connection.canVerify) return;
+
+        await verifyConnection(
+          integration,
+          { connectionConfig },
+          {
+            ...host,
+            async log(entry) {
+              HostError(HostStringify(entry));
+            },
+          },
+        );
+      });
+
       await replacePrivateFile(
         request.resultPath,
         JSON.stringify({
@@ -204,6 +237,7 @@ async function main(): Promise<void> {
     });
   } finally {
     process.stdin.destroy();
+
     if (workingDirectory !== undefined) {
       await rm(workingDirectory, { recursive: true, force: true });
     }
@@ -215,68 +249,80 @@ async function runRuntimeSync(
   request: RuntimeSyncRequest,
   readMessage: (label: string, maxBytes: number) => Promise<unknown>,
 ): Promise<void> {
-  const connectionConfig = await (
-    integration.connection.inputs?.schema ?? z.strictObject({})
-  ).parseAsync(request.connectionConfig);
-  await (integration.connection.auth?.credentials.schema ?? z.strictObject({})).parseAsync(
+  const connectionConfig = await (integration.connection.inputs ?? z.strictObject({})).parseAsync(
+    request.connectionConfig,
+  );
+
+  await (integration.connection.auth?.credentials ?? z.strictObject({})).parseAsync(
     request.credentials,
   );
 
   let authorizationState: OAuthAuthorizationState | undefined = request.authorizationState;
-  const providerHost = new LocalHost({
-    origin: integration.connection.origin,
+  const providerHost = createProvider(integration.connection, {
     connectionConfig,
-    ...(integration.connection.auth === undefined ? {} : { auth: integration.connection.auth }),
     credentials: request.credentials,
     ...(authorizationState === undefined ? {} : { authorizationState }),
     fetch: HostFetch,
-    onLog: (entry) => HostError(HostStringify(entry)),
     onAuthorizationStateChanged: (state) => void (authorizationState = state),
   });
   const host: SyncHost = {
     request: (providerRequest, providerSignal) =>
       providerHost.request(providerRequest, providerSignal),
-    log: (entry) => providerHost.log(entry),
-    emit: (batch) => exchangeBatch(batch, readMessage),
+    log: async (entry) => {
+      HostError(HostStringify(entry));
+    },
+    commit: (batch) => exchangeBatch(batch, readMessage),
   };
 
-  try {
-    const result = await runSync(
+  const result = await withAuthenticationSettlement(providerHost, () =>
+    runSync(
       integration,
-      request.syncKey,
       {
+        sync: request.syncKey,
         connectionConfig,
         syncConfig: request.syncConfig,
         ...(request.checkpoint === undefined ? {} : { checkpoint: request.checkpoint }),
       },
       host,
-    );
-    await providerHost.settleAuthentication();
-    await replacePrivateFile(
-      request.resultPath,
-      HostStringify({
+    ),
+  );
+
+  await replacePrivateFile(
+    request.resultPath,
+    HostStringify(
+      RunResultSchema.extend({
+        authorizationState: OAuthAuthorizationStateSchema.optional(),
+      }).parse({
         ...result,
         ...(authorizationState === undefined ? {} : { authorizationState }),
       }),
-    );
-  } finally {
-    await providerHost.settleAuthentication();
-  }
+    ),
+  );
 }
 
 async function exchangeBatch(
   batch: EmittedBatch,
   readMessage: (label: string, maxBytes: number) => Promise<unknown>,
-): Promise<EmitAction> {
-  await writeMessage({ protocolVersion: 1, kind: "batch", ...batch });
+): Promise<CommitAction> {
+  await writeMessage(
+    BatchSchema.extend({ protocolVersion: z.literal(1), kind: z.literal("batch") }).parse({
+      protocolVersion: 1,
+      kind: "batch",
+      ...batch,
+    }),
+  );
+
   const message = await readMessage("Batch acknowledgment", 64 * 1024);
+
   assertProtocolVersion(message);
 
   const committed = BatchCommitted.parse(message);
+
   if (committed.batchId !== batch.batchId) {
     throw new Error("The controller acknowledged a different batch");
   }
-  return committed.action;
+
+  return committed.action === "yield" ? "stop" : "continue";
 }
 
 function assertProtocolVersion(message: unknown, allowLegacy = false): void {
@@ -299,28 +345,40 @@ function createMessageReader(input: AsyncIterable<Uint8Array | string>) {
   return async (label: string, maxBytes: number): Promise<unknown> => {
     while (true) {
       const newline = buffered.indexOf(0x0a);
+
       if (newline !== -1) {
         if (newline > maxBytes) throw new Error(`${label} is too large`);
+
         const message = buffered.subarray(0, newline);
+
         buffered = buffered.subarray(newline + 1);
+
         return parseMessage(message, label);
       }
+
       if (buffered.length > maxBytes) throw new Error(`${label} is too large`);
 
       const next = await chunks.next();
+
       if (next.done) {
         if (buffered.length === 0) throw new Error(`${label} is missing`);
+
         const message = buffered;
+
         buffered = Buffer.alloc(0);
+
         return parseMessage(message, label);
       }
 
       const chunk = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value);
       const chunkNewline = chunk.indexOf(0x0a);
       const messageBytes = buffered.length + (chunkNewline === -1 ? chunk.length : chunkNewline);
+
       if (messageBytes > maxBytes) throw new Error(`${label} is too large`);
+
       if (chunkNewline === -1) {
         buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk], messageBytes);
+
         continue;
       }
 
@@ -328,7 +386,9 @@ function createMessageReader(input: AsyncIterable<Uint8Array | string>) {
         buffered.length === 0
           ? chunk.subarray(0, chunkNewline)
           : Buffer.concat([buffered, chunk.subarray(0, chunkNewline)], messageBytes);
+
       buffered = chunk.subarray(chunkNewline + 1);
+
       return parseMessage(message, label);
     }
   };
@@ -344,28 +404,35 @@ function parseMessage(message: Buffer<ArrayBufferLike>, label: string): unknown 
 
 async function writeMessage(value: object): Promise<void> {
   const message = HostStringify(value);
+
   if (Buffer.byteLength(message) > MaxBatchBytes) {
     throw new Error(`Emitted batch exceeds ${MaxBatchBytes} bytes`);
   }
+
   if (!HostWrite(`${message}\n`)) await once(process.stdout, "drain");
 }
 
 async function prepareIntegrationPath(path: string, workingDirectory: string): Promise<string> {
   if ((await stat(path)).isDirectory()) return path;
+
   await extract({ cwd: workingDirectory, file: path, strict: true });
+
   const packagePath = join(workingDirectory, "package");
+
   if (!(await stat(packagePath)).isDirectory()) {
     throw new Error("Integration package must contain a package directory");
   }
+
   await ExecFile("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], {
     cwd: packagePath,
     maxBuffer: 5 * 1024 * 1024,
     windowsHide: true,
   });
+
   return packagePath;
 }
 
 main().catch((error: unknown) => {
-  HostError(error instanceof Error ? (error.stack ?? error.message) : String(error));
+  HostError(error);
   process.exitCode = 1;
 });

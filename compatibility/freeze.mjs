@@ -54,7 +54,7 @@ try {
   const artifacts = [];
 
   for (const id of ["bearer", "exchange", "oauth"]) {
-    const source = new URL(`./sources/${id}/`, import.meta.url);
+    const source = new URL(`./frozen/sources/${id}/`, import.meta.url);
     const built = await buildIntegration(fileURLToPath(source));
 
     assert.equal(built.sdkVersion, "0.2.0");

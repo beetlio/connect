@@ -1,27 +1,17 @@
-# Connect runtime protocol v1
+# Process protocol v1
 
-The Connect runtime process executes a built integration artifact and exchanges bounded batches
-and acknowledgments with an external controller over NDJSON. All of it, including the integration
-package and its dependencies, is untrusted by the controller.
+`node node_modules/@beetlio/connect/dist/server-host.js` runs a built integration
+and exchanges NDJSON with a controller. Embedded hosts use `@beetlio/connect/host`;
+see [architecture](../ARCHITECTURE.md) for shared execution and ownership.
 
-The process receives provider credentials required by the integration. It never receives
-destination publication credentials, destination identity, storage paths, or destination contents.
+The process and its dependencies are untrusted. It receives provider credentials,
+never destination credentials or destination contents. The controller isolates it,
+validates output, and owns publication, retries, and idempotency.
 
-## Runtime request
+## Request
 
-This host implements execution protocol v1 and host contracts v1/v2 with manifest v2.
-These numbers are independent of the npm release version. See the
-[compatibility policy and reusable fixtures](compatibility.md).
-
-Initial requests may omit `protocolVersion` (legacy v1) or specify `1`.
-This lets the new host accept old requests; it does not let old strict-schema hosts
-accept the new field. Existing consumers must keep omitting it until their host
-update is coordinated. Unsupported versions are rejected before execution.
-
-The runtime reads the request as the first NDJSON line on standard input. Hosted syncs use the
-immutable artifact produced by `buildIntegration()`, not uploaded source and not
-`outputPath`/`statePath`. Standard input remains open for batch acknowledgments. Standard output
-is reserved for protocol messages; integration logs go to standard error.
+The first stdin line is a request. Keep stdin open for acknowledgments. Stdout is
+reserved for protocol envelopes; integration logs go to stderr.
 
 ```json
 {
@@ -37,14 +27,18 @@ is reserved for protocol messages; integration logs go to standard error.
 }
 ```
 
-`checkpoint` may be any JSON value, including `null`, or may be omitted. For a new Replace refresh,
-the controller omits it. For a continuation segment, the controller supplies the checkpoint
-committed for the unpublished generation.
+`runtimePath` points to a `buildIntegration` artifact, not source. This host supports
+manifest v3 and host contract v3. Initial requests may omit `protocolVersion` or
+specify `1`; adding it to requests sent to older strict-schema hosts requires a
+coordinated update. Unsupported versions fail before execution. See [compatibility](compatibility.md).
 
-## Batch exchange
+Checkpoints may be any JSON value, including null, or absent. A new replace generation
+starts without one. Continuation supplies the last committed checkpoint for the same
+unpublished generation. Hosted syncs do not use local `outputPath` or `statePath`.
 
-For each awaited `ctx.emit()`, the runtime writes one NDJSON envelope to standard output and waits
-for an acknowledgment on standard input:
+## Commit a batch
+
+The process writes one envelope, then waits for an acknowledgment:
 
 ```json
 {
@@ -58,13 +52,11 @@ for an acknowledgment on standard input:
 }
 ```
 
-`deletedKeys` is present only for Merge and contains exactly the declared primary-key fields.
-There is no per-record operation or tombstone record. `checkpoint` is associated with this batch
-and remains opaque JSON. Connect rejects batches above 10,000 changes or 8 MiB. Because the
-runtime process is untrusted, the controller independently validates and bounds every envelope.
+Only merge batches may include `deletedKeys`; each deletion contains exactly the
+primary-key fields. The checkpoint belongs to this batch. Limits are 10,000 changes
+and 8 MiB per batch. The controller independently bounds and validates each envelope.
 
-The controller sends an acknowledgment only after the downstream system has durably committed the
-records, explicit deletions, and associated checkpoint:
+Acknowledge only after records, deletions, and checkpoint have been durably committed:
 
 ```json
 {
@@ -75,20 +67,16 @@ records, explicit deletions, and associated checkpoint:
 }
 ```
 
-`action` is `continue` or `yield`. The controller may return `yield` only for a
-checkpoint-bearing batch.
-Connect ends the segment through a private continuation signal; integration-facing `ctx.emit()`
-remains `Promise<void>`.
+`action` is `continue` or `yield`. Use `yield` only on a checkpoint-bearing batch.
+It maps to embedded action `stop`: the generator closes, runs `finally`, and produces
+no more batches. The controller enforces its decision even if faulty code ignores it.
 
-The external controller owns destination publication credentials, publication retries, and
-idempotency. It retries the exact serialized envelope with the same `batchId`, and the downstream
-system treats `(execution, batchId)` idempotently. A patched or faulty integration process cannot
-bypass a `yield`: the controller already knows the committed action and may terminate the process
-itself.
+For publication retries, reuse the exact serialized envelope and `batchId`.
+The destination treats `(execution, batchId)` idempotently.
 
-## Segment completion
+## Complete a segment
 
-After the integration returns, the host writes the existing `resultPath`:
+After execution, the process writes `resultPath`:
 
 ```json
 {
@@ -100,53 +88,27 @@ After the integration returns, the host writes the existing `resultPath`:
 }
 ```
 
-`outcome` is `completed` or `continuation_required`. A completed Replace segment tells the
-downstream system to publish the retained generation atomically. A continuation keeps that
-generation unpublished and schedules the next segment in the same logical execution. Append and
-Merge retain their committed checkpoint for later refreshes.
+`outcome` is `completed` or `continuation_required`. A completed replace segment
+allows atomic publication of the generation. A continuation leaves it unpublished
+and schedules the next segment of the same execution. Append and merge retain their
+committed checkpoints for later refreshes.
 
-The result is untrusted process output. The controller validates it against the batches and
-acknowledgments it observed before finalizing the segment.
+Validate the result against observed batches and acknowledgments before finalizing.
+The controller also owns cancellation and hard deadlines: terminate the process,
+then use SIGKILL after a grace period if needed. The runtime does not suppress SIGTERM.
+A cooperative `ctx.signal` alone cannot stop blocking or uncooperative integration code.
 
-The controller also owns the hard execution deadline and cancellation. It terminates the runtime
-process when either applies, using `SIGKILL` after a grace period if needed. The runtime installs no
-signal handler that can suppress normal `SIGTERM` termination. This is the only reliable deadline
-for integration code that ignores `ctx.signal` or blocks indefinitely.
+## Manifest and local output
 
-## Manifest v2
+`syncs[].records` is JSON Schema generated from the Zod output schema: a closed,
+non-null root object, with nested objects and arrays allowed. Only merge declares
+`primaryKey`; its fields must be top-level, required, scalar, and non-null. Root-level
+`overwrite()` is forbidden for merge; field normalization applies to records and
+deletion keys alike. Checkpoint schemas cannot rewrite serialized values.
 
-The build manifest is the canonical ConnectionType contract. Sync modes are `append`, `replace`,
-and `merge`; only Merge declares a non-empty `primaryKey`.
+Each consumer owns its supported storage schema subset and rejects manifests it
+cannot map safely. The runtime does not perform destination materialization.
 
-`syncs[].records` is generated from the integration's Zod output schema. Its root is a closed,
-non-null object, and nested objects and arrays are allowed. Connect checks that Merge key fields
-are top-level, required, scalar, and non-null. Merge schemas cannot use root-level Zod
-`overwrite()` because deletion keys contain only key fields; field-level normalization is applied
-consistently to records and deletions.
-
-Connect uses Zod for runtime validation. Each consumer owns its supported JSON Schema subset and
-rejects a manifest whose generated schema cannot map safely to its storage types. Checkpoint
-schemas validate but cannot rewrite the serialized JSON value.
-
-## Ownership
-
-| Concern                                  | Integration package            | Connect runtime process        | External controller and consumer        |
-| ---------------------------------------- | ------------------------------ | ------------------------------ | --------------------------------------- |
-| Provider requests and pagination intent  | Defines                        | Authenticates, retries, bounds | Supplies provider credentials           |
-| Record and checkpoint Zod schemas        | Defines                        | Validates runtime values       | Stores canonical manifest JSON Schema   |
-| Batching                                 | Calls and awaits `ctx.emit()`  | Orders, IDs, validates, bounds | Publishes and commits idempotently      |
-| Merge deletions                          | Emits `deletedKeys`            | Validates exact key shape      | Applies deletes                         |
-| Continuation                             | Emits restart-safe checkpoints | Privately ends after `yield`   | Chooses yield, enforces it, reschedules |
-| Runtime deadline and cancellation        | Cooperates through signal      | May exit cooperatively         | Supervises and terminates process       |
-| Publication endpoint and authentication  | Never sees                     | Never sees                     | Owns and scopes                         |
-| Destination identity                     | Never sees                     | Never sees                     | Resolves and owns                       |
-| Schema compatibility and materialization | Never performs                 | Never performs                 | Owns                                    |
-| Replace generation                       | Emits source records           | Retains no destination state   | Retains and atomically publishes        |
-| Checkpoint persistence                   | Defines meaning                | Carries opaque JSON            | Persists after batch commit             |
-
-## Local CLI
-
-Append and Replace write ordinary record NDJSON. Replace stages one complete local run and renames
-it only after success. Merge writes one NDJSON batch envelope with
-`records` and optional `deletedKeys` per `ctx.emit()`. This makes local behavior observable without
-implementing destination schema compatibility, merge, generation, or continuation machinery.
+The local CLI uses the same executor with a file sink. Append/replace produce record
+NDJSON; replace stages output until success. Merge writes batch envelopes with records
+and deletions. The file sink does not implement a destination database or merge engine.

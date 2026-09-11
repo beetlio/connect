@@ -1,5 +1,7 @@
 node_modules/
 dist/
 .beetl/
+outputs/
+compatibility/frozen/
 *.beetl.zip
 *.ndjson

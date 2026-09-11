@@ -211,7 +211,7 @@
               }
             }
           ],
-          "acknowledgments": ["yield"],
+          "acknowledgments": ["stop"],
           "expected": {
             "batches": [
               {
@@ -1448,95 +1448,6 @@
               }
             }
           }
-        },
-        {
-          "id": "projection-and-batching",
-          "operation": "sync",
-          "input": {
-            "connectionConfig": {
-              "origin": "https://tenant.example"
-            },
-            "credentials": {
-              "clientId": "client",
-              "clientSecret": "secret"
-            },
-            "syncKey": "projected"
-          },
-          "provider": [],
-          "acknowledgments": ["continue"],
-          "expected": {
-            "batches": [
-              {
-                "sequence": 0,
-                "records": [
-                  {
-                    "id": "projected",
-                    "metadata": "{\"nested\":[1,null]}"
-                  }
-                ]
-              }
-            ],
-            "result": {
-              "outcome": "completed",
-              "batches": 1,
-              "records": 1,
-              "deleted": 0
-            }
-          }
-        },
-        {
-          "id": "pagination-error-callback",
-          "operation": "sync",
-          "input": {
-            "connectionConfig": {
-              "origin": "https://tenant.example"
-            },
-            "credentials": {
-              "clientId": "client",
-              "clientSecret": "secret"
-            },
-            "syncKey": "items"
-          },
-          "provider": [
-            {
-              "request": {
-                "method": "POST",
-                "url": "https://tenant.example/token",
-                "headers": {
-                  "content-type": "application/json"
-                },
-                "bodyJson": {
-                  "username": "client",
-                  "password": "secret"
-                }
-              },
-              "response": {
-                "status": 200,
-                "json": {
-                  "session": "access-1"
-                }
-              }
-            },
-            {
-              "request": {
-                "method": "GET",
-                "url": "https://tenant.example/items",
-                "headers": {
-                  "x-session": "access-1",
-                  "x-client-id": "client"
-                }
-              },
-              "response": {
-                "status": 403,
-                "json": {
-                  "error": "scope"
-                }
-              }
-            }
-          ],
-          "expected": {
-            "error": "Provider scope missing"
-          }
         }
       ]
     },
@@ -1816,85 +1727,6 @@
               "tokenFields": {}
             },
             "authenticationEvents": ["claim", "persist"]
-          }
-        },
-        {
-          "id": "projection-and-batching",
-          "operation": "sync",
-          "input": {
-            "connectionConfig": {
-              "origin": "https://tenant.example"
-            },
-            "credentials": {
-              "clientId": "client",
-              "clientSecret": "secret"
-            },
-            "authorizationState": {
-              "accessToken": "access",
-              "refreshToken": "refresh",
-              "tokenFields": {}
-            },
-            "syncKey": "projected"
-          },
-          "provider": [],
-          "acknowledgments": ["continue"],
-          "expected": {
-            "batches": [
-              {
-                "sequence": 0,
-                "records": [
-                  {
-                    "id": "projected",
-                    "metadata": "{\"nested\":[1,null]}"
-                  }
-                ]
-              }
-            ],
-            "result": {
-              "outcome": "completed",
-              "batches": 1,
-              "records": 1,
-              "deleted": 0
-            }
-          }
-        },
-        {
-          "id": "pagination-error-callback",
-          "operation": "sync",
-          "input": {
-            "connectionConfig": {
-              "origin": "https://tenant.example"
-            },
-            "credentials": {
-              "clientId": "client",
-              "clientSecret": "secret"
-            },
-            "authorizationState": {
-              "accessToken": "access",
-              "refreshToken": "refresh",
-              "tokenFields": {}
-            },
-            "syncKey": "items"
-          },
-          "provider": [
-            {
-              "request": {
-                "method": "GET",
-                "url": "https://tenant.example/items",
-                "headers": {
-                  "authorization": "Bearer access"
-                }
-              },
-              "response": {
-                "status": 403,
-                "json": {
-                  "error": "scope"
-                }
-              }
-            }
-          ],
-          "expected": {
-            "error": "Provider scope missing"
           }
         }
       ]

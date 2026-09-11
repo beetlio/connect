@@ -1,0 +1,56 @@
+name: Stage npm release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    if: github.repository == 'beetlio/connect'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Install npm with staged publishing support
+        run: npm install --global npm@11.16.0 --ignore-scripts
+      - name: Validate release
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const { release } = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+          const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+          assert.equal(release.tag_name, `v${version}`, 'Release tag must match package.json');
+          assert.equal(lock.version, version, 'Lockfile version must match package.json');
+          assert.equal(lock.packages[''].version, version, 'Lockfile root version must match package.json');
+          assert.equal(release.prerelease, version.includes('-'), 'Prerelease flag must match the version');
+          NODE
+      - run: npm ci
+      - run: npm run check
+      - run: npm audit --audit-level=high
+      - run: npm test
+      # npm test already built and checked the package; do not rebuild during staging.
+      - run: npm stage publish --ignore-scripts
+        env:
+          NPM_CONFIG_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}

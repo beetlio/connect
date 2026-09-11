@@ -1,4 +1,4 @@
-import { auth, defineIntegration, input, z } from "@beetlio/connect";
+import { defineIntegration, z } from "@beetlio/connect";
 
 const SearchHit = z.object({
   id: z.string(),
@@ -6,7 +6,6 @@ const SearchHit = z.object({
   description: z.string().optional(),
   aliases: z.array(z.string()).optional(),
 });
-
 const Entity = z.object({
   id: z.string(),
   label: z.string(),
@@ -20,49 +19,43 @@ export default defineIntegration({
   displayName: "Wikidata",
   connection: {
     origin: "https://www.wikidata.org",
-    auth: auth.none(),
-    inputs: input.object({
-      userAgent: input.string({
-        label: "User agent",
+    inputs: z.strictObject({
+      userAgent: z.string().min(1).meta({
+        title: "User agent",
         description: "Identify your application and include a contact address.",
-        minLength: 1,
       }),
     }),
-    pagination: {
-      type: "cursor",
-      cursorParameter: "continue",
-      cursorPath: "search-continue",
-      limitParameter: "limit",
-      responsePath: "search",
-    },
     async verify(ctx) {
       const response = await ctx.fetch(
         "/w/api.php?action=query&meta=siteinfo&format=json&maxlag=5",
         { headers: { "user-agent": ctx.config.userAgent } },
       );
+
       if (!response.ok) {
         throw new Error(`Wikidata connection verification failed with ${response.status}`);
       }
     },
   },
-  syncs: (defineSync) => [
-    defineSync({
-      key: "entities",
+  syncs: (defineSync) => ({
+    entities: defineSync({
       displayName: "Entities",
       mode: "replace",
       records: Entity,
-      inputs: input.object({
-        search: input.string({ label: "Search", minLength: 1 }),
-        language: input.string({ label: "Language", minLength: 1, default: "en" }),
-        pageSize: input.integer({ label: "Page size", min: 1, max: 50, default: 25 }),
-        maxResults: input.integer({
-          label: "Maximum results",
-          min: 1,
-          max: 500,
-          default: 100,
+      inputs: z.strictObject({
+        search: z.string().min(1).meta({
+          title: "Search",
+        }),
+        language: z.string().min(1).default("en").meta({
+          title: "Language",
+        }),
+        pageSize: z.number().int().min(1).max(50).default(25).meta({
+          title: "Page size",
+        }),
+        maxResults: z.number().int().min(1).max(500).default(100).meta({
+          title: "Maximum results",
         }),
       }),
-      async run(ctx) {
+      async *run(ctx) {
         const { search, language, pageSize, maxResults } = ctx.config.sync;
         const path =
           "/w/api.php?" +
@@ -78,23 +71,34 @@ export default defineIntegration({
         let remaining = maxResults;
 
         for await (const page of ctx.paginate({
-          path,
-          records: SearchHit,
-          pagination: { limit: pageSize },
-          headers: { "user-agent": ctx.config.connection.userAgent },
+          request: {
+            path,
+            query: { limit: pageSize },
+            headers: { "user-agent": ctx.config.connection.userAgent },
+          },
+          schema: z.object({
+            search: z.array(SearchHit),
+            "search-continue": z.number().optional(),
+          }),
+          next: ({ data, request }) =>
+            data["search-continue"] === undefined
+              ? undefined
+              : { ...request, query: { limit: pageSize, continue: data["search-continue"] } },
         })) {
-          const records = page.records.slice(0, remaining).map((hit) => ({
+          const records = page.data.search.slice(0, remaining).map((hit) => ({
             id: hit.id,
             label: hit.label ?? hit.id,
             description: hit.description ?? null,
             aliases: hit.aliases ?? [],
             url: `https://www.wikidata.org/wiki/${encodeURIComponent(hit.id)}`,
           }));
-          await ctx.emit({ records });
+
+          yield { records };
           remaining -= records.length;
+
           if (remaining === 0) return;
         }
       },
     }),
-  ],
+  }),
 });
