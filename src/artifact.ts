@@ -633,7 +633,7 @@ async function compileIntegration(sourceDirectory: string, outputDirectory: stri
     .readDirectory(sourceDirectory, [".ts", ".mts", ".cts"], ["node_modules"])
     .filter((path) => !path.replaceAll("\\", "/").includes("/node_modules/"));
 
-  if (!sourceFiles.includes(entryPath))
+  if (!sourceFiles.some((path) => resolve(path) === entryPath))
     throw new Error("Integration package must include integration.ts");
 
   const program = ts.createProgram(sourceFiles, options);

@@ -82,6 +82,7 @@ bytes under an existing version. New host behavior needs a fixture and documente
 Source compatibility is separate. An artifact requirement cannot protect source that
 no longer compiles. Build old source against the candidate SDK and execute previously
 built artifacts for supported historical contracts; neither check replaces the other.
+Source builds support native filesystem paths on Linux, macOS, and Windows.
 
 ## Protocol direction
 
