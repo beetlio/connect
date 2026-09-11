@@ -22,6 +22,12 @@ import {
 } from "./index.ts";
 import { createIntegrationManifest } from "./manifest.ts";
 
+export {
+  HOST_CONTRACT_VERSION,
+  SUPPORTED_HOST_CONTRACT_VERSIONS,
+  assertSupportedHostContractVersion,
+} from "./manifest.ts";
+
 const MaxPaginationPages = 10_000;
 const MaxChangesPerBatch = 10_000;
 

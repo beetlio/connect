@@ -9,6 +9,15 @@ destination publication credentials, destination identity, storage paths, or des
 
 ## Runtime request
 
+This host implements execution protocol v1 and host contracts v1/v2 with manifest v2.
+These numbers are independent of the npm release version. See the
+[compatibility policy and reusable fixtures](compatibility.md).
+
+Initial requests may omit `protocolVersion` (legacy v1) or specify `1`.
+This lets the new host accept old requests; it does not let old strict-schema hosts
+accept the new field. Existing consumers must keep omitting it until their host
+update is coordinated. Unsupported versions are rejected before execution.
+
 The runtime reads the request as the first NDJSON line on standard input. Hosted syncs use the
 immutable artifact produced by `buildIntegration()`, not uploaded source and not
 `outputPath`/`statePath`. Standard input remains open for batch acknowledgments. Standard output

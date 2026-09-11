@@ -1,0 +1,1903 @@
+{
+  "formatVersion": 1,
+  "fixtures": [
+    {
+      "id": "bearer",
+      "scenarios": [
+        {
+          "id": "verify",
+          "operation": "verify",
+          "input": {
+            "connectionConfig": {},
+            "credentials": {
+              "token": "bearer"
+            }
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://provider.example/verify",
+                "headers": {
+                  "authorization": "Bearer bearer"
+                }
+              },
+              "response": {
+                "status": 204
+              }
+            }
+          ],
+          "expected": {
+            "verified": true
+          }
+        },
+        {
+          "id": "verification-failure",
+          "operation": "verify",
+          "input": {
+            "connectionConfig": {},
+            "credentials": {
+              "token": "bearer"
+            }
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://provider.example/verify",
+                "headers": {
+                  "authorization": "Bearer bearer"
+                }
+              },
+              "response": {
+                "status": 403
+              }
+            }
+          ],
+          "expected": {
+            "error": "Verification failed"
+          }
+        },
+        {
+          "id": "sync",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {},
+            "credentials": {
+              "token": "bearer"
+            },
+            "syncKey": "items"
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://provider.example/items",
+                "headers": {
+                  "authorization": "Bearer bearer"
+                }
+              },
+              "response": {
+                "status": 503
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://provider.example/items",
+                "headers": {
+                  "authorization": "Bearer bearer"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "one"
+                    }
+                  ],
+                  "next": "two"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://provider.example/items?cursor=two",
+                "headers": {
+                  "authorization": "Bearer bearer"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "two"
+                    }
+                  ],
+                  "next": null
+                }
+              }
+            }
+          ],
+          "acknowledgments": ["continue", "continue"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "one"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": "two",
+                  "opaque": ["keep", null, false, 0]
+                }
+              },
+              {
+                "sequence": 1,
+                "records": [
+                  {
+                    "id": "two"
+                  }
+                ],
+                "deletedKeys": [
+                  {
+                    "id": "gone"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": null,
+                  "opaque": ["keep", null, false, 0]
+                }
+              }
+            ],
+            "result": {
+              "outcome": "completed",
+              "batches": 2,
+              "records": 2,
+              "deleted": 1,
+              "checkpoint": {
+                "cursor": null,
+                "opaque": ["keep", null, false, 0]
+              }
+            }
+          }
+        },
+        {
+          "id": "yield",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {},
+            "credentials": {
+              "token": "bearer"
+            },
+            "syncKey": "items"
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://provider.example/items",
+                "headers": {
+                  "authorization": "Bearer bearer"
+                }
+              },
+              "response": {
+                "status": 503
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://provider.example/items",
+                "headers": {
+                  "authorization": "Bearer bearer"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "one"
+                    }
+                  ],
+                  "next": "two"
+                }
+              }
+            }
+          ],
+          "acknowledgments": ["yield"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "one"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": "two",
+                  "opaque": ["keep", null, false, 0]
+                }
+              }
+            ],
+            "result": {
+              "outcome": "continuation_required",
+              "batches": 1,
+              "records": 1,
+              "deleted": 0,
+              "checkpoint": {
+                "cursor": "two",
+                "opaque": ["keep", null, false, 0]
+              }
+            }
+          }
+        },
+        {
+          "id": "resume",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {},
+            "credentials": {
+              "token": "bearer"
+            },
+            "syncKey": "items",
+            "checkpoint": {
+              "cursor": "two",
+              "opaque": ["keep", null, false, 0]
+            }
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://provider.example/items?cursor=two",
+                "headers": {
+                  "authorization": "Bearer bearer"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "two"
+                    }
+                  ],
+                  "next": null
+                }
+              }
+            }
+          ],
+          "acknowledgments": ["continue"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "two"
+                  }
+                ],
+                "deletedKeys": [
+                  {
+                    "id": "gone"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": null,
+                  "opaque": ["keep", null, false, 0]
+                }
+              }
+            ],
+            "result": {
+              "outcome": "completed",
+              "batches": 1,
+              "records": 1,
+              "deleted": 1,
+              "checkpoint": {
+                "cursor": null,
+                "opaque": ["keep", null, false, 0]
+              }
+            }
+          }
+        },
+        {
+          "id": "checkpoint-omitted",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {},
+            "credentials": {
+              "token": "bearer"
+            },
+            "syncKey": "checkpoint"
+          },
+          "provider": [],
+          "acknowledgments": ["continue"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "checkpoint"
+                  }
+                ]
+              }
+            ],
+            "result": {
+              "outcome": "completed",
+              "batches": 1,
+              "records": 1,
+              "deleted": 0
+            }
+          }
+        },
+        {
+          "id": "checkpoint-null",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {},
+            "credentials": {
+              "token": "bearer"
+            },
+            "syncKey": "checkpoint",
+            "checkpoint": null
+          },
+          "provider": [],
+          "acknowledgments": ["continue"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "checkpoint"
+                  }
+                ],
+                "checkpoint": null
+              }
+            ],
+            "result": {
+              "outcome": "completed",
+              "batches": 1,
+              "records": 1,
+              "deleted": 0,
+              "checkpoint": null
+            }
+          }
+        },
+        {
+          "id": "checkpoint-nested",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {},
+            "credentials": {
+              "token": "bearer"
+            },
+            "syncKey": "checkpoint",
+            "checkpoint": {
+              "unknown": {
+                "values": [false, 0, "", null]
+              },
+              "cursor": "opaque"
+            }
+          },
+          "provider": [],
+          "acknowledgments": ["continue"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "checkpoint"
+                  }
+                ],
+                "checkpoint": {
+                  "unknown": {
+                    "values": [false, 0, "", null]
+                  },
+                  "cursor": "opaque"
+                }
+              }
+            ],
+            "result": {
+              "outcome": "completed",
+              "batches": 1,
+              "records": 1,
+              "deleted": 0,
+              "checkpoint": {
+                "unknown": {
+                  "values": [false, 0, "", null]
+                },
+                "cursor": "opaque"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "exchange",
+      "scenarios": [
+        {
+          "id": "verify",
+          "operation": "verify",
+          "input": {
+            "connectionConfig": {
+              "environment": "sandbox"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            }
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://sandbox.example/token",
+                "headers": {
+                  "x-client-id": "client",
+                  "x-client-secret": "secret"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "token": "access-1",
+                  "expires_at": "2099-01-01T00:00:00.000Z"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://sandbox.example/verify",
+                "headers": {
+                  "authorization": "Bearer access-1"
+                }
+              },
+              "response": {
+                "status": 204
+              }
+            }
+          ],
+          "expected": {
+            "verified": true
+          }
+        },
+        {
+          "id": "sync",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {
+              "environment": "sandbox"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "syncKey": "items"
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://sandbox.example/token",
+                "headers": {
+                  "x-client-id": "client",
+                  "x-client-secret": "secret"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "token": "access-1",
+                  "expires_at": "2099-01-01T00:00:00.000Z"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://sandbox.example/items",
+                "headers": {
+                  "authorization": "Bearer access-1"
+                }
+              },
+              "response": {
+                "status": 401
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://sandbox.example/token",
+                "headers": {
+                  "x-client-id": "client",
+                  "x-client-secret": "secret"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "token": "access-2",
+                  "expires_at": "2099-01-01T00:00:00.000Z"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://sandbox.example/items",
+                "headers": {
+                  "authorization": "Bearer access-2"
+                }
+              },
+              "response": {
+                "status": 503
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://sandbox.example/items",
+                "headers": {
+                  "authorization": "Bearer access-2"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "one"
+                    }
+                  ],
+                  "next": "two"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://sandbox.example/items?cursor=two",
+                "headers": {
+                  "authorization": "Bearer access-2"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "two"
+                    }
+                  ],
+                  "next": null
+                }
+              }
+            }
+          ],
+          "acknowledgments": ["continue", "continue"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "one"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": "two",
+                  "opaque": ["keep", null, false, 0]
+                }
+              },
+              {
+                "sequence": 1,
+                "records": [
+                  {
+                    "id": "two"
+                  }
+                ],
+                "deletedKeys": [
+                  {
+                    "id": "gone"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": null,
+                  "opaque": ["keep", null, false, 0]
+                }
+              }
+            ],
+            "result": {
+              "outcome": "completed",
+              "batches": 2,
+              "records": 2,
+              "deleted": 1,
+              "checkpoint": {
+                "cursor": null,
+                "opaque": ["keep", null, false, 0]
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "oauth",
+      "scenarios": [
+        {
+          "id": "verify",
+          "operation": "verify",
+          "input": {
+            "connectionConfig": {},
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "authorizationState": {
+              "accessToken": "access",
+              "refreshToken": "refresh",
+              "tokenFields": {
+                "instanceUrl": "https://tenant.example"
+              }
+            }
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/verify",
+                "headers": {
+                  "authorization": "Bearer access"
+                }
+              },
+              "response": {
+                "status": 204
+              }
+            }
+          ],
+          "expected": {
+            "verified": true
+          }
+        },
+        {
+          "id": "sync",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {},
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "authorizationState": {
+              "accessToken": "access",
+              "refreshToken": "refresh",
+              "tokenFields": {
+                "instanceUrl": "https://tenant.example"
+              }
+            },
+            "syncKey": "items"
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/items",
+                "headers": {
+                  "authorization": "Bearer access"
+                }
+              },
+              "response": {
+                "status": 503
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/items",
+                "headers": {
+                  "authorization": "Bearer access"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "one"
+                    }
+                  ],
+                  "next": "two"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/items?cursor=two",
+                "headers": {
+                  "authorization": "Bearer access"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "two"
+                    }
+                  ],
+                  "next": null
+                }
+              }
+            }
+          ],
+          "acknowledgments": ["continue", "continue"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "one"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": "two",
+                  "opaque": ["keep", null, false, 0]
+                }
+              },
+              {
+                "sequence": 1,
+                "records": [
+                  {
+                    "id": "two"
+                  }
+                ],
+                "deletedKeys": [
+                  {
+                    "id": "gone"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": null,
+                  "opaque": ["keep", null, false, 0]
+                }
+              }
+            ],
+            "result": {
+              "outcome": "completed",
+              "batches": 2,
+              "records": 2,
+              "deleted": 1,
+              "checkpoint": {
+                "cursor": null,
+                "opaque": ["keep", null, false, 0]
+              }
+            }
+          }
+        },
+        {
+          "id": "authorization",
+          "operation": "authorization",
+          "input": {
+            "connectionConfig": {},
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "redirectUri": "https://app.example/callback"
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://auth.example/token",
+                "headers": {
+                  "content-type": "application/x-www-form-urlencoded"
+                },
+                "bodyFields": {
+                  "grant_type": "authorization_code",
+                  "code": "code",
+                  "client_id": "client",
+                  "client_secret": "secret"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "access_token": "access",
+                  "token_type": "Bearer",
+                  "refresh_token": "refresh",
+                  "instance_url": "https://tenant.example"
+                }
+              }
+            }
+          ],
+          "expected": {
+            "authorizationUrl": "https://auth.example/authorize",
+            "authorizationState": {
+              "accessToken": "access",
+              "refreshToken": "refresh",
+              "tokenFields": {
+                "instanceUrl": "https://tenant.example"
+              }
+            }
+          }
+        },
+        {
+          "id": "refresh",
+          "operation": "verify",
+          "input": {
+            "connectionConfig": {},
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "authorizationState": {
+              "accessToken": "access",
+              "refreshToken": "refresh",
+              "tokenFields": {
+                "instanceUrl": "https://tenant.example"
+              }
+            }
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/verify",
+                "headers": {
+                  "authorization": "Bearer access"
+                }
+              },
+              "response": {
+                "status": 401
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://auth.example/token",
+                "headers": {
+                  "content-type": "application/x-www-form-urlencoded"
+                },
+                "bodyFields": {
+                  "grant_type": "refresh_token",
+                  "refresh_token": "refresh",
+                  "client_id": "client",
+                  "client_secret": "secret"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "access_token": "renewed",
+                  "token_type": "Bearer",
+                  "refresh_token": "refresh",
+                  "instance_url": "https://renewed.example"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://renewed.example/verify",
+                "headers": {
+                  "authorization": "Bearer renewed"
+                }
+              },
+              "response": {
+                "status": 204
+              }
+            }
+          ],
+          "expected": {
+            "verified": true,
+            "authorizationState": {
+              "accessToken": "renewed",
+              "refreshToken": "refresh",
+              "tokenFields": {
+                "instanceUrl": "https://renewed.example"
+              }
+            },
+            "authenticationEvents": ["claim", "persist"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "exchange-form",
+      "scenarios": [
+        {
+          "id": "verify",
+          "operation": "verify",
+          "input": {
+            "connectionConfig": {
+              "environment": "sandbox"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            }
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://sandbox.example/token",
+                "headers": {
+                  "authorization": "Basic Y2xpZW50OnNlY3JldA==",
+                  "content-type": "application/x-www-form-urlencoded"
+                },
+                "bodyFields": {
+                  "grant_type": "client_credentials",
+                  "scope": "read"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "access_token": "access-1",
+                  "expires_in": 3600
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://sandbox.example/verify",
+                "headers": {
+                  "authorization": "Bearer access-1"
+                }
+              },
+              "response": {
+                "status": 204
+              }
+            }
+          ],
+          "expected": {
+            "verified": true
+          }
+        },
+        {
+          "id": "sync",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {
+              "environment": "sandbox"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "syncKey": "items"
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://sandbox.example/token",
+                "headers": {
+                  "authorization": "Basic Y2xpZW50OnNlY3JldA==",
+                  "content-type": "application/x-www-form-urlencoded"
+                },
+                "bodyFields": {
+                  "grant_type": "client_credentials",
+                  "scope": "read"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "access_token": "access-1",
+                  "expires_in": 3600
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://sandbox.example/items",
+                "headers": {
+                  "authorization": "Bearer access-1"
+                }
+              },
+              "response": {
+                "status": 401
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://sandbox.example/token",
+                "headers": {
+                  "authorization": "Basic Y2xpZW50OnNlY3JldA==",
+                  "content-type": "application/x-www-form-urlencoded"
+                },
+                "bodyFields": {
+                  "grant_type": "client_credentials",
+                  "scope": "read"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "access_token": "access-2",
+                  "expires_in": 3600
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://sandbox.example/items",
+                "headers": {
+                  "authorization": "Bearer access-2"
+                }
+              },
+              "response": {
+                "status": 503
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://sandbox.example/items",
+                "headers": {
+                  "authorization": "Bearer access-2"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "one"
+                    }
+                  ],
+                  "next": "two"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://sandbox.example/items?cursor=two",
+                "headers": {
+                  "authorization": "Bearer access-2"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "two"
+                    }
+                  ],
+                  "next": null
+                }
+              }
+            }
+          ],
+          "acknowledgments": ["continue", "continue"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "one"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": "two",
+                  "opaque": ["keep", null, false, 0]
+                }
+              },
+              {
+                "sequence": 1,
+                "records": [
+                  {
+                    "id": "two"
+                  }
+                ],
+                "deletedKeys": [
+                  {
+                    "id": "gone"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": null,
+                  "opaque": ["keep", null, false, 0]
+                }
+              }
+            ],
+            "result": {
+              "outcome": "completed",
+              "batches": 2,
+              "records": 2,
+              "deleted": 1,
+              "checkpoint": {
+                "cursor": null,
+                "opaque": ["keep", null, false, 0]
+              }
+            }
+          }
+        },
+        {
+          "id": "projection-and-batching",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {
+              "environment": "sandbox"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "syncKey": "projected"
+          },
+          "provider": [],
+          "acknowledgments": ["continue"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "projected",
+                    "metadata": "{\"nested\":[1,null]}"
+                  }
+                ]
+              }
+            ],
+            "result": {
+              "outcome": "completed",
+              "batches": 1,
+              "records": 1,
+              "deleted": 0
+            }
+          }
+        },
+        {
+          "id": "pagination-error-callback",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {
+              "environment": "sandbox"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "syncKey": "items"
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://sandbox.example/token",
+                "headers": {
+                  "authorization": "Basic Y2xpZW50OnNlY3JldA==",
+                  "content-type": "application/x-www-form-urlencoded"
+                },
+                "bodyFields": {
+                  "grant_type": "client_credentials",
+                  "scope": "read"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "access_token": "access-1",
+                  "expires_in": 3600
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://sandbox.example/items",
+                "headers": {
+                  "authorization": "Bearer access-1"
+                }
+              },
+              "response": {
+                "status": 403,
+                "json": {
+                  "error": "scope"
+                }
+              }
+            }
+          ],
+          "expected": {
+            "error": "Provider scope missing"
+          }
+        }
+      ]
+    },
+    {
+      "id": "exchange-json",
+      "scenarios": [
+        {
+          "id": "verify",
+          "operation": "verify",
+          "input": {
+            "connectionConfig": {
+              "origin": "https://tenant.example"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            }
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://tenant.example/token",
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "bodyJson": {
+                  "username": "client",
+                  "password": "secret"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "session": "access-1"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/verify",
+                "headers": {
+                  "x-session": "access-1",
+                  "x-client-id": "client"
+                }
+              },
+              "response": {
+                "status": 204
+              }
+            }
+          ],
+          "expected": {
+            "verified": true
+          }
+        },
+        {
+          "id": "sync",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {
+              "origin": "https://tenant.example"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "syncKey": "items"
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://tenant.example/token",
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "bodyJson": {
+                  "username": "client",
+                  "password": "secret"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "session": "access-1"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/items",
+                "headers": {
+                  "x-session": "access-1",
+                  "x-client-id": "client"
+                }
+              },
+              "response": {
+                "status": 401
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://tenant.example/token",
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "bodyJson": {
+                  "username": "client",
+                  "password": "secret"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "session": "access-2"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/items",
+                "headers": {
+                  "x-session": "access-2",
+                  "x-client-id": "client"
+                }
+              },
+              "response": {
+                "status": 503
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/items",
+                "headers": {
+                  "x-session": "access-2",
+                  "x-client-id": "client"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "one"
+                    }
+                  ],
+                  "next": "two"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/items?cursor=two",
+                "headers": {
+                  "x-session": "access-2",
+                  "x-client-id": "client"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "two"
+                    }
+                  ],
+                  "next": null
+                }
+              }
+            }
+          ],
+          "acknowledgments": ["continue", "continue"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "one"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": "two",
+                  "opaque": ["keep", null, false, 0]
+                }
+              },
+              {
+                "sequence": 1,
+                "records": [
+                  {
+                    "id": "two"
+                  }
+                ],
+                "deletedKeys": [
+                  {
+                    "id": "gone"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": null,
+                  "opaque": ["keep", null, false, 0]
+                }
+              }
+            ],
+            "result": {
+              "outcome": "completed",
+              "batches": 2,
+              "records": 2,
+              "deleted": 1,
+              "checkpoint": {
+                "cursor": null,
+                "opaque": ["keep", null, false, 0]
+              }
+            }
+          }
+        },
+        {
+          "id": "projection-and-batching",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {
+              "origin": "https://tenant.example"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "syncKey": "projected"
+          },
+          "provider": [],
+          "acknowledgments": ["continue"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "projected",
+                    "metadata": "{\"nested\":[1,null]}"
+                  }
+                ]
+              }
+            ],
+            "result": {
+              "outcome": "completed",
+              "batches": 1,
+              "records": 1,
+              "deleted": 0
+            }
+          }
+        },
+        {
+          "id": "pagination-error-callback",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {
+              "origin": "https://tenant.example"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "syncKey": "items"
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://tenant.example/token",
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "bodyJson": {
+                  "username": "client",
+                  "password": "secret"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "session": "access-1"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/items",
+                "headers": {
+                  "x-session": "access-1",
+                  "x-client-id": "client"
+                }
+              },
+              "response": {
+                "status": 403,
+                "json": {
+                  "error": "scope"
+                }
+              }
+            }
+          ],
+          "expected": {
+            "error": "Provider scope missing"
+          }
+        }
+      ]
+    },
+    {
+      "id": "oauth-relative",
+      "scenarios": [
+        {
+          "id": "verify",
+          "operation": "verify",
+          "input": {
+            "connectionConfig": {
+              "origin": "https://tenant.example"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "authorizationState": {
+              "accessToken": "access",
+              "refreshToken": "refresh",
+              "tokenFields": {}
+            }
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/verify",
+                "headers": {
+                  "authorization": "Bearer access"
+                }
+              },
+              "response": {
+                "status": 204
+              }
+            }
+          ],
+          "expected": {
+            "verified": true
+          }
+        },
+        {
+          "id": "sync",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {
+              "origin": "https://tenant.example"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "authorizationState": {
+              "accessToken": "access",
+              "refreshToken": "refresh",
+              "tokenFields": {}
+            },
+            "syncKey": "items"
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/items",
+                "headers": {
+                  "authorization": "Bearer access"
+                }
+              },
+              "response": {
+                "status": 503
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/items",
+                "headers": {
+                  "authorization": "Bearer access"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "one"
+                    }
+                  ],
+                  "next": "two"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/items?cursor=two",
+                "headers": {
+                  "authorization": "Bearer access"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "records": [
+                    {
+                      "id": "two"
+                    }
+                  ],
+                  "next": null
+                }
+              }
+            }
+          ],
+          "acknowledgments": ["continue", "continue"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "one"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": "two",
+                  "opaque": ["keep", null, false, 0]
+                }
+              },
+              {
+                "sequence": 1,
+                "records": [
+                  {
+                    "id": "two"
+                  }
+                ],
+                "deletedKeys": [
+                  {
+                    "id": "gone"
+                  }
+                ],
+                "checkpoint": {
+                  "cursor": null,
+                  "opaque": ["keep", null, false, 0]
+                }
+              }
+            ],
+            "result": {
+              "outcome": "completed",
+              "batches": 2,
+              "records": 2,
+              "deleted": 1,
+              "checkpoint": {
+                "cursor": null,
+                "opaque": ["keep", null, false, 0]
+              }
+            }
+          }
+        },
+        {
+          "id": "authorization",
+          "operation": "authorization",
+          "input": {
+            "connectionConfig": {
+              "origin": "https://tenant.example"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "redirectUri": "https://app.example/callback"
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://tenant.example/token",
+                "headers": {
+                  "content-type": "application/x-www-form-urlencoded"
+                },
+                "bodyFields": {
+                  "grant_type": "authorization_code",
+                  "code": "code",
+                  "client_id": "client",
+                  "client_secret": "secret"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "access_token": "access",
+                  "token_type": "Bearer",
+                  "refresh_token": "refresh"
+                }
+              }
+            }
+          ],
+          "expected": {
+            "authorizationUrl": "https://tenant.example/authorize",
+            "authorizationState": {
+              "accessToken": "access",
+              "refreshToken": "refresh",
+              "tokenFields": {}
+            }
+          }
+        },
+        {
+          "id": "refresh",
+          "operation": "verify",
+          "input": {
+            "connectionConfig": {
+              "origin": "https://tenant.example"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "authorizationState": {
+              "accessToken": "access",
+              "refreshToken": "refresh",
+              "tokenFields": {}
+            }
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/verify",
+                "headers": {
+                  "authorization": "Bearer access"
+                }
+              },
+              "response": {
+                "status": 401
+              }
+            },
+            {
+              "request": {
+                "method": "POST",
+                "url": "https://tenant.example/token",
+                "headers": {
+                  "content-type": "application/x-www-form-urlencoded"
+                },
+                "bodyFields": {
+                  "grant_type": "refresh_token",
+                  "refresh_token": "refresh",
+                  "client_id": "client",
+                  "client_secret": "secret"
+                }
+              },
+              "response": {
+                "status": 200,
+                "json": {
+                  "access_token": "renewed",
+                  "token_type": "Bearer",
+                  "refresh_token": "refresh"
+                }
+              }
+            },
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/verify",
+                "headers": {
+                  "authorization": "Bearer renewed"
+                }
+              },
+              "response": {
+                "status": 204
+              }
+            }
+          ],
+          "expected": {
+            "verified": true,
+            "authorizationState": {
+              "accessToken": "renewed",
+              "refreshToken": "refresh",
+              "tokenFields": {}
+            },
+            "authenticationEvents": ["claim", "persist"]
+          }
+        },
+        {
+          "id": "projection-and-batching",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {
+              "origin": "https://tenant.example"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "authorizationState": {
+              "accessToken": "access",
+              "refreshToken": "refresh",
+              "tokenFields": {}
+            },
+            "syncKey": "projected"
+          },
+          "provider": [],
+          "acknowledgments": ["continue"],
+          "expected": {
+            "batches": [
+              {
+                "sequence": 0,
+                "records": [
+                  {
+                    "id": "projected",
+                    "metadata": "{\"nested\":[1,null]}"
+                  }
+                ]
+              }
+            ],
+            "result": {
+              "outcome": "completed",
+              "batches": 1,
+              "records": 1,
+              "deleted": 0
+            }
+          }
+        },
+        {
+          "id": "pagination-error-callback",
+          "operation": "sync",
+          "input": {
+            "connectionConfig": {
+              "origin": "https://tenant.example"
+            },
+            "credentials": {
+              "clientId": "client",
+              "clientSecret": "secret"
+            },
+            "authorizationState": {
+              "accessToken": "access",
+              "refreshToken": "refresh",
+              "tokenFields": {}
+            },
+            "syncKey": "items"
+          },
+          "provider": [
+            {
+              "request": {
+                "method": "GET",
+                "url": "https://tenant.example/items",
+                "headers": {
+                  "authorization": "Bearer access"
+                }
+              },
+              "response": {
+                "status": 403,
+                "json": {
+                  "error": "scope"
+                }
+              }
+            }
+          ],
+          "expected": {
+            "error": "Provider scope missing"
+          }
+        }
+      ]
+    }
+  ]
+}

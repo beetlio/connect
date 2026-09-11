@@ -27,9 +27,13 @@ import {
   type IntegrationDefinition,
   type IntegrationManifest,
 } from "./index.ts";
-import { validateIntegration } from "./host.ts";
+import { assertSupportedHostContractVersion, validateIntegration } from "./host.ts";
 
 const Require = createRequire(import.meta.url);
+
+/** JSON inventory; resolve each artifact/source path relative to this URL. */
+export const compatibilityFixturesUrl = new URL("./compatibility/inventory.json", import.meta.url);
+
 const SdkEntry = fileURLToPath(new URL("./index.js", import.meta.url));
 const SdkManifestEntry = fileURLToPath(new URL("./manifest.js", import.meta.url));
 const SdkTypesEntry = fileURLToPath(new URL("./index.d.ts", import.meta.url));
@@ -425,6 +429,21 @@ export async function withIntegration<Value>(
   try {
     await writeFile(archivePath, archive);
     await extractTar({ cwd: directory, file: archivePath, strict: true });
+
+    const manifest = z
+      .object({
+        manifestVersion: z.unknown(),
+        hostContractVersion: z.unknown().optional(),
+      })
+      .parse(JSON.parse(await readFile(join(directory, "package/manifest.json"), "utf8")));
+
+    if (manifest.manifestVersion !== 2) {
+      throw new Error(
+        `Unsupported manifest version ${JSON.stringify(manifest.manifestVersion)}; supported: 2. Upgrade the execution host SDK or rebuild with a supported SDK.`,
+      );
+    }
+    assertSupportedHostContractVersion(manifest.hostContractVersion);
+
     const integration = await importIntegration(
       join(directory, "package/integration.mjs"),
       "runtime artifact",

@@ -11,6 +11,19 @@ import type {
 
 export type JsonSchema = Readonly<Record<string, unknown>>;
 
+/** Contract targeted by artifacts built with this SDK, independent of manifest format. */
+export const HOST_CONTRACT_VERSION = 2;
+export const SUPPORTED_HOST_CONTRACT_VERSIONS = [1, 2] as const;
+
+/** Omitted requirements identify legacy manifest-v2 artifacts. */
+export function assertSupportedHostContractVersion(version: unknown = 1): void {
+  if (!SUPPORTED_HOST_CONTRACT_VERSIONS.some((supported) => supported === version)) {
+    throw new Error(
+      `Unsupported host contract version ${JSON.stringify(version)}; supported: ${SUPPORTED_HOST_CONTRACT_VERSIONS.join(", ")}. Upgrade the execution host SDK or rebuild with a supported SDK.`,
+    );
+  }
+}
+
 interface InputMetadata {
   readonly title?: string;
   readonly description?: string;
@@ -46,6 +59,8 @@ export type InputField = InputObjectSchema | InputValueSchema;
 
 export interface IntegrationManifest {
   readonly manifestVersion: 2;
+  /** Absent in legacy artifacts; omission means host contract v1. */
+  readonly hostContractVersion?: 1 | 2;
   readonly integration: {
     readonly key: string;
     readonly displayName: string;
@@ -87,6 +102,7 @@ export function createIntegrationManifest(integration: IntegrationDefinition): I
   }
   return {
     manifestVersion: 2,
+    hostContractVersion: HOST_CONTRACT_VERSION,
     integration: {
       key: integration.key,
       displayName: integration.displayName,

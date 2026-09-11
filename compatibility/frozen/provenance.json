@@ -1,0 +1,531 @@
+{
+  "sdkVersion": "0.2.0",
+  "sdkCommit": "34ebde36692fa95650ee986d53c1aea47612df59",
+  "sdkLockSha256": "36bfd3813968aff6db20476c2001f4d328740ec8b2cc8d8328b6b4bf32d9572d",
+  "nodeVersion": "v24.18.0",
+  "origin": "Built once from the historical SDK checkout; not downloaded release binaries.",
+  "artifacts": [
+    {
+      "id": "bearer",
+      "file": "bearer.tgz",
+      "sha256": "39b4d219276db505620e5c1ce0837ede09bebd316459b2790594d3668fde0890",
+      "sourceSha256": "176e01fb619ecaba69df2de7c879d1cf1bd8bd10d207ff354d22a215e57f5d44",
+      "manifest": {
+        "manifestVersion": 2,
+        "integration": {
+          "key": "bearer",
+          "displayName": "bearer"
+        },
+        "connection": {
+          "origin": "https://provider.example",
+          "auth": {
+            "type": "bearer"
+          },
+          "inputs": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          },
+          "credentials": {
+            "type": "object",
+            "properties": {
+              "token": {
+                "type": "string",
+                "title": "Bearer token",
+                "minLength": 1,
+                "x-beetl-widget": "password",
+                "writeOnly": true
+              }
+            },
+            "additionalProperties": false,
+            "required": ["token"]
+          },
+          "retry": {
+            "initialDelayMs": 0,
+            "maxDelayMs": 0
+          },
+          "pagination": {
+            "type": "cursor",
+            "cursorParameter": "cursor",
+            "cursorPath": "next",
+            "limitParameter": "limit",
+            "responsePath": "records"
+          },
+          "canVerify": true
+        },
+        "syncs": [
+          {
+            "key": "items",
+            "displayName": "Items",
+            "mode": "merge",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": ["id"],
+              "additionalProperties": false
+            },
+            "primaryKey": ["id"],
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "checkpoint",
+            "displayName": "Checkpoint",
+            "mode": "append",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": ["id"],
+              "additionalProperties": false
+            },
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "exchange",
+      "file": "exchange.tgz",
+      "sha256": "9971fc00e08638d8067a40fa839ccedc4be6e481249c1fd535b9c2e3214375e5",
+      "sourceSha256": "7367fd1661c6bb61c3cbddc72a698a8133cb493a31bd9134af661bda96bfaffe",
+      "manifest": {
+        "manifestVersion": 2,
+        "integration": {
+          "key": "exchange",
+          "displayName": "exchange"
+        },
+        "connection": {
+          "origin": {
+            "input": "environment",
+            "values": {
+              "production": "https://provider.example",
+              "sandbox": "https://sandbox.example"
+            }
+          },
+          "auth": {
+            "type": "token_exchange",
+            "tokenUrl": "/token",
+            "headers": {
+              "x-client-id": "clientId",
+              "x-client-secret": "clientSecret"
+            },
+            "tokenPath": "token",
+            "expiresAtPath": "expires_at"
+          },
+          "inputs": {
+            "type": "object",
+            "properties": {
+              "environment": {
+                "type": "string",
+                "enum": ["production", "sandbox"],
+                "x-beetl-options": [
+                  {
+                    "value": "production",
+                    "label": "Production"
+                  },
+                  {
+                    "value": "sandbox",
+                    "label": "Sandbox"
+                  }
+                ],
+                "default": "production"
+              }
+            },
+            "additionalProperties": false
+          },
+          "credentials": {
+            "type": "object",
+            "properties": {
+              "clientId": {
+                "type": "string"
+              },
+              "clientSecret": {
+                "type": "string",
+                "x-beetl-widget": "password",
+                "writeOnly": true
+              }
+            },
+            "additionalProperties": false,
+            "required": ["clientId", "clientSecret"]
+          },
+          "retry": {
+            "initialDelayMs": 0,
+            "maxDelayMs": 0
+          },
+          "pagination": {
+            "type": "cursor",
+            "cursorParameter": "cursor",
+            "cursorPath": "next",
+            "limitParameter": "limit",
+            "responsePath": "records"
+          },
+          "canVerify": true
+        },
+        "syncs": [
+          {
+            "key": "items",
+            "displayName": "Items",
+            "mode": "merge",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": ["id"],
+              "additionalProperties": false
+            },
+            "primaryKey": ["id"],
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "checkpoint",
+            "displayName": "Checkpoint",
+            "mode": "append",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": ["id"],
+              "additionalProperties": false
+            },
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "oauth",
+      "file": "oauth.tgz",
+      "sha256": "7509c3f81addf7ef3ca0cbf945e03929db09e9361391ad1a6882d00f7c1fbea8",
+      "sourceSha256": "7c322f9a52103f72a0d766d0fd54dd492f79f507ceb7f05bb355008941e4c66d",
+      "manifest": {
+        "manifestVersion": 2,
+        "integration": {
+          "key": "oauth",
+          "displayName": "oauth"
+        },
+        "connection": {
+          "origin": {
+            "oauthTokenField": "instanceUrl"
+          },
+          "auth": {
+            "type": "oauth2_authorization_code",
+            "issuer": "https://auth.example",
+            "authorizationUrl": "https://auth.example/authorize",
+            "tokenUrl": "https://auth.example/token",
+            "scopes": ["read"],
+            "usesClientSecret": true,
+            "tokenFields": {
+              "instanceUrl": "instance_url"
+            }
+          },
+          "inputs": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          },
+          "credentials": {
+            "type": "object",
+            "properties": {
+              "clientId": {
+                "type": "string",
+                "title": "OAuth client ID",
+                "minLength": 1
+              },
+              "clientSecret": {
+                "type": "string",
+                "title": "OAuth client secret",
+                "minLength": 1,
+                "x-beetl-widget": "password",
+                "writeOnly": true
+              }
+            },
+            "additionalProperties": false,
+            "required": ["clientId", "clientSecret"]
+          },
+          "retry": {
+            "initialDelayMs": 0,
+            "maxDelayMs": 0
+          },
+          "pagination": {
+            "type": "cursor",
+            "cursorParameter": "cursor",
+            "cursorPath": "next",
+            "limitParameter": "limit",
+            "responsePath": "records"
+          },
+          "canVerify": true
+        },
+        "syncs": [
+          {
+            "key": "items",
+            "displayName": "Items",
+            "mode": "merge",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": ["id"],
+              "additionalProperties": false
+            },
+            "primaryKey": ["id"],
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "checkpoint",
+            "displayName": "Checkpoint",
+            "mode": "append",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": ["id"],
+              "additionalProperties": false
+            },
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

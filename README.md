@@ -14,6 +14,9 @@ and validates records, and writes NDJSON.
 [Documentation](https://beetlio.github.io/connect/) · [Examples](examples/) · [Contributing](CONTRIBUTING.md)
 
 The hosted process exchange is specified in [Connect runtime protocol v1](docs/host-protocol.md).
+Supported public APIs, artifact requirements, and reusable host fixtures are documented in
+[Connect compatibility](docs/compatibility.md). Run `beetl-connect compatibility` to check an
+installed SDK; embedding hosts can consume the same fixture inventory through their own execution path.
 
 The demo runs the included Wikidata integration, fetches five records, and
 inspects the emitted NDJSON.

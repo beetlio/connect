@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
 import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { mkdir, open, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { isDeepStrictEqual } from "node:util";
+import { fileURLToPath } from "node:url";
 
 import { object, or } from "@optique/core/constructs";
 import { message } from "@optique/core/message";
@@ -28,6 +30,7 @@ import type {
 } from "./index.ts";
 import { runSync, verifyConnection } from "./host.ts";
 import { LocalHost, replacePrivateFile, resolveProviderOrigin } from "./local-host.ts";
+import { resolveOAuthOrigin } from "./oauth-origin.ts";
 import { authorizeOAuth, type OAuthAuthorizationState } from "./oauth.ts";
 
 interface ProfileConfiguration {
@@ -118,6 +121,9 @@ const inputsOption = () =>
   );
 
 const Cli = or(
+  command("compatibility", object({ command: constant("compatibility") }), {
+    brief: message`Check SDK compatibility with frozen and current integration fixtures.`,
+  }),
   command(
     "pack",
     object({
@@ -191,6 +197,23 @@ async function main(args = process.argv.slice(2)): Promise<void> {
     help: "both",
     version: Package.version,
   });
+
+  if (options.command === "compatibility") {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--test",
+        "--test-reporter=tap",
+        fileURLToPath(new URL("./compatibility.js", import.meta.url)),
+      ],
+      { stdio: "inherit" },
+    );
+    if (result.error) throw result.error;
+
+    process.exitCode = result.status ?? 1;
+    return;
+  }
+
   if (options.command === "pack") {
     const packed = await packIntegration(options.integrationPath);
     const outputPath = resolve(options.outputPath ?? packed.filename);
@@ -199,6 +222,7 @@ async function main(args = process.argv.slice(2)): Promise<void> {
     console.log(`Included files: ${packed.files.join(", ")}`);
     return;
   }
+
   const { archive, manifest } = await buildIntegration(options.integrationPath);
   const artifactRevision = createHash("sha256").update(archive).digest("hex");
   await withIntegration(archive, async (integration) => {
@@ -483,15 +507,7 @@ async function configureIntegration(
           integration.connection.auth?.type !== "oauth2_authorization_code"
             ? undefined
             : (configuredOrigin ??
-              (typeof integration.connection.origin !== "string" &&
-              "oauthTokenField" in integration.connection.origin
-                ? undefined
-                : resolveProviderOrigin(
-                    integration.connection.origin,
-                    undefined,
-                    true,
-                    JsonObjectSchema.parse(parsedConnectionInputs.data),
-                  ).origin));
+              (await resolveOAuthOrigin(integration.connection, inputs.connection)));
         const authorizationState =
           integration.connection.auth?.type === "oauth2_authorization_code"
             ? existingConnection?.authorizationState !== undefined && !reauthorize

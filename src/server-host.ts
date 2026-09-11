@@ -19,7 +19,8 @@ import {
   type EmittedBatch,
   type SyncHost,
 } from "./host.ts";
-import { LocalHost, replacePrivateFile, resolveProviderOrigin } from "./local-host.ts";
+import { LocalHost, replacePrivateFile } from "./local-host.ts";
+import { resolveOAuthOrigin } from "./oauth-origin.ts";
 import {
   beginOAuthAuthorization,
   completeOAuthAuthorization,
@@ -51,10 +52,12 @@ const HostError = console.error.bind(console);
 const ExecFile = promisify(execFile);
 const MaxBatchBytes = 8 * 1024 * 1024;
 const SourceRequest = z.strictObject({
+  protocolVersion: z.literal(1).optional(),
   integrationPath: z.string().min(1),
   resultPath: z.string().min(1),
 });
 const RuntimeSyncRequest = z.strictObject({
+  protocolVersion: z.literal(1).optional(),
   operation: z.literal("sync"),
   runtimePath: z.string().min(1),
   resultPath: z.string().min(1),
@@ -110,7 +113,10 @@ async function main(): Promise<void> {
   const readMessage = createMessageReader(process.stdin);
   let workingDirectory: string | undefined;
   try {
-    const request = Request.parse(await readMessage("Host request", 4 * 1024 * 1024));
+    const message = await readMessage("Host request", 4 * 1024 * 1024);
+    assertProtocolVersion(message, true);
+
+    const request = Request.parse(message);
     const directory = await mkdtemp(join(tmpdir(), "beetl-connect-server-host-"));
     workingDirectory = directory;
     if (request.operation === "sync") {
@@ -134,20 +140,7 @@ async function main(): Promise<void> {
           throw new Error("Integration does not use OAuth authorization code authentication");
         }
         await oauth.credentials.schema.parseAsync(request.credentials);
-        const provider = integration.connection.origin;
-        const needsOrigin = [oauth.issuer, oauth.authorizationUrl, oauth.tokenUrl].some((value) =>
-          value.startsWith("/"),
-        );
-        const connectionConfig =
-          needsOrigin && typeof provider !== "string" && "input" in provider
-            ? await (integration.connection.inputs?.schema ?? z.strictObject({})).parseAsync(
-                request.connectionConfig,
-              )
-            : request.connectionConfig;
-        const origin =
-          !needsOrigin || (typeof provider !== "string" && "oauthTokenField" in provider)
-            ? undefined
-            : resolveProviderOrigin(provider, undefined, true, connectionConfig).origin;
+        const origin = await resolveOAuthOrigin(integration.connection, request.connectionConfig);
         if (request.operation === "oauth_start") {
           const authorization = await beginOAuthAuthorization({
             auth: oauth,
@@ -184,8 +177,6 @@ async function main(): Promise<void> {
         ...(integration.connection.auth === undefined ? {} : { auth: integration.connection.auth }),
         credentials: request.credentials,
         ...(authorizationState === undefined ? {} : { authorizationState }),
-        outputPath: join(directory, "verify.ndjson"),
-        statePath: join(directory, "verify-state.json"),
         fetch: HostFetch,
         onLog: (entry) => console.error(JSON.stringify(entry)),
         onAuthorizationStateChanged: (state) => void (authorizationState = state),
@@ -238,8 +229,6 @@ async function runRuntimeSync(
     ...(integration.connection.auth === undefined ? {} : { auth: integration.connection.auth }),
     credentials: request.credentials,
     ...(authorizationState === undefined ? {} : { authorizationState }),
-    outputPath: join(tmpdir(), "beetl-connect-host-unused.ndjson"),
-    statePath: join(tmpdir(), "beetl-connect-host-unused-state.json"),
     fetch: HostFetch,
     onLog: (entry) => HostError(HostStringify(entry)),
     onAuthorizationStateChanged: (state) => void (authorizationState = state),
@@ -280,11 +269,27 @@ async function exchangeBatch(
   readMessage: (label: string, maxBytes: number) => Promise<unknown>,
 ): Promise<EmitAction> {
   await writeMessage({ protocolVersion: 1, kind: "batch", ...batch });
-  const committed = BatchCommitted.parse(await readMessage("Batch acknowledgment", 64 * 1024));
+  const message = await readMessage("Batch acknowledgment", 64 * 1024);
+  assertProtocolVersion(message);
+
+  const committed = BatchCommitted.parse(message);
   if (committed.batchId !== batch.batchId) {
     throw new Error("The controller acknowledged a different batch");
   }
   return committed.action;
+}
+
+function assertProtocolVersion(message: unknown, allowLegacy = false): void {
+  const version =
+    typeof message === "object" && message !== null && "protocolVersion" in message
+      ? message.protocolVersion
+      : undefined;
+
+  if (version === 1 || (allowLegacy && version === undefined)) return;
+
+  throw new Error(
+    `Unsupported execution protocol version ${JSON.stringify(version)}; supported: 1. Upgrade the execution host/controller or send protocol v1.`,
+  );
 }
 
 function createMessageReader(input: AsyncIterable<Uint8Array | string>) {

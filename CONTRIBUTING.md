@@ -19,6 +19,9 @@ npm run build
    it for every integration.
 3. Validate external data with Zod and keep credentials outside sync contexts.
 4. Update the README when CLI behavior or public APIs change.
+5. Follow the [compatibility policy](docs/compatibility.md): document host requirements,
+   add a focused provider scenario for behavioral additions, and preserve frozen artifacts.
+   Source-build checks and artifact execution checks establish different guarantees.
 
 The CLI and hosted integration runtime use strict TypeScript, ES modules, and
 Node.js 24.2. Avoid new dependencies when the standard library or existing
@@ -31,6 +34,7 @@ Build the package, type-check all examples, and run the complete suite:
 ```fish
 npm run check
 npm test
+npm run test:compatibility
 ```
 
 Tests must not contact real providers or contain real credentials. Use local

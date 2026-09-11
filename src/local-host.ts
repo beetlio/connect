@@ -30,8 +30,9 @@ export interface LocalHostOptions {
   auth?: AuthDefinition;
   credentials?: Readonly<Record<string, string>>;
   authorizationState?: OAuthAuthorizationState;
-  outputPath: string;
-  statePath: string;
+  /** Omit both paths when composing provider requests with a hosted batch sink. */
+  outputPath?: string;
+  statePath?: string;
   mode?: SyncMode;
   fetch?: typeof globalThis.fetch;
   signal?: AbortSignal;
@@ -52,8 +53,8 @@ export class LocalHost implements SyncHost {
   #authorizationVersion = 0;
   #refreshing: Promise<boolean> | undefined;
   #exchanging: Promise<boolean> | undefined;
-  readonly #outputPath: string;
-  readonly #statePath: string;
+  readonly #outputPath: string | undefined;
+  readonly #statePath: string | undefined;
   readonly #mode: SyncMode;
   #replacePath: string | undefined;
   readonly #fetch: typeof globalThis.fetch;
@@ -63,6 +64,12 @@ export class LocalHost implements SyncHost {
   readonly #onAuthorizationStateChanged: (state: OAuthAuthorizationState) => void | Promise<void>;
 
   constructor(options: LocalHostOptions) {
+    if ((options.outputPath === undefined) !== (options.statePath === undefined)) {
+      throw new Error(
+        "LocalHost requires both outputPath and statePath, or neither for provider-only use",
+      );
+    }
+
     this.#originDefinition = options.origin;
     this.#connectionConfig = options.connectionConfig ?? {};
     this.#auth = options.auth ?? { type: "none" };
@@ -156,7 +163,8 @@ export class LocalHost implements SyncHost {
   }
 
   async emit(batch: EmittedBatch): Promise<"continue"> {
-    const outputPath = this.#replacePath ?? this.#outputPath;
+    this.#requireStorage();
+    const outputPath = this.#replacePath ?? this.#outputPath!;
     await mkdir(dirname(outputPath), { recursive: true });
     const file = await open(outputPath, "a", 0o600);
     try {
@@ -182,6 +190,7 @@ export class LocalHost implements SyncHost {
   }
 
   async beginReplace(): Promise<void> {
+    this.#requireStorage();
     if (this.#replacePath !== undefined) return;
     const path = `${this.#outputPath}.tmp-${process.pid}-${randomUUID()}`;
     this.#replacePath = path;
@@ -197,15 +206,17 @@ export class LocalHost implements SyncHost {
   }
 
   async commitReplace(): Promise<void> {
+    this.#requireStorage();
     const path = this.#replacePath;
     if (path === undefined) {
       throw new Error("No replace is in progress");
     }
-    await rename(path, this.#outputPath);
+    await rename(path, this.#outputPath!);
     this.#replacePath = undefined;
   }
 
   async abortReplace(): Promise<void> {
+    this.#requireStorage();
     const path = this.#replacePath;
     this.#replacePath = undefined;
     if (path !== undefined) {
@@ -218,8 +229,9 @@ export class LocalHost implements SyncHost {
   }
 
   async loadCheckpoint(): Promise<JsonValue | undefined> {
+    this.#requireStorage();
     try {
-      return JSON.parse(await readFile(this.#statePath, "utf8")) as JsonValue;
+      return JSON.parse(await readFile(this.#statePath!, "utf8")) as JsonValue;
     } catch (error) {
       if (isMissingFile(error)) {
         return undefined;
@@ -427,7 +439,14 @@ export class LocalHost implements SyncHost {
   }
 
   async #writeCheckpoint(checkpoint: JsonValue): Promise<void> {
-    await replacePrivateFile(this.#statePath, `${JSON.stringify(checkpoint)}\n`);
+    this.#requireStorage();
+    await replacePrivateFile(this.#statePath!, `${JSON.stringify(checkpoint)}\n`);
+  }
+
+  #requireStorage(): void {
+    if (this.#outputPath === undefined || this.#statePath === undefined) {
+      throw new Error("LocalHost file operations require outputPath and statePath");
+    }
   }
 }
 
