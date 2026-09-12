@@ -1,0 +1,10 @@
+{
+  "name": "compatibility-exchange",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "integration.ts",
+    "shared.ts"
+  ]
+}

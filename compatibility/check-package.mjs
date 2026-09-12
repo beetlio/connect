@@ -58,6 +58,7 @@ import {
   createProvider,
   prepareOAuthAuthorization,
   runSync,
+  runDestinationBatch,
   type CommitAction,
 } from "@beetlio/connect/host";
 import assert from "node:assert/strict";
@@ -78,6 +79,18 @@ const integration = defineIntegration({
       },
     }),
   }),
+  destinations: (destination) => ({
+    items: destination({
+      records: z.object({ id: z.string() }),
+      primaryKey: ["id"],
+      supportsDelete: true,
+      async run(ctx, batch) {
+        const id: string | undefined = batch.deletedKeys?.[0]?.id;
+        assert.equal(id, "gone");
+        assert.deepEqual(batch.records, [{ id: "1" }]);
+      },
+    }),
+  }),
 });
 const provider = createProvider(integration.connection, { credentials: { token: "test" } });
 const action: CommitAction = "continue";
@@ -94,7 +107,11 @@ const authorization = await beginOAuthAuthorization({
 
 assert.equal(new URL(authorization.authorizationUrl).origin, "https://tenant.example.com");
 
-createIntegrationManifest(integration);
+assert.equal(createIntegrationManifest(integration).destinations[0]?.supportsDelete, true);
+await runDestinationBatch(integration, {
+  destination: "items",
+  batch: { batchId: "installed", records: [{ id: "1" }], deletedKeys: [{ id: "gone" }] },
+}, provider);
 await runSync(integration, { sync: "items", syncConfig: { id: "1" } }, {
   ...provider,
   async commit(batch) {

@@ -80,6 +80,22 @@ export interface SyncContext<
   readonly checkpoint: K | undefined;
 }
 
+export interface DestinationContext<
+  C extends object = JsonObject,
+  Connection extends object = JsonObject,
+> extends RequestContext {
+  readonly config: {
+    readonly connection: Readonly<Connection>;
+    readonly destination: Readonly<C>;
+  };
+}
+
+export type DestinationBatch<R = unknown, K = JsonObject> = {
+  readonly batchId: string;
+  readonly records: readonly Readonly<R>[];
+  readonly deletedKeys?: readonly Readonly<K>[];
+};
+
 export type Batch<R = unknown, K = JsonValue, M extends SyncMode = SyncMode> = {
   readonly records: readonly R[];
   readonly checkpoint?: K;
@@ -124,6 +140,33 @@ type DefineSync<Connection extends object> = <
   } & Mode<M, z.output<R>>,
 ) => SyncDefinition;
 
+/** Runtime definition. Author it through the scoped destination function for inference. */
+export interface DestinationDefinition {
+  readonly displayName?: string;
+  readonly records: z.ZodObject;
+  readonly primaryKey: readonly string[];
+  readonly inputs?: z.ZodObject;
+  readonly supportsDelete?: boolean;
+  run(context: DestinationContext, batch: DestinationBatch): Promise<void>;
+}
+
+type DefineDestination<Connection extends object> = <
+  R extends z.ZodObject,
+  const P extends readonly [keyof z.output<R> & string, ...(keyof z.output<R> & string)[]],
+  C extends z.ZodObject | undefined = undefined,
+  D extends boolean = false,
+>(definition: {
+  readonly displayName?: string;
+  readonly records: R;
+  readonly primaryKey: P;
+  readonly inputs?: C;
+  readonly supportsDelete?: D;
+  run(
+    context: DestinationContext<Config<C>, Connection>,
+    batch: DestinationBatch<z.output<R>, D extends true ? Pick<z.output<R>, P[number]> : never>,
+  ): Promise<void>;
+}) => DestinationDefinition;
+
 export interface ConnectionDefinition<C extends z.ZodObject | undefined = z.ZodObject | undefined> {
   readonly origin: ProviderOriginDefinition;
   readonly auth?: AuthDefinition;
@@ -139,22 +182,36 @@ export interface IntegrationDefinition {
   readonly icon?: "icon.png" | "icon.webp";
   readonly connection: ConnectionDefinition;
   readonly syncs: Readonly<Record<string, SyncDefinition>>;
+  readonly destinations?: Readonly<Record<string, DestinationDefinition>>;
 }
 
 export function defineIntegration<
   C extends z.ZodObject | undefined = undefined,
   S extends Readonly<Record<string, SyncDefinition>> = Readonly<Record<string, SyncDefinition>>,
+  D extends Readonly<Record<string, DestinationDefinition>> = Readonly<
+    Record<string, DestinationDefinition>
+  >,
 >(definition: {
   readonly key: string;
   readonly displayName: string;
   readonly description?: string;
   readonly icon?: "icon.png" | "icon.webp";
   readonly connection: ConnectionDefinition<C>;
-  readonly syncs: (sync: DefineSync<Config<C>>) => S;
-}): IntegrationDefinition & { readonly syncs: S } {
+  readonly syncs?: (sync: DefineSync<Config<C>>) => S;
+  readonly destinations?: ((destination: DefineDestination<Config<C>>) => D) | D;
+}): IntegrationDefinition & { readonly syncs: S; readonly destinations: D } {
   // Generic callback types are erased only at the authoring boundary. The builder
   // validates the complete definition before it becomes an executable artifact.
   const sync: DefineSync<Config<C>> = (value) => value as unknown as SyncDefinition;
+  const destination: DefineDestination<Config<C>> = (value) =>
+    value as unknown as DestinationDefinition;
 
-  return { ...definition, syncs: definition.syncs(sync) };
+  return {
+    ...definition,
+    syncs: definition.syncs?.(sync) ?? ({} as S),
+    destinations:
+      typeof definition.destinations === "function"
+        ? definition.destinations(destination)
+        : (definition.destinations ?? ({} as D)),
+  };
 }

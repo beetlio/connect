@@ -4,3 +4,4 @@ dist/
 *.ndjson
 *.tgz
 !compatibility/frozen/*.tgz
+!compatibility/frozen/v3/*.tgz

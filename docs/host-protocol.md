@@ -28,7 +28,9 @@ reserved for protocol envelopes; integration logs go to stderr.
 ```
 
 `runtimePath` points to a `buildIntegration` artifact, not source. This host supports
-manifest v3 and host contract v3. Initial requests may omit `protocolVersion` or
+manifest/host contracts v3 and v4 for pull syncs. Destination execution is available
+only through the embedded `runDestinationBatch` API; this protocol has no destination
+operation. Initial requests may omit `protocolVersion` or
 specify `1`; adding it to requests sent to older strict-schema hosts requires a
 coordinated update. Unsupported versions fail before execution. See [compatibility](compatibility.md).
 

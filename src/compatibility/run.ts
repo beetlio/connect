@@ -19,6 +19,7 @@ import {
   createProvider,
   prepareOAuthAuthorization,
   runSync,
+  runDestinationBatch,
   verifyConnection,
   type OAuthAuthorizationState,
   type SyncHost,
@@ -32,7 +33,7 @@ import { ProviderStepSchema, mockProvider } from "./http.ts";
 
 const ScenarioSchema = z.strictObject({
   id: z.string(),
-  operation: z.enum(["verify", "sync", "authorization"]),
+  operation: z.enum(["verify", "sync", "authorization", "destination"]),
   input: z.strictObject({
     connectionConfig: z.record(z.string(), z.json()),
     credentials: z.record(z.string(), z.string()),
@@ -40,7 +41,11 @@ const ScenarioSchema = z.strictObject({
     syncKey: z.string().optional(),
     checkpoint: z.json().optional(),
     redirectUri: z.url().optional(),
+    destinationKey: z.string().optional(),
+    destinationConfig: z.record(z.string(), z.json()).optional(),
+    batch: z.json().optional(),
   }),
+  replay: z.boolean().optional(),
   provider: z.array(ProviderStepSchema),
   acknowledgments: z.array(z.enum(["continue", "stop"])).optional(),
   expected: z.strictObject({
@@ -58,7 +63,7 @@ type Scenario = z.output<typeof ScenarioSchema>;
 
 const inventory = z
   .strictObject({
-    formatVersion: z.literal(2),
+    formatVersion: z.literal(3),
     pathBase: z.string(),
     fixtures: z.array(
       z.strictObject({
@@ -190,6 +195,19 @@ async function execute(integration: IntegrationDefinition, scenario: Scenario): 
       await verifyConnection(integration, { connectionConfig: input.connectionConfig }, host);
 
       assert.equal(scenario.expected.verified, true);
+    } else if (scenario.operation === "destination") {
+      await runDestinationBatch(
+        integration,
+        {
+          destination: input.destinationKey!,
+          connectionConfig: input.connectionConfig,
+          ...(input.destinationConfig === undefined
+            ? {}
+            : { destinationConfig: input.destinationConfig }),
+          batch: input.batch,
+        },
+        host,
+      );
     } else {
       const result = await runSync(
         integration,
@@ -205,12 +223,15 @@ async function execute(integration: IntegrationDefinition, scenario: Scenario): 
     }
   };
 
+  const originalInput = structuredClone(input);
   if (scenario.expected.error) {
     await assert.rejects(
       () => withAuthenticationSettlement(local, run),
       (error: unknown) => error instanceof Error && error.message === scenario.expected.error,
     );
   } else await withAuthenticationSettlement(local, run);
+  if (scenario.replay) await withAuthenticationSettlement(local, run);
+  assert.deepEqual(input, originalInput, "Execution must not mutate caller input");
 
   provider.assertComplete();
 
@@ -264,12 +285,12 @@ test("unsupported artifact contracts fail before importing integration code", as
     [
       "manifestVersion",
       [1, 2, 999, "3", null],
-      /Unsupported manifest version.*supported: 3.*Upgrade/,
+      /Unsupported manifest version.*supported: 3, 4.*Upgrade/,
     ],
     [
       "hostContractVersion",
       [1, 2, 999, "3", null],
-      /Unsupported host contract version.*supported: 3.*Upgrade/,
+      /Unsupported host contract version.*supported: 3, 4.*Upgrade/,
     ],
   ] as const) {
     for (const version of versions) {
@@ -289,9 +310,51 @@ test("unsupported artifact contracts fail before importing integration code", as
     }
   }
 
+  for (const [manifestVersion, hostContractVersion] of [
+    [3, 4],
+    [4, 3],
+  ]) {
+    await writeFile(
+      join(path, "package/manifest.json"),
+      JSON.stringify({
+        ...fixture.manifest,
+        manifestVersion,
+        hostContractVersion,
+      }),
+    );
+    const archive = join(path, "mixed.tgz");
+    await create({ cwd: path, file: archive, gzip: true }, ["package"]);
+    await assert.rejects(
+      withIntegration(await readFile(archive), () => assert.fail("Must not execute")),
+      /hostContractVersion/,
+    );
+  }
+
   assert.throws(() => assertSupportedHostContractVersion(), /Upgrade/);
   assert.doesNotThrow(() => assertSupportedHostContractVersion(3));
+  assert.doesNotThrow(() => assertSupportedHostContractVersion(4));
   assert.throws(() => assertSupportedHostContractVersion(999), /Upgrade/);
+});
+
+test("runtime definitions must match declared destination capabilities", async (t) => {
+  const path = await temporary(t);
+  const fixture = inventory.fixtures.find(({ id }) => id === "destination")!;
+  await extract({
+    cwd: path,
+    file: fileURLToPath(new URL(fixture.artifact, compatibilityFixturesUrl)),
+    strict: true,
+  });
+  const manifest = structuredClone(fixture.manifest);
+  assert.equal(manifest.manifestVersion, 4);
+  if (manifest.manifestVersion !== 4) assert.fail("Expected manifest v4");
+  manifest.destinations[0]!.supportsDelete = false;
+  await writeFile(join(path, "package/manifest.json"), JSON.stringify(manifest));
+  const archive = join(path, "mismatch.tgz");
+  await create({ cwd: path, file: archive, gzip: true }, ["package"]);
+  await assert.rejects(
+    withIntegration(await readFile(archive), () => assert.fail("Must not execute")),
+    /Runtime integration definition does not match its build manifest/,
+  );
 });
 
 test("failed OAuth persistence prevents using the refreshed token", async () => {

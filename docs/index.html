@@ -30,6 +30,7 @@
           <a href="#authentication">Authentication</a>
           <a href="#requests">Requests &amp; pagination</a>
           <a href="#records">Records &amp; checkpoints</a>
+          <a href="#destinations">Destinations</a>
           <a href="#cli">Local development</a>
           <a href="#examples">Examples &amp; reference</a>
         </nav>
@@ -41,8 +42,8 @@
           platform.
         </p>
         <p>
-          Define a connection and one or more syncs. Each sync fetches provider data and yields
-          record batches. Connect handles authentication, retries, validation, and checkpoints.
+          Define a connection with syncs that fetch provider data, destinations that push mapped
+          records, or both. Connect handles authentication, retries, and validation.
         </p>
         <section id="getting-started">
           <h2>Get started</h2>
@@ -101,17 +102,17 @@ npx beetl-connect sync . users --output users.ndjson</code></pre>
         <section id="configuration">
           <h2>Configuration</h2>
           <p>
-            Put shared settings in <code>connection.inputs</code> and per-sync settings in the
-            sync's <code>inputs</code>. Both use <code>z.strictObject()</code>:
+            Put shared settings in <code>connection.inputs</code> and per-sync or destination
+            settings in its <code>inputs</code>. Use <code>z.strictObject()</code>:
           </p>
           <pre><code class="language-ts">inputs: z.strictObject({
   workspace: z.string().min(1).meta({ title: &quot;Workspace ID&quot; }),
   limit: z.number().int().min(1).max(100).default(25),
 }),</code></pre>
           <p>
-            Read them as <code>ctx.config.connection</code> and <code>ctx.config.sync</code>. A
-            connection's <code>verify(ctx)</code> reads its inputs directly from
-            <code>ctx.config</code>.
+            Read them as <code>ctx.config.connection</code> and <code>ctx.config.sync</code> or
+            <code>ctx.config.destination</code>. A connection's <code>verify(ctx)</code> reads its
+            inputs directly from <code>ctx.config</code>.
           </p>
           <p>
             Strings, numbers, booleans, enums, arrays, nested strict objects, optional fields, and
@@ -319,6 +320,91 @@ const authentication = auth.tokenExchange({
             generator's <code>finally</code> runs before execution returns.
           </p>
         </section>
+        <section id="destinations">
+          <h2>Destinations</h2>
+          <p>
+            Add <code>destinations</code> alongside <code>syncs</code>, or use a destination-only
+            integration. Both share the connection, authentication, and request helpers. A
+            destination receives mapped records to upsert and optional keys to delete:
+          </p>
+          <pre><code class="language-ts">import { auth, defineIntegration, z } from "@beetlio/connect";
+
+export default defineIntegration({
+  key: "contacts",
+  displayName: "Contacts",
+  connection: { origin: "https://provider.example", auth: auth.bearer() },
+  destinations: (destination) =&gt; ({
+    contacts: destination({
+      records: z.object({ id: z.string(), email: z.email() }),
+      primaryKey: ["id"],
+      supportsDelete: true,
+      async run(ctx, batch) {
+        const result = await ctx.json("/contacts/batch", z.object({
+          failedIds: z.array(z.string()),
+        }), {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": batch.batchId,
+          },
+          body: JSON.stringify({
+            records: batch.records,
+            deletedKeys: batch.deletedKeys ?? [],
+          }),
+        });
+        if (result.failedIds.length) throw new Error("Contact write failed");
+      },
+    }),
+  }),
+});</code></pre>
+          <p>
+            <code>records</code> describes accepted input for field mapping. Every primary-key field
+            must be required, scalar, and non-null; key coercion is unsupported. Each deletion
+            contains exactly those fields. <code>supportsDelete</code> defaults to
+            <code>false</code>. Optional <code>inputs</code> are available as
+            <code>ctx.config.destination</code>.
+          </p>
+          <p>
+            Embedding hosts call <code>runDestinationBatch</code> from
+            <code>@beetlio/connect/host</code> with the integration, input, and SDK provider:
+          </p>
+          <pre><code class="language-ts">await runDestinationBatch(integration, {
+  destination: "contacts",
+  batch: {
+    batchId: "delivery-42",
+    records: [{ id: "one", email: "one@example.com" }],
+    deletedKeys: [{ id: "gone" }],
+  },
+}, provider);</code></pre>
+          <p>
+            The executor validates the entire batch before destination code runs: at most 10,000
+            records plus deletions and 8 MiB of UTF-8 JSON, before and after parsing. It rejects
+            unknown root fields, invalid rows, and duplicate or conflicting keys. Treat the supplied
+            batch as immutable.
+          </p>
+          <p>
+            Successful completion acknowledges the whole batch. Throw on any failed item, including
+            failures inside an HTTP 200 response. Some writes may already have succeeded, so make
+            replay safe with upserts, repeatable deletes, and provider idempotency support. A retry
+            keeps the same batch ID and contents.
+          </p>
+          <p>
+            Core owns CDC, mapping, ordering, and durable delivery progress. Destination code
+            receives desired state and deletion keys, without Delta metadata or checkpoints.
+            Execution currently uses the embedded host API; CLI profiles and process operations
+            remain pull-only.
+          </p>
+          <p>
+            Run the
+            <a href="https://github.com/beetlio/connect/tree/main/examples/destination"
+              >mocked destination example</a
+            >
+            from an SDK checkout. It writes and replays a batch without real credentials:
+          </p>
+          <pre><code class="language-sh">npm ci
+npm run build
+node examples/destination/run.ts</code></pre>
+        </section>
         <section id="cli">
           <h2>Local development</h2>
           <p>
@@ -371,6 +457,12 @@ npx beetl-connect sync . users --profile demo --output users.ndjson</code></pre>
               <a href="https://github.com/beetlio/connect/tree/main/examples/wikidata">Wikidata</a>
               — a public API integration you can run locally.
             </li>
+            <li>
+              <a href="https://github.com/beetlio/connect/tree/main/examples/destination"
+                >Destination</a
+              >
+              — mapped upserts, deletions, and replay against a mocked provider.
+            </li>
           </ul>
           <p>
             The basic and all-features examples use mocked APIs in tests. For host implementers, see
@@ -383,7 +475,10 @@ npx beetl-connect sync . users --profile demo --output users.ndjson</code></pre>
               >process protocol</a
             >.
           </p>
-          <p>SDK 0.3 supports manifest v3 and host contract v3. The process protocol is v1.</p>
+          <p>
+            SDK 0.4 builds manifest v4 and host contract v4, and supports existing v3 pull artifacts
+            and source. The process protocol remains v1.
+          </p>
         </section>
         <footer>
           <a href="https://github.com/beetlio/connect/blob/main/CONTRIBUTING.md">Contribute</a

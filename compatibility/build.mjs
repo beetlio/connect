@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { buildIntegration } from "../dist/artifact.js";
@@ -21,7 +21,15 @@ for (const fixture of scenarios.fixtures) {
   await mkdir(source, { recursive: true });
   await Promise.all([
     copyFile(new URL("sources/shared.ts", root), new URL("shared.ts", source)),
-    copyFile(new URL(`sources/${fixture.id}.ts`, root), new URL("integration.ts", source)),
+    copyFile(
+      new URL(
+        fixture.id === "destination"
+          ? "../examples/destination/integration.ts"
+          : `sources/${fixture.id}.ts`,
+        root,
+      ),
+      new URL("integration.ts", source),
+    ),
     writeFile(
       new URL("package.json", source),
       JSON.stringify(
@@ -71,11 +79,43 @@ for (const fixture of scenarios.fixtures) {
   });
 }
 
+// Execute unchanged v3 artifacts and rebuild their unchanged sources with this SDK.
+const historical = JSON.parse(await readFile(new URL("frozen/v3/provenance.json", root), "utf8"));
+for (const fixture of historical.fixtures) {
+  const { sourceHashes, ...contract } = fixture;
+  const source = new URL(fixture.source, new URL("frozen/v3/", root));
+  for (const [file, hash] of Object.entries(sourceHashes)) {
+    if (sha256(await readFile(new URL(file, source))) !== hash)
+      throw new Error(`Frozen v3 source changed: ${fixture.id}/${file}`);
+  }
+  const id = `v3-${fixture.id}`;
+  fixtures.push({
+    ...contract,
+    id,
+    artifact: `../../compatibility/frozen/v3/${fixture.artifact}`,
+    source: `../../compatibility/frozen/v3/${fixture.source}`,
+  });
+  const rebuiltSource = new URL(`sources/${id}/`, output);
+  await cp(source, rebuiltSource, { recursive: true });
+  const built = await buildIntegration(fileURLToPath(rebuiltSource));
+  await writeFile(new URL(`${id}-rebuilt.tgz`, output), built.archive);
+  fixtures.push({
+    ...contract,
+    id: `${id}-rebuilt`,
+    artifact: `${id}-rebuilt.tgz`,
+    source: `sources/${id}/`,
+    sha256: sha256(built.archive),
+    manifest: built.manifest,
+    sdk: { version: built.sdkVersion },
+    hostContractVersion: built.manifest.hostContractVersion,
+  });
+}
+
 await writeFile(
   new URL("inventory.json", output),
   JSON.stringify(
     {
-      formatVersion: 2,
+      formatVersion: 3,
       pathBase: "Resolve artifact and source paths relative to this inventory file.",
       fixtures,
       rejectedArtifacts: provenance.artifacts.map((artifact) => ({

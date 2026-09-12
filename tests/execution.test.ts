@@ -1,5 +1,16 @@
-import { HttpError, defineIntegration, z, type SyncContext } from "@beetlio/connect";
-import { createProvider, runSync } from "@beetlio/connect/host";
+import {
+  HttpError,
+  defineIntegration,
+  z,
+  type RequestContext,
+  type SyncContext,
+} from "@beetlio/connect";
+import {
+  createProvider,
+  runDestinationBatch,
+  runSync,
+  verifyConnection,
+} from "@beetlio/connect/host";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { syncHost } from "./support.ts";
@@ -135,6 +146,64 @@ test("cancellation closes the generator and cannot commit another batch", async 
 
   assert.equal(closed, true);
   assert.equal(commits, 1);
+});
+
+test("cancellation during log settlement prevents success and preserves cleanup errors", async () => {
+  for (const operation of ["destination", "sync", "verify"] as const) {
+    for (const cleanupError of [undefined, new Error("Log failed")]) {
+      const controller = new AbortController();
+      const cancellation = new Error("Cancelled during cleanup");
+      const closed = Promise.withResolvers<void>();
+      const releaseLog = Promise.withResolvers<void>();
+      let drained = false;
+      const run = async (ctx: RequestContext) => {
+        ctx.signal.addEventListener("abort", () => closed.resolve(), { once: true });
+        void ctx.log.info("pending");
+      };
+      const definition = defineIntegration({
+        key: "settlement",
+        displayName: "Settlement",
+        connection: { origin: "https://provider.example", verify: run },
+        syncs: (sync) => ({
+          items: sync({
+            records: z.object({ id: z.string() }),
+            async *run(ctx) {
+              await run(ctx);
+            },
+          }),
+        }),
+        destinations: (destination) => ({
+          items: destination({ records: z.object({ id: z.string() }), primaryKey: ["id"], run }),
+        }),
+      });
+      const host = syncHost({
+        async log() {
+          await releaseLog.promise;
+          drained = true;
+          if (cleanupError) throw cleanupError;
+        },
+      });
+      const input = { signal: controller.signal };
+      const running =
+        operation === "destination"
+          ? runDestinationBatch(
+              definition,
+              { ...input, destination: "items", batch: { batchId: "cancel", records: [] } },
+              host,
+            )
+          : operation === "sync"
+            ? runSync(definition, { ...input, sync: "items" }, host)
+            : verifyConnection(definition, input, host);
+      const rejected = assert.rejects(running, (error) => error === (cleanupError ?? cancellation));
+
+      // The execution scope closes after run returns, while the host log is still pending.
+      await closed.promise;
+      controller.abort(cancellation);
+      releaseLog.resolve();
+      await rejected;
+      assert.equal(drained, true);
+    }
+  }
 });
 
 test("execution drains submitted logs and cancels abandoned requests", async () => {

@@ -101,7 +101,7 @@ export default defineIntegration({
     };
   };
 
-  assert.equal(inspected.manifest.manifestVersion, 3);
+  assert.equal(inspected.manifest.manifestVersion, 4);
   assert.equal(inspected.manifest.integration.key, "fixture");
 
   const credentials = { clientId: "client-id", clientSecret: "client-secret" };

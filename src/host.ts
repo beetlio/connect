@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { EmittedBatch, RunSyncResult } from "./execution-schema.ts";
 import { paginate, parseResponse } from "./http.ts";
 import type {
+  DestinationBatch,
   IntegrationDefinition,
   IntegrationLogger,
   JsonObject,
@@ -79,6 +80,12 @@ export interface RunSyncInput extends VerifyConnectionInput {
   readonly checkpoint?: unknown;
 }
 
+export interface RunDestinationBatchInput extends VerifyConnectionInput {
+  readonly destination: string;
+  readonly destinationConfig?: unknown;
+  readonly batch: unknown;
+}
+
 const ProviderResponseSchema = z.strictObject({
   status: z.number().int().min(200).max(599),
   headers: z.array(z.tuple([z.string(), z.string()])),
@@ -93,6 +100,73 @@ const YieldedBatch = z.strictObject({
   deletedKeys: z.array(z.unknown()).optional(),
   checkpoint: z.unknown().optional(),
 });
+const DestinationBatchInput = YieldedBatch.omit({ checkpoint: true }).extend({
+  batchId: z.string().min(1),
+});
+
+/** Apply one prepared batch. The caller owns durable acknowledgments and replay. */
+export async function runDestinationBatch(
+  integration: IntegrationDefinition,
+  input: RunDestinationBatchInput,
+  host: RequestHost,
+): Promise<void> {
+  createIntegrationManifest(integration);
+  const destination = Object.hasOwn(integration.destinations ?? {}, input.destination)
+    ? integration.destinations?.[input.destination]
+    : undefined;
+  if (!destination) throw new Error(`Unknown destination ${JSON.stringify(input.destination)}`);
+
+  const raw = DestinationBatchInput.parse(input.batch);
+  if (raw.records.length + (raw.deletedKeys?.length ?? 0) > 10_000)
+    throw new Error("Destination batch exceeds 10000 record and deletion changes");
+  if (raw.deletedKeys !== undefined && !destination.supportsDelete)
+    throw new Error("Destination does not support deletions");
+
+  // Snapshot before any await or author-defined normalization can modify input.
+  const value = jsonSnapshot(raw, "Invalid destination batch: must be JSON-compatible");
+  if (Buffer.byteLength(JSON.stringify(value)) > 8 * 1024 * 1024)
+    throw new Error("Destination batch exceeds 8 MiB");
+
+  input.signal?.throwIfAborted();
+  const connection = await parse(
+    integration.connection.inputs ?? EmptyConfig,
+    input.connectionConfig ?? {},
+    "connection config",
+  );
+  const config = await parse(
+    destination.inputs ?? EmptyConfig,
+    input.destinationConfig ?? {},
+    "destination config",
+  );
+  const records = await parseRecords(destination.records.strict(), value.records);
+  const deletedKeys = await parseDeletedKeys(destination, value.deletedKeys);
+  validateRecordKeys(destination.primaryKey, records, deletedKeys, "destination");
+  const batch: DestinationBatch<JsonObject> = {
+    batchId: value.batchId,
+    records,
+    ...(value.deletedKeys === undefined ? {} : { deletedKeys }),
+  };
+  if (Buffer.byteLength(JSON.stringify(batch)) > 8 * 1024 * 1024)
+    throw new Error("Destination batch exceeds 8 MiB");
+
+  const scope = executionScope(host, { signal: input.signal, retry: integration.connection.retry });
+  const failures: unknown[] = [];
+  try {
+    scope.context.signal.throwIfAborted();
+    await destination.run({ ...scope.context, config: { connection, destination: config } }, batch);
+    input.signal?.throwIfAborted();
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    scope.abort();
+    try {
+      await scope.settle();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  throwFailures(failures, input.signal);
+}
 
 export async function runSync(
   integration: IntegrationDefinition,
@@ -145,18 +219,13 @@ export async function runSync(
       if (value.records.length + (value.deletedKeys?.length ?? 0) > 10_000)
         throw new Error("Emitted batch exceeds 10000 record and deletion changes");
 
-      const parsedRecords = await Promise.all(
-        value.records.map(async (record, index) => {
-          const parsed = await parse(sync.records, record, `record ${index}`);
-
-          if (!isJsonObject(parsed)) throw new Error(`Invalid record ${index}: must be an object`);
-
-          return parsed;
-        }),
-      );
+      const parsedRecords = await parseRecords(sync.records, value.records);
+      if (value.deletedKeys !== undefined && sync.mode !== "merge")
+        throw new Error("Only merge syncs can emit deleted keys");
       const deletedKeys = await parseDeletedKeys(sync, value.deletedKeys);
 
-      validateMergeKeys(sync, parsedRecords, deletedKeys);
+      if (sync.mode === "merge")
+        validateRecordKeys(sync.primaryKey!, parsedRecords, deletedKeys, "merge");
 
       const next =
         value.checkpoint === undefined
@@ -213,7 +282,7 @@ export async function runSync(
     }
   }
 
-  throwFailures(failures);
+  throwFailures(failures, input.signal);
 
   return {
     outcome: stopped ? "continuation_required" : "completed",
@@ -262,15 +331,17 @@ export async function verifyConnection(
     }
   }
 
-  throwFailures(failures);
+  throwFailures(failures, input.signal);
 }
 
-function throwFailures(failures: readonly unknown[]): void {
+function throwFailures(failures: readonly unknown[], signal?: AbortSignal): void {
   const unique = [...new Set(failures)];
 
   if (unique.length === 1) throw unique[0];
 
   if (unique.length) throw new AggregateError(unique, "Execution and cleanup failed");
+
+  signal?.throwIfAborted();
 }
 
 function executionScope(
@@ -408,19 +479,28 @@ async function parse<T>(
     JsonValue;
 }
 
+async function parseRecords(
+  schema: z.ZodObject,
+  records: readonly unknown[],
+): Promise<JsonObject[]> {
+  return Promise.all(
+    records.map(async (record, index) => {
+      const parsed = await parse(schema, record, `record ${index}`);
+      if (!isJsonObject(parsed)) throw new Error(`Invalid record ${index}: must be an object`);
+      return parsed;
+    }),
+  );
+}
+
 async function parseDeletedKeys(
-  sync: SyncDefinition,
+  definition: Pick<SyncDefinition, "records" | "primaryKey">,
   value: readonly unknown[] | undefined,
 ): Promise<JsonObject[]> {
   if (value === undefined) return [];
 
-  if (sync.mode !== "merge") {
-    throw new Error("Only merge syncs can emit deleted keys");
-  }
-
-  const fields = sync.primaryKey!;
+  const fields = definition.primaryKey!;
   const schema = z.strictObject(
-    Object.fromEntries(fields.map((field) => [field, sync.records.shape[field]!])),
+    Object.fromEntries(fields.map((field) => [field, definition.records.shape[field]!])),
   );
 
   return Promise.all(
@@ -436,27 +516,25 @@ async function parseDeletedKeys(
   );
 }
 
-function validateMergeKeys(
-  sync: SyncDefinition,
+function validateRecordKeys(
+  primaryKey: readonly string[],
   records: readonly JsonObject[],
   deletedKeys: readonly JsonObject[],
+  kind: "merge" | "destination",
 ): void {
-  if (sync.mode !== "merge") return;
-
-  const primaryKey = sync.primaryKey!;
   const identities = new Set<string>();
 
   for (const [index, record] of records.entries()) {
     const values = primaryKey.map((field) => record[field]);
 
     if (values.some((value) => !isJsonScalar(value))) {
-      throw new Error(`Invalid record ${index}: merge primary keys must be scalar and non-null`);
+      throw new Error(`Invalid record ${index}: ${kind} primary keys must be scalar and non-null`);
     }
 
     const identity = JSON.stringify(values);
 
     if (identities.has(identity)) {
-      throw new Error(`Duplicate merge key in record ${index}`);
+      throw new Error(`Duplicate ${kind} key in record ${index}`);
     }
 
     identities.add(identity);
@@ -466,7 +544,7 @@ function validateMergeKeys(
     const identity = JSON.stringify(primaryKey.map((field) => key[field]));
 
     if (identities.has(identity)) {
-      throw new Error(`Duplicate or conflicting merge deletion key ${index}`);
+      throw new Error(`Duplicate or conflicting ${kind} deletion key ${index}`);
     }
 
     identities.add(identity);

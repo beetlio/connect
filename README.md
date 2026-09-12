@@ -3,8 +3,8 @@
 # Beetl Connect SDK
 
 A TypeScript library for authoring API integrations for the Beetl data processing
-platform. Define the data to fetch and its schema; Connect handles authentication,
-retries, record validation, and checkpoints. The included CLI runs integrations locally.
+platform. Define pull syncs or destinations that receive record batches; Connect handles
+authentication, retries, and validation. Pull syncs also support checkpoints and local CLI execution.
 
 **[Documentation](https://beetlio.github.io/connect/)** · [Examples](examples) · [Architecture](ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
 
@@ -65,6 +65,21 @@ npx beetl-connect sync . users --output users.ndjson
 `users.ndjson` contains one validated GitHub user record. Continue with the
 [user guide](https://beetlio.github.io/connect/) for authentication, pagination,
 checkpoints, and packaging for Beetl.
+
+## Destinations
+
+Add `destinations` beside `syncs` to accept mapped records and optional deletion keys.
+The embedding host selects batches and owns delivery progress; integrations write them
+through the same provider client. See the [destination guide](https://beetlio.github.io/connect/#destinations).
+CLI and process destination commands are not included yet.
+
+Run the [mocked destination example](examples/destination/run.ts) from this checkout:
+
+```sh
+npm ci
+npm run build
+node examples/destination/run.ts
+```
 
 ## Development
 

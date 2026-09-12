@@ -15,7 +15,7 @@ import { createRequire, setSourceMapsSupport } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 
 import sharp from "sharp";
 import { create as createTar, extract as extractTar } from "tar";
@@ -28,6 +28,7 @@ import {
   assertSupportedHostContractVersion,
   parseIntegration,
   type IntegrationManifest,
+  type IntegrationManifestV4,
 } from "./manifest.ts";
 
 export {
@@ -36,6 +37,7 @@ export {
   type InputObjectSchema,
   type InputValueSchema,
   type IntegrationManifest,
+  type IntegrationManifestV4,
 } from "./manifest.ts";
 
 const Require = createRequire(import.meta.url);
@@ -108,7 +110,7 @@ export interface BuiltIntegrationIcon {
 
 export interface BuiltIntegration {
   readonly archive: Uint8Array;
-  readonly manifest: IntegrationManifest;
+  readonly manifest: IntegrationManifestV4;
   readonly icon?: BuiltIntegrationIcon;
   readonly sdkVersion: string;
 }
@@ -508,21 +510,28 @@ export async function withIntegration<Value>(
       })
       .parse(manifestValue);
 
-    if (manifest.manifestVersion !== 3) {
+    if (manifest.manifestVersion !== 3 && manifest.manifestVersion !== 4) {
       throw new Error(
-        `Unsupported manifest version ${JSON.stringify(manifest.manifestVersion)}; supported: 3. Upgrade the execution host SDK or rebuild with a supported SDK.`,
+        `Unsupported manifest version ${JSON.stringify(manifest.manifestVersion)}; supported: 3, 4. Upgrade the execution host SDK or rebuild with a supported SDK.`,
       );
     }
 
     assertSupportedHostContractVersion(manifest.hostContractVersion);
-    IntegrationManifestSchema.parse(manifestValue);
+    const declared = IntegrationManifestSchema.parse(manifestValue);
 
-    const { integration } = await importIntegration(
+    const loaded = await importIntegration(
       join(directory, "package/integration.mjs"),
       "runtime artifact",
     );
 
-    return await action(integration);
+    const expected =
+      declared.manifestVersion === 3
+        ? { ...declared, manifestVersion: 4, hostContractVersion: 4, destinations: [] }
+        : declared;
+    if (!isDeepStrictEqual(loaded.manifest, expected))
+      throw new Error("Runtime integration definition does not match its build manifest");
+
+    return await action(loaded.integration);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

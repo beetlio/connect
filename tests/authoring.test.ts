@@ -253,6 +253,45 @@ function checkAuthoringTypes() {
         },
       }),
     }),
+    destinations: (destination) => ({
+      // @ts-expect-error Destinations require primary keys.
+      missing: destination({ records: z.object({ id: z.string() }), async run() {} }),
+      invalid: destination({
+        records: z.object({ id: z.string() }),
+        // @ts-expect-error The key must belong to the record schema.
+        primaryKey: ["unknown"],
+        async run() {},
+      }),
+      typed: destination({
+        records: z.object({ id: z.string(), value: z.string().transform(Number) }),
+        primaryKey: ["id"],
+        supportsDelete: true,
+        inputs: z.strictObject({ limit: z.number().default(10) }),
+        async run(ctx, batch) {
+          const workspace: string = ctx.config.connection.workspace;
+          const limit: number = ctx.config.destination.limit;
+          const value: number | undefined = batch.records[0]?.value;
+          const id: string | undefined = batch.deletedKeys?.[0]?.id;
+          // @ts-expect-error Deletions contain only the declared key fields.
+          void batch.deletedKeys?.[0]?.value;
+          // @ts-expect-error Input records are readonly.
+          batch.records[0]!.id = "changed";
+          // @ts-expect-error Destination config is readonly.
+          ctx.config.destination.limit = 1;
+          // @ts-expect-error Destination executions have no source checkpoint.
+          void ctx.checkpoint;
+          void [workspace, limit, value, id];
+        },
+      }),
+      upserts: destination({
+        records: z.object({ id: z.string() }),
+        primaryKey: ["id"],
+        async run(ctx, batch) {
+          // @ts-expect-error Deletion keys are unavailable without supportsDelete.
+          void batch.deletedKeys?.[0]?.id;
+        },
+      }),
+    }),
   });
 }
 

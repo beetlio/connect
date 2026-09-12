@@ -1,5 +1,6 @@
 {
-  "formatVersion": 1,
+  "sdkCommit": "cc298f3ce41ab91603ca7d36449628c0c3f6d099",
+  "sdkLockSha256": "b9e3ec48de9424f7573d736ba83d04b78f13101a1789e95878f91d69f9049e87",
   "fixtures": [
     {
       "id": "bearer",
@@ -122,7 +123,10 @@
               }
             }
           ],
-          "acknowledgments": ["continue", "continue"],
+          "acknowledgments": [
+            "continue",
+            "continue"
+          ],
           "expected": {
             "batches": [
               {
@@ -134,7 +138,12 @@
                 ],
                 "checkpoint": {
                   "cursor": "two",
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               },
               {
@@ -151,7 +160,12 @@
                 ],
                 "checkpoint": {
                   "cursor": null,
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               }
             ],
@@ -162,7 +176,12 @@
               "deleted": 1,
               "checkpoint": {
                 "cursor": null,
-                "opaque": ["keep", null, false, 0]
+                "opaque": [
+                  "keep",
+                  null,
+                  false,
+                  0
+                ]
               }
             }
           }
@@ -211,7 +230,9 @@
               }
             }
           ],
-          "acknowledgments": ["stop"],
+          "acknowledgments": [
+            "stop"
+          ],
           "expected": {
             "batches": [
               {
@@ -223,7 +244,12 @@
                 ],
                 "checkpoint": {
                   "cursor": "two",
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               }
             ],
@@ -234,7 +260,12 @@
               "deleted": 0,
               "checkpoint": {
                 "cursor": "two",
-                "opaque": ["keep", null, false, 0]
+                "opaque": [
+                  "keep",
+                  null,
+                  false,
+                  0
+                ]
               }
             }
           }
@@ -250,7 +281,12 @@
             "syncKey": "items",
             "checkpoint": {
               "cursor": "two",
-              "opaque": ["keep", null, false, 0]
+              "opaque": [
+                "keep",
+                null,
+                false,
+                0
+              ]
             }
           },
           "provider": [
@@ -275,7 +311,9 @@
               }
             }
           ],
-          "acknowledgments": ["continue"],
+          "acknowledgments": [
+            "continue"
+          ],
           "expected": {
             "batches": [
               {
@@ -292,7 +330,12 @@
                 ],
                 "checkpoint": {
                   "cursor": null,
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               }
             ],
@@ -303,7 +346,12 @@
               "deleted": 1,
               "checkpoint": {
                 "cursor": null,
-                "opaque": ["keep", null, false, 0]
+                "opaque": [
+                  "keep",
+                  null,
+                  false,
+                  0
+                ]
               }
             }
           }
@@ -319,7 +367,9 @@
             "syncKey": "checkpoint"
           },
           "provider": [],
-          "acknowledgments": ["continue"],
+          "acknowledgments": [
+            "continue"
+          ],
           "expected": {
             "batches": [
               {
@@ -351,7 +401,9 @@
             "checkpoint": null
           },
           "provider": [],
-          "acknowledgments": ["continue"],
+          "acknowledgments": [
+            "continue"
+          ],
           "expected": {
             "batches": [
               {
@@ -384,13 +436,20 @@
             "syncKey": "checkpoint",
             "checkpoint": {
               "unknown": {
-                "values": [false, 0, "", null]
+                "values": [
+                  false,
+                  0,
+                  "",
+                  null
+                ]
               },
               "cursor": "opaque"
             }
           },
           "provider": [],
-          "acknowledgments": ["continue"],
+          "acknowledgments": [
+            "continue"
+          ],
           "expected": {
             "batches": [
               {
@@ -402,7 +461,12 @@
                 ],
                 "checkpoint": {
                   "unknown": {
-                    "values": [false, 0, "", null]
+                    "values": [
+                      false,
+                      0,
+                      "",
+                      null
+                    ]
                   },
                   "cursor": "opaque"
                 }
@@ -415,14 +479,215 @@
               "deleted": 0,
               "checkpoint": {
                 "unknown": {
-                  "values": [false, 0, "", null]
+                  "values": [
+                    false,
+                    0,
+                    "",
+                    null
+                  ]
                 },
                 "cursor": "opaque"
               }
             }
           }
         }
-      ]
+      ],
+      "artifact": "bearer.tgz",
+      "sha256": "659739f9a4844615a346ee8d04d99bcec34f97666e4bf31497c6b52656e708d7",
+      "sdk": {
+        "version": "0.3.0",
+        "commit": "cc298f3ce41ab91603ca7d36449628c0c3f6d099"
+      },
+      "manifest": {
+        "manifestVersion": 3,
+        "hostContractVersion": 3,
+        "integration": {
+          "key": "bearer",
+          "displayName": "bearer"
+        },
+        "connection": {
+          "origin": "https://provider.example",
+          "auth": {
+            "type": "bearer"
+          },
+          "inputs": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          },
+          "credentials": {
+            "type": "object",
+            "properties": {
+              "token": {
+                "title": "Bearer token",
+                "type": "string",
+                "minLength": 1,
+                "writeOnly": true,
+                "x-beetl-widget": "password"
+              }
+            },
+            "required": [
+              "token"
+            ],
+            "additionalProperties": false
+          },
+          "retry": {
+            "initialDelayMs": 0,
+            "maxDelayMs": 0
+          },
+          "canVerify": true
+        },
+        "syncs": [
+          {
+            "key": "items",
+            "displayName": "items",
+            "mode": "merge",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "primaryKey": [
+              "id"
+            ],
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "checkpoint",
+            "displayName": "checkpoint",
+            "mode": "append",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "projected",
+            "displayName": "projected",
+            "mode": "replace",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "metadata": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "metadata"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ]
+      },
+      "source": "sources/bearer/",
+      "hostContractVersion": 3,
+      "sourceHashes": {
+        "integration.ts": "39849a33ba05a79c8d59ecd81efdb9aaec66a8d4f9ec54e4424c41a6abeb5c8d",
+        "shared.ts": "4357fee17f45a4ec2bf8daf0837e5ae9f31a858e17fdccab74e5402eb3fcf38a",
+        "package.json": "b131e66b2d3718de97d95a5ca051e6a363dc89d85cf8bc5df0115b96e1c19e1a",
+        "package-lock.json": "196506461f467f4e060f57042a81b1b4ce98f5d2b827a56ea0cee767910cb5b0"
+      }
     },
     {
       "id": "exchange",
@@ -587,7 +852,10 @@
               }
             }
           ],
-          "acknowledgments": ["continue", "continue"],
+          "acknowledgments": [
+            "continue",
+            "continue"
+          ],
           "expected": {
             "batches": [
               {
@@ -599,7 +867,12 @@
                 ],
                 "checkpoint": {
                   "cursor": "two",
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               },
               {
@@ -616,7 +889,12 @@
                 ],
                 "checkpoint": {
                   "cursor": null,
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               }
             ],
@@ -627,12 +905,259 @@
               "deleted": 1,
               "checkpoint": {
                 "cursor": null,
-                "opaque": ["keep", null, false, 0]
+                "opaque": [
+                  "keep",
+                  null,
+                  false,
+                  0
+                ]
               }
             }
           }
         }
-      ]
+      ],
+      "artifact": "exchange.tgz",
+      "sha256": "f4a7833846bd810287b25a53d10b7677c2351d7923d3ff488b8801c4c2c544ad",
+      "sdk": {
+        "version": "0.3.0",
+        "commit": "cc298f3ce41ab91603ca7d36449628c0c3f6d099"
+      },
+      "manifest": {
+        "manifestVersion": 3,
+        "hostContractVersion": 3,
+        "integration": {
+          "key": "exchange",
+          "displayName": "exchange"
+        },
+        "connection": {
+          "origin": {
+            "type": "environment",
+            "input": "environment",
+            "values": {
+              "production": "https://provider.example",
+              "sandbox": "https://sandbox.example"
+            }
+          },
+          "auth": {
+            "type": "token_exchange",
+            "request": {
+              "path": "/token",
+              "headers": {
+                "x-client-id": {
+                  "credential": "clientId"
+                },
+                "x-client-secret": {
+                  "credential": "clientSecret"
+                }
+              }
+            },
+            "response": {
+              "tokenPath": "token",
+              "expiry": {
+                "type": "absolute",
+                "path": "expires_at"
+              }
+            }
+          },
+          "inputs": {
+            "type": "object",
+            "properties": {
+              "environment": {
+                "default": "production",
+                "type": "string",
+                "enum": [
+                  "production",
+                  "sandbox"
+                ],
+                "x-beetl-options": [
+                  {
+                    "value": "production",
+                    "label": "Production"
+                  },
+                  {
+                    "value": "sandbox",
+                    "label": "Sandbox"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "credentials": {
+            "type": "object",
+            "properties": {
+              "clientId": {
+                "type": "string"
+              },
+              "clientSecret": {
+                "type": "string",
+                "writeOnly": true,
+                "x-beetl-widget": "password"
+              }
+            },
+            "required": [
+              "clientId",
+              "clientSecret"
+            ],
+            "additionalProperties": false
+          },
+          "retry": {
+            "initialDelayMs": 0,
+            "maxDelayMs": 0
+          },
+          "canVerify": true
+        },
+        "syncs": [
+          {
+            "key": "items",
+            "displayName": "items",
+            "mode": "merge",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "primaryKey": [
+              "id"
+            ],
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "checkpoint",
+            "displayName": "checkpoint",
+            "mode": "append",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "projected",
+            "displayName": "projected",
+            "mode": "replace",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "metadata": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "metadata"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ]
+      },
+      "source": "sources/exchange/",
+      "hostContractVersion": 3,
+      "sourceHashes": {
+        "integration.ts": "0f1cbe3c74fa6c2b19fb17c7f960f3dcc202d100178e9eda6dd211e59e2d6d21",
+        "shared.ts": "4357fee17f45a4ec2bf8daf0837e5ae9f31a858e17fdccab74e5402eb3fcf38a",
+        "package.json": "39d27bf7a2749d18f963c9fa107ad9e7dd28fd3a8740507f9fbcf177f5e88593",
+        "package-lock.json": "c9e251f4b077c797c653d56d43f22f2bdfcb1c9a02cbb808a00348e36f4b1884"
+      }
     },
     {
       "id": "oauth",
@@ -744,7 +1269,10 @@
               }
             }
           ],
-          "acknowledgments": ["continue", "continue"],
+          "acknowledgments": [
+            "continue",
+            "continue"
+          ],
           "expected": {
             "batches": [
               {
@@ -756,7 +1284,12 @@
                 ],
                 "checkpoint": {
                   "cursor": "two",
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               },
               {
@@ -773,7 +1306,12 @@
                 ],
                 "checkpoint": {
                   "cursor": null,
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               }
             ],
@@ -784,7 +1322,12 @@
               "deleted": 1,
               "checkpoint": {
                 "cursor": null,
-                "opaque": ["keep", null, false, 0]
+                "opaque": [
+                  "keep",
+                  null,
+                  false,
+                  0
+                ]
               }
             }
           }
@@ -913,10 +1456,226 @@
                 "instanceUrl": "https://renewed.example"
               }
             },
-            "authenticationEvents": ["claim", "persist"]
+            "authenticationEvents": [
+              "claim",
+              "persist"
+            ]
           }
         }
-      ]
+      ],
+      "artifact": "oauth.tgz",
+      "sha256": "29ed4bcedccdc0cf028564af50990e7198f01a687275dc16e9b272b0b630e3af",
+      "sdk": {
+        "version": "0.3.0",
+        "commit": "cc298f3ce41ab91603ca7d36449628c0c3f6d099"
+      },
+      "manifest": {
+        "manifestVersion": 3,
+        "hostContractVersion": 3,
+        "integration": {
+          "key": "oauth",
+          "displayName": "oauth"
+        },
+        "connection": {
+          "origin": {
+            "type": "oauth",
+            "oauthTokenField": "instanceUrl"
+          },
+          "auth": {
+            "type": "oauth2_authorization_code",
+            "issuer": "https://auth.example",
+            "authorizationUrl": "https://auth.example/authorize",
+            "tokenUrl": "https://auth.example/token",
+            "scopes": [
+              "read"
+            ],
+            "usesClientSecret": true,
+            "tokenFields": {
+              "instanceUrl": "instance_url"
+            }
+          },
+          "inputs": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          },
+          "credentials": {
+            "type": "object",
+            "properties": {
+              "clientId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "clientSecret": {
+                "type": "string",
+                "minLength": 1,
+                "writeOnly": true,
+                "x-beetl-widget": "password"
+              }
+            },
+            "required": [
+              "clientId",
+              "clientSecret"
+            ],
+            "additionalProperties": false
+          },
+          "retry": {
+            "initialDelayMs": 0,
+            "maxDelayMs": 0
+          },
+          "canVerify": true
+        },
+        "syncs": [
+          {
+            "key": "items",
+            "displayName": "items",
+            "mode": "merge",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "primaryKey": [
+              "id"
+            ],
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "checkpoint",
+            "displayName": "checkpoint",
+            "mode": "append",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "projected",
+            "displayName": "projected",
+            "mode": "replace",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "metadata": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "metadata"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ]
+      },
+      "source": "sources/oauth/",
+      "hostContractVersion": 3,
+      "sourceHashes": {
+        "integration.ts": "3860d8e4121a69e2c14e7c1036beee75f2fb31ca9b4519c1db7295b6c3e81cdb",
+        "shared.ts": "4357fee17f45a4ec2bf8daf0837e5ae9f31a858e17fdccab74e5402eb3fcf38a",
+        "package.json": "d254030185b356bf492dafc5b0a411e2991c05b97dfeb5678b8a5c85672ff581",
+        "package-lock.json": "d9051dfc20912df8da9eb4e988670f9b71af38eaaddae91b03ba274fac781e30"
+      }
     },
     {
       "id": "exchange-form",
@@ -1093,7 +1852,10 @@
               }
             }
           ],
-          "acknowledgments": ["continue", "continue"],
+          "acknowledgments": [
+            "continue",
+            "continue"
+          ],
           "expected": {
             "batches": [
               {
@@ -1105,7 +1867,12 @@
                 ],
                 "checkpoint": {
                   "cursor": "two",
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               },
               {
@@ -1122,7 +1889,12 @@
                 ],
                 "checkpoint": {
                   "cursor": null,
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               }
             ],
@@ -1133,7 +1905,12 @@
               "deleted": 1,
               "checkpoint": {
                 "cursor": null,
-                "opaque": ["keep", null, false, 0]
+                "opaque": [
+                  "keep",
+                  null,
+                  false,
+                  0
+                ]
               }
             }
           }
@@ -1152,7 +1929,9 @@
             "syncKey": "projected"
           },
           "provider": [],
-          "acknowledgments": ["continue"],
+          "acknowledgments": [
+            "continue"
+          ],
           "expected": {
             "batches": [
               {
@@ -1228,7 +2007,252 @@
             "error": "Provider scope missing"
           }
         }
-      ]
+      ],
+      "artifact": "exchange-form.tgz",
+      "sha256": "b862ce91ba45d5423a87378114e165e34eecf0028a8d3b871af0cbc61bc35758",
+      "sdk": {
+        "version": "0.3.0",
+        "commit": "cc298f3ce41ab91603ca7d36449628c0c3f6d099"
+      },
+      "manifest": {
+        "manifestVersion": 3,
+        "hostContractVersion": 3,
+        "integration": {
+          "key": "exchange-form",
+          "displayName": "exchange-form"
+        },
+        "connection": {
+          "origin": {
+            "type": "environment",
+            "input": "environment",
+            "values": {
+              "production": "https://provider.example",
+              "sandbox": "https://sandbox.example"
+            }
+          },
+          "auth": {
+            "type": "token_exchange",
+            "request": {
+              "path": "/token",
+              "basic": {
+                "username": "clientId",
+                "password": "clientSecret"
+              },
+              "body": {
+                "encoding": "form",
+                "fields": {
+                  "grant_type": "client_credentials",
+                  "scope": "read"
+                }
+              }
+            },
+            "response": {
+              "tokenPath": "access_token",
+              "expiry": {
+                "type": "relative",
+                "path": "expires_in"
+              }
+            }
+          },
+          "inputs": {
+            "type": "object",
+            "properties": {
+              "environment": {
+                "default": "production",
+                "type": "string",
+                "enum": [
+                  "production",
+                  "sandbox"
+                ],
+                "x-beetl-options": [
+                  {
+                    "value": "production",
+                    "label": "Production"
+                  },
+                  {
+                    "value": "sandbox",
+                    "label": "Sandbox"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "credentials": {
+            "type": "object",
+            "properties": {
+              "clientId": {
+                "type": "string"
+              },
+              "clientSecret": {
+                "type": "string",
+                "writeOnly": true,
+                "x-beetl-widget": "password"
+              }
+            },
+            "required": [
+              "clientId",
+              "clientSecret"
+            ],
+            "additionalProperties": false
+          },
+          "retry": {
+            "initialDelayMs": 0,
+            "maxDelayMs": 0
+          },
+          "canVerify": true
+        },
+        "syncs": [
+          {
+            "key": "items",
+            "displayName": "items",
+            "mode": "merge",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "primaryKey": [
+              "id"
+            ],
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "checkpoint",
+            "displayName": "checkpoint",
+            "mode": "append",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "projected",
+            "displayName": "projected",
+            "mode": "replace",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "metadata": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "metadata"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ]
+      },
+      "source": "sources/exchange-form/",
+      "hostContractVersion": 3,
+      "sourceHashes": {
+        "integration.ts": "23acbb295fac09ed7e2381bf49a8c8295a742b5e0cd92dba8c2c78ff5c15ecd8",
+        "shared.ts": "4357fee17f45a4ec2bf8daf0837e5ae9f31a858e17fdccab74e5402eb3fcf38a",
+        "package.json": "1f92fe1635874393d061ba4d1bdbf7f864b0406660686aba016ebc5d9a826905",
+        "package-lock.json": "6574aa0a207df136eb26fd7fa0e4d0c0f9951dfab4971657cd9c96cb412ef8d5"
+      }
     },
     {
       "id": "exchange-json",
@@ -1404,7 +2428,10 @@
               }
             }
           ],
-          "acknowledgments": ["continue", "continue"],
+          "acknowledgments": [
+            "continue",
+            "continue"
+          ],
           "expected": {
             "batches": [
               {
@@ -1416,7 +2443,12 @@
                 ],
                 "checkpoint": {
                   "cursor": "two",
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               },
               {
@@ -1433,7 +2465,12 @@
                 ],
                 "checkpoint": {
                   "cursor": null,
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               }
             ],
@@ -1444,12 +2481,256 @@
               "deleted": 1,
               "checkpoint": {
                 "cursor": null,
-                "opaque": ["keep", null, false, 0]
+                "opaque": [
+                  "keep",
+                  null,
+                  false,
+                  0
+                ]
               }
             }
           }
         }
-      ]
+      ],
+      "artifact": "exchange-json.tgz",
+      "sha256": "b814ee4946d236f6d823722622920191fc8aaaff2a7a7c2d1f30a990f23ed94c",
+      "sdk": {
+        "version": "0.3.0",
+        "commit": "cc298f3ce41ab91603ca7d36449628c0c3f6d099"
+      },
+      "manifest": {
+        "manifestVersion": 3,
+        "hostContractVersion": 3,
+        "integration": {
+          "key": "exchange-json",
+          "displayName": "exchange-json"
+        },
+        "connection": {
+          "origin": {
+            "type": "input",
+            "input": "origin"
+          },
+          "auth": {
+            "type": "token_exchange",
+            "request": {
+              "path": "/token",
+              "body": {
+                "encoding": "json",
+                "fields": {
+                  "username": {
+                    "credential": "clientId"
+                  },
+                  "password": {
+                    "credential": "clientSecret"
+                  }
+                }
+              }
+            },
+            "response": {
+              "tokenPath": "session",
+              "expiry": {
+                "type": "fixed",
+                "seconds": 3600
+              }
+            },
+            "session": {
+              "header": "x-session",
+              "prefix": "",
+              "headers": {
+                "x-client-id": {
+                  "credential": "clientId"
+                }
+              }
+            }
+          },
+          "inputs": {
+            "type": "object",
+            "properties": {
+              "origin": {
+                "type": "string",
+                "format": "url"
+              }
+            },
+            "required": [
+              "origin"
+            ],
+            "additionalProperties": false
+          },
+          "credentials": {
+            "type": "object",
+            "properties": {
+              "clientId": {
+                "type": "string"
+              },
+              "clientSecret": {
+                "type": "string",
+                "writeOnly": true,
+                "x-beetl-widget": "password"
+              }
+            },
+            "required": [
+              "clientId",
+              "clientSecret"
+            ],
+            "additionalProperties": false
+          },
+          "retry": {
+            "initialDelayMs": 0,
+            "maxDelayMs": 0
+          },
+          "canVerify": true
+        },
+        "syncs": [
+          {
+            "key": "items",
+            "displayName": "items",
+            "mode": "merge",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "primaryKey": [
+              "id"
+            ],
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "checkpoint",
+            "displayName": "checkpoint",
+            "mode": "append",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": "projected",
+            "displayName": "projected",
+            "mode": "replace",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "metadata": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "metadata"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ]
+      },
+      "source": "sources/exchange-json/",
+      "hostContractVersion": 3,
+      "sourceHashes": {
+        "integration.ts": "511c9adb8cbf2e3617879e873434d95466bf2ff5bb5792e47e822776b603827b",
+        "shared.ts": "4357fee17f45a4ec2bf8daf0837e5ae9f31a858e17fdccab74e5402eb3fcf38a",
+        "package.json": "91e5d8251f95aa78b727ede173478477696d46d24b70038e6bbdf4baae00f02f",
+        "package-lock.json": "fd461424c7bd7771721f495a2d312650da748de3bfdcae28d92971daddfa25cb"
+      }
     },
     {
       "id": "oauth-relative",
@@ -1561,7 +2842,10 @@
               }
             }
           ],
-          "acknowledgments": ["continue", "continue"],
+          "acknowledgments": [
+            "continue",
+            "continue"
+          ],
           "expected": {
             "batches": [
               {
@@ -1573,7 +2857,12 @@
                 ],
                 "checkpoint": {
                   "cursor": "two",
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               },
               {
@@ -1590,7 +2879,12 @@
                 ],
                 "checkpoint": {
                   "cursor": null,
-                  "opaque": ["keep", null, false, 0]
+                  "opaque": [
+                    "keep",
+                    null,
+                    false,
+                    0
+                  ]
                 }
               }
             ],
@@ -1601,7 +2895,12 @@
               "deleted": 1,
               "checkpoint": {
                 "cursor": null,
-                "opaque": ["keep", null, false, 0]
+                "opaque": [
+                  "keep",
+                  null,
+                  false,
+                  0
+                ]
               }
             }
           }
@@ -1726,309 +3025,232 @@
               "refreshToken": "refresh",
               "tokenFields": {}
             },
-            "authenticationEvents": ["claim", "persist"]
+            "authenticationEvents": [
+              "claim",
+              "persist"
+            ]
           }
         }
-      ]
-    },
-    {
-      "id": "destination",
-      "scenarios": [
-        {
-          "id": "upsert-and-delete",
-          "operation": "destination",
-          "input": {
-            "connectionConfig": {
-              "tenant": "acme"
+      ],
+      "artifact": "oauth-relative.tgz",
+      "sha256": "a1538a55e4ef4854a26fe109afece09d46035cc3fde19e08de945ac34f707e8d",
+      "sdk": {
+        "version": "0.3.0",
+        "commit": "cc298f3ce41ab91603ca7d36449628c0c3f6d099"
+      },
+      "manifest": {
+        "manifestVersion": 3,
+        "hostContractVersion": 3,
+        "integration": {
+          "key": "oauth-relative",
+          "displayName": "oauth-relative"
+        },
+        "connection": {
+          "origin": {
+            "type": "input",
+            "input": "origin"
+          },
+          "auth": {
+            "type": "oauth2_authorization_code",
+            "issuer": "/",
+            "authorizationUrl": "/authorize",
+            "tokenUrl": "/token",
+            "scopes": [
+              "read"
+            ],
+            "usesClientSecret": true,
+            "tokenFields": {}
+          },
+          "inputs": {
+            "type": "object",
+            "properties": {
+              "origin": {
+                "type": "string",
+                "format": "url"
+              }
             },
-            "credentials": {
-              "token": "fixture-token"
+            "required": [
+              "origin"
+            ],
+            "additionalProperties": false
+          },
+          "credentials": {
+            "type": "object",
+            "properties": {
+              "clientId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "clientSecret": {
+                "type": "string",
+                "minLength": 1,
+                "writeOnly": true,
+                "x-beetl-widget": "password"
+              }
             },
-            "destinationKey": "contacts",
-            "batch": {
-              "batchId": "contacts-1",
-              "records": [
-                {
-                  "id": "one",
-                  "email": "one@example.com"
+            "required": [
+              "clientId",
+              "clientSecret"
+            ],
+            "additionalProperties": false
+          },
+          "retry": {
+            "initialDelayMs": 0,
+            "maxDelayMs": 0
+          },
+          "canVerify": true
+        },
+        "syncs": [
+          {
+            "key": "items",
+            "displayName": "items",
+            "mode": "merge",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
                 }
+              },
+              "required": [
+                "id"
               ],
-              "deletedKeys": [
+              "additionalProperties": false
+            },
+            "primaryKey": [
+              "id"
+            ],
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
                 {
-                  "id": "gone"
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
                 }
               ]
             }
           },
-          "provider": [
-            {
-              "request": {
-                "method": "POST",
-                "url": "https://provider.example/contacts/batch",
-                "headers": {
-                  "authorization": "Bearer fixture-token",
-                  "content-type": "application/json",
-                  "idempotency-key": "contacts-1",
-                  "x-tenant": "acme"
-                },
-                "bodyJson": {
-                  "records": [
-                    {
-                      "id": "one",
-                      "email": "one@example.com"
-                    }
-                  ],
-                  "deletedKeys": [
-                    {
-                      "id": "gone"
-                    }
-                  ]
+          {
+            "key": "checkpoint",
+            "displayName": "checkpoint",
+            "mode": "append",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
                 }
               },
-              "response": {
-                "status": 200,
-                "json": {
-                  "failedIds": []
-                }
-              }
-            }
-          ],
-          "expected": {}
-        },
-        {
-          "id": "deletion-only",
-          "operation": "destination",
-          "input": {
-            "connectionConfig": {
-              "tenant": "acme"
-            },
-            "credentials": {
-              "token": "fixture-token"
-            },
-            "destinationKey": "contacts",
-            "batch": {
-              "batchId": "contacts-2",
-              "records": [],
-              "deletedKeys": [
-                {
-                  "id": "gone"
-                }
-              ]
-            }
-          },
-          "provider": [
-            {
-              "request": {
-                "method": "POST",
-                "url": "https://provider.example/contacts/batch",
-                "headers": {
-                  "authorization": "Bearer fixture-token",
-                  "content-type": "application/json",
-                  "idempotency-key": "contacts-2",
-                  "x-tenant": "acme"
-                },
-                "bodyJson": {
-                  "records": [],
-                  "deletedKeys": [
-                    {
-                      "id": "gone"
-                    }
-                  ]
-                }
-              },
-              "response": {
-                "status": 200,
-                "json": {
-                  "failedIds": []
-                }
-              }
-            }
-          ],
-          "expected": {}
-        },
-        {
-          "id": "partial-failure-replay",
-          "operation": "destination",
-          "input": {
-            "connectionConfig": {
-              "tenant": "acme"
-            },
-            "credentials": {
-              "token": "fixture-token"
-            },
-            "destinationKey": "contacts",
-            "batch": {
-              "batchId": "contacts-1",
-              "records": [
-                {
-                  "id": "one",
-                  "email": "one@example.com"
-                }
+              "required": [
+                "id"
               ],
-              "deletedKeys": [
+              "additionalProperties": false
+            },
+            "checkpoint": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "anyOf": [
                 {
-                  "id": "gone"
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#"
+                  }
+                },
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#"
+                  }
                 }
               ]
             }
           },
-          "provider": [
-            {
-              "request": {
-                "method": "POST",
-                "url": "https://provider.example/contacts/batch",
-                "headers": {
-                  "authorization": "Bearer fixture-token",
-                  "content-type": "application/json",
-                  "idempotency-key": "contacts-1",
-                  "x-tenant": "acme"
+          {
+            "key": "projected",
+            "displayName": "projected",
+            "mode": "replace",
+            "inputs": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            },
+            "records": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
                 },
-                "bodyJson": {
-                  "records": [
-                    {
-                      "id": "one",
-                      "email": "one@example.com"
-                    }
-                  ],
-                  "deletedKeys": [
-                    {
-                      "id": "gone"
-                    }
-                  ]
+                "metadata": {
+                  "type": "string"
                 }
               },
-              "response": {
-                "status": 200,
-                "json": {
-                  "failedIds": ["one"]
-                }
-              }
-            },
-            {
-              "request": {
-                "method": "POST",
-                "url": "https://provider.example/contacts/batch",
-                "headers": {
-                  "authorization": "Bearer fixture-token",
-                  "content-type": "application/json",
-                  "idempotency-key": "contacts-1",
-                  "x-tenant": "acme"
-                },
-                "bodyJson": {
-                  "records": [
-                    {
-                      "id": "one",
-                      "email": "one@example.com"
-                    }
-                  ],
-                  "deletedKeys": [
-                    {
-                      "id": "gone"
-                    }
-                  ]
-                }
-              },
-              "response": {
-                "status": 200,
-                "json": {
-                  "failedIds": []
-                }
-              }
-            }
-          ],
-          "expected": {
-            "error": "Contact write failed: one"
-          },
-          "replay": true
-        },
-        {
-          "id": "unsupported-deletions",
-          "operation": "destination",
-          "input": {
-            "connectionConfig": {
-              "tenant": "acme"
-            },
-            "credentials": {
-              "token": "fixture-token"
-            },
-            "destinationKey": "upsert-only",
-            "batch": {
-              "batchId": "contacts-2",
-              "records": [],
-              "deletedKeys": [
-                {
-                  "id": "gone"
-                }
-              ]
-            }
-          },
-          "provider": [],
-          "expected": {
-            "error": "Destination does not support deletions"
-          }
-        },
-        {
-          "id": "conflicting-keys",
-          "operation": "destination",
-          "input": {
-            "connectionConfig": {
-              "tenant": "acme"
-            },
-            "credentials": {
-              "token": "fixture-token"
-            },
-            "destinationKey": "contacts",
-            "batch": {
-              "batchId": "conflict",
-              "records": [
-                {
-                  "id": "one",
-                  "email": "one@example.com"
-                }
+              "required": [
+                "id",
+                "metadata"
               ],
-              "deletedKeys": [
-                {
-                  "id": "one"
-                }
-              ]
+              "additionalProperties": false
             }
-          },
-          "provider": [],
-          "expected": {
-            "error": "Duplicate or conflicting destination deletion key 0"
           }
-        },
-        {
-          "id": "duplicate-keys",
-          "operation": "destination",
-          "input": {
-            "connectionConfig": {
-              "tenant": "acme"
-            },
-            "credentials": {
-              "token": "fixture-token"
-            },
-            "destinationKey": "contacts",
-            "batch": {
-              "batchId": "duplicate",
-              "records": [
-                {
-                  "id": "one",
-                  "email": "one@example.com"
-                },
-                {
-                  "id": "one",
-                  "email": "two@example.com"
-                }
-              ]
-            }
-          },
-          "provider": [],
-          "expected": {
-            "error": "Duplicate destination key in record 1"
-          }
-        }
-      ]
+        ]
+      },
+      "source": "sources/oauth-relative/",
+      "hostContractVersion": 3,
+      "sourceHashes": {
+        "integration.ts": "1b2cd6a3a20f2b17f0962e2a2de4bfd1524a2988746621c8a53871adb0394ace",
+        "shared.ts": "4357fee17f45a4ec2bf8daf0837e5ae9f31a858e17fdccab74e5402eb3fcf38a",
+        "package.json": "9404d0d5a60bced4acf3952ee4e7ea03cd30b495c21f6ea5799ee12eb2c2d385",
+        "package-lock.json": "1f1a1f41118bdddfc45e208c6b1c8f8b6654e2d0fe7fcf56ca57a13cd4e87f9b"
+      }
     }
   ]
 }
