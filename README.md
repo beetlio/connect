@@ -2,9 +2,20 @@
 
 # Beetl Connect SDK
 
+[![npm version](https://img.shields.io/npm/v/@beetlio/connect)](https://www.npmjs.com/package/@beetlio/connect)
+[![CI](https://github.com/beetlio/connect/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/beetlio/connect/actions/workflows/ci.yml)
+[![Node.js 24.2+](https://img.shields.io/badge/node-%3E%3D24.2-339933)](package.json)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 A TypeScript library for authoring API integrations for the Beetl data processing
-platform. Define pull syncs or destinations that receive record batches; Connect handles
-authentication, retries, and validation. Pull syncs also support checkpoints and local CLI execution.
+platform. Connect handles authentication, retries, and validation for:
+
+- **[Pull syncs](https://beetlio.github.io/connect/#records):** read records from an API,
+  with pagination, resumable checkpoints, and local CLI execution.
+- **[Destinations](https://beetlio.github.io/connect/#destinations):** write record batches
+  and optional deletions to an API through the embedded host API.
+
+An integration can define either or both, sharing the same connection and authentication.
 
 **[Documentation](https://beetlio.github.io/connect/)** · [Examples](examples) · [Architecture](ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
 
@@ -12,7 +23,8 @@ authentication, retries, and validation. Pull syncs also support checkpoints and
 
 ## Get started
 
-Requires **Node.js 24.2+**. In a new directory, create `package.json`:
+This quickstart reads one public GitHub user with a pull sync. Requires **Node.js 24.2+**.
+In a new directory, create `package.json`:
 
 ```json
 {
@@ -65,21 +77,6 @@ npx beetl-connect sync . users --output users.ndjson
 `users.ndjson` contains one validated GitHub user record. Continue with the
 [user guide](https://beetlio.github.io/connect/) for authentication, pagination,
 checkpoints, and packaging for Beetl.
-
-## Destinations
-
-Add `destinations` beside `syncs` to accept mapped records and optional deletion keys.
-The embedding host selects batches and owns delivery progress; integrations write them
-through the same provider client. See the [destination guide](https://beetlio.github.io/connect/#destinations).
-CLI and process destination commands are not included yet.
-
-Run the [mocked destination example](examples/destination/run.ts) from this checkout:
-
-```sh
-npm ci
-npm run build
-node examples/destination/run.ts
-```
 
 ## Development
 

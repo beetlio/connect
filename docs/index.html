@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Author API integrations for the Beetl data processing platform with the Beetl Connect SDK. Installation, authentication, pagination, and local development."
+      content="Author API integrations for the Beetl data processing platform with the Beetl Connect SDK. Pull syncs, destinations, authentication, and local development."
     />
     <title>User guide · Beetl Connect SDK</title>
     <link rel="icon" href="./beetl-logo.svg" type="image/svg+xml" />
@@ -42,13 +42,15 @@
           platform.
         </p>
         <p>
-          Define a connection with syncs that fetch provider data, destinations that push mapped
-          records, or both. Connect handles authentication, retries, and validation.
+          Define <a href="#records">pull syncs</a> that read records from an API,
+          <a href="#destinations">destinations</a> that write records to an API, or both. They share
+          a connection; Connect handles authentication, retries, and validation.
         </p>
         <section id="getting-started">
           <h2>Get started</h2>
           <p>
-            Use <strong>Node.js 24.2 or newer</strong>. In a new directory, create
+            This quickstart reads one public GitHub user with a pull sync. Use
+            <strong>Node.js 24.2 or newer</strong>. In a new directory, create
             <code>package.json</code>:
           </p>
           <pre><code class="language-json">{
@@ -205,7 +207,7 @@ const authentication = auth.tokenExchange({
 });</code></pre>
           <p>
             Assign <code>authentication</code> to <code>connection.auth</code>. The SDK obtains and
-            reuses the token; sync code keeps calling <code>ctx.fetch</code> or
+            reuses the token; sync and destination code keep calling <code>ctx.fetch</code> or
             <code>ctx.json</code> without handling credentials.
           </p>
           <p>
@@ -323,10 +325,17 @@ const authentication = auth.tokenExchange({
         <section id="destinations">
           <h2>Destinations</h2>
           <p>
-            Add <code>destinations</code> alongside <code>syncs</code>, or use a destination-only
-            integration. Both share the connection, authentication, and request helpers. A
-            destination receives mapped records to upsert and optional keys to delete:
+            A destination writes batches of records to a provider API. Add
+            <code>destinations</code> alongside <code>syncs</code>, or define an integration with
+            only destinations. Both use the same connection, authentication, and request helpers.
           </p>
+          <p>
+            Destinations require SDK 0.4 or newer and run through the embedded host API. The CLI and
+            process host currently execute pull syncs only; use the mocked example below to try
+            destination execution locally.
+          </p>
+          <h3>Define a destination</h3>
+          <p>This example upserts contacts and deletes contacts by key:</p>
           <pre><code class="language-ts">import { auth, defineIntegration, z } from "@beetlio/connect";
 
 export default defineIntegration({
@@ -364,9 +373,11 @@ export default defineIntegration({
             <code>false</code>. Optional <code>inputs</code> are available as
             <code>ctx.config.destination</code>.
           </p>
+          <h3>Run a batch</h3>
           <p>
             Embedding hosts call <code>runDestinationBatch</code> from
-            <code>@beetlio/connect/host</code> with the integration, input, and SDK provider:
+            <code>@beetlio/connect/host</code> with the integration, input, and SDK provider. The
+            runnable example below includes provider setup and authentication cleanup.
           </p>
           <pre><code class="language-ts">await runDestinationBatch(integration, {
   destination: "contacts",
@@ -389,11 +400,16 @@ export default defineIntegration({
             keeps the same batch ID and contents.
           </p>
           <p>
-            Core owns CDC, mapping, ordering, and durable delivery progress. Destination code
-            receives desired state and deletion keys, without Delta metadata or checkpoints.
-            Execution currently uses the embedded host API; CLI profiles and process operations
-            remain pull-only.
+            The host selects and maps records, orders batches, and saves delivery progress.
+            Destination code receives the prepared records and deletion keys; it does not manage
+            checkpoints. See the
+            <a
+              href="https://github.com/beetlio/connect/blob/main/docs/compatibility.md#destination-batches"
+              >destination contract</a
+            >
+            for host requirements.
           </p>
+          <h3>Try the example</h3>
           <p>
             Run the
             <a href="https://github.com/beetlio/connect/tree/main/examples/destination"
