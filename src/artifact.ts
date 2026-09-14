@@ -357,6 +357,7 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
       if ((await stat(join(directory, "node_modules"))).isDirectory()) {
         await cp(join(directory, "node_modules"), join(sourcePackage, "node_modules"), {
           recursive: true,
+          verbatimSymlinks: true,
         });
       }
     } catch (error) {
@@ -404,7 +405,7 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
     await rm(sdkDirectory, { recursive: true, force: true });
     await mkdir(sdkDirectory, { recursive: true });
     await Promise.all([
-      ...["index", "manifest", "records", "auth", "forms", "http", "json"].map((name) =>
+      ...["index", "manifest", "records", "auth", "forms", "http", "json", "legacy"].map((name) =>
         copyFile(new URL(`./${name}.js`, import.meta.url), join(sdkDirectory, `${name}.js`)),
       ),
       cp(ZodDirectory, join(sdkDirectory, "node_modules/zod"), { recursive: true }),
@@ -533,7 +534,21 @@ export async function withIntegration<Value>(
 
     return await action(loaded.integration);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeRuntimeDirectory(directory);
+  }
+}
+
+async function removeRuntimeDirectory(directory: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rm(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? String(error.code) : "";
+      if (!["EBUSY", "ENOTEMPTY", "EPERM"].includes(code)) throw error;
+      if (attempt === 19) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   }
 }
 

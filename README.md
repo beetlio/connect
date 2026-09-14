@@ -78,6 +78,16 @@ npx beetl-connect sync . users --output users.ndjson
 [user guide](https://beetlio.github.io/connect/) for authentication, pagination,
 checkpoints, and packaging for Beetl.
 
+## Amazon S3 authentication
+
+Use `auth.awsSigV4({ region: { input: "region" }, service: "s3" })` to sign requests to
+regional S3 bucket endpoints inside the host. Fixed credentials use `accessKeyId`,
+`secretAccessKey`, and `sessionToken` (empty for long-lived keys). Add
+`credentialSource: "assume_role"` to store only a `roleArn`; a trusted host then supplies
+short-lived credentials and renews them before expiry. Trusted workers can use
+`assumeAwsRole` from `@beetlio/connect/aws-role`, with the CLI binding the tenant ID from
+`BEETL_AWS_EXTERNAL_ID`.
+
 ## Development
 
 ```sh

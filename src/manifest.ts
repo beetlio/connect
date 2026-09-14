@@ -78,7 +78,7 @@ export function parseIntegration(value: unknown): {
   readonly integration: IntegrationDefinition;
   readonly manifest: IntegrationManifestV4;
 } {
-  const integration = Definition.parse(value) as IntegrationDefinition;
+  const integration = Definition.parse(value) as unknown as IntegrationDefinition;
 
   validateKey(integration.key);
 
@@ -91,7 +91,9 @@ export function parseIntegration(value: unknown): {
 }
 
 export function createIntegrationManifest(
-  integration: IntegrationDefinition,
+  integration: Omit<IntegrationDefinition, "syncs"> & {
+    readonly syncs: Readonly<Record<string, IntegrationDefinition["syncs"][string]>>;
+  },
 ): IntegrationManifestV4 {
   return parseIntegration(integration).manifest;
 }
@@ -380,7 +382,7 @@ function connectionManifest(connection: ConnectionDefinition): IntegrationManife
       ? ({ type: "none" } as const)
       : AuthManifestSchema.parse((({ credentials, ...value }) => value)(authentication));
   const credentials = objectManifest(authentication?.credentials, true);
-  const origin = connection.origin;
+  const origin = OriginSchema.parse(connection.origin);
 
   if (typeof origin === "string") providerOrigin(origin, auth.type !== "none");
   else if (origin.type === "environment") {
@@ -411,6 +413,20 @@ function connectionManifest(connection: ConnectionDefinition): IntegrationManife
     throw new Error("Provider origin references an unknown OAuth token field");
   }
 
+  if (auth.type === "aws_sigv4") {
+    if (typeof auth.region === "string") {
+      if (!/^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(auth.region))
+        throw new Error("Invalid AWS signing region");
+    } else {
+      const field = inputs.properties[auth.region.input];
+      if (
+        field?.type !== "string" ||
+        (!inputs.required?.includes(auth.region.input) && !Object.hasOwn(field, "default"))
+      )
+        throw new Error("AWS signing region must reference a required string connection input");
+    }
+  }
+
   const references = credentialReferences(auth);
 
   for (const key of references)
@@ -422,17 +438,21 @@ function connectionManifest(connection: ConnectionDefinition): IntegrationManife
       throw new Error(`Authentication declares unused credential ${JSON.stringify(key)}`);
 
   const secrets =
-    auth.type === "bearer"
-      ? ["token"]
-      : auth.type === "basic"
-        ? ["password"]
-        : auth.type === "api_key"
-          ? ["apiKey"]
-          : auth.type === "oauth2_authorization_code" && auth.usesClientSecret
-            ? ["clientSecret"]
-            : auth.type === "token_exchange" && auth.request.basic
-              ? [auth.request.basic.password]
-              : [];
+    auth.type === "aws_sigv4"
+      ? auth.credentialSource === "assume_role"
+        ? ["roleArn"]
+        : ["accessKeyId", "secretAccessKey", "sessionToken"]
+      : auth.type === "bearer"
+        ? ["token"]
+        : auth.type === "basic"
+          ? ["password"]
+          : auth.type === "api_key"
+            ? ["apiKey"]
+            : auth.type === "oauth2_authorization_code" && auth.usesClientSecret
+              ? ["clientSecret"]
+              : auth.type === "token_exchange" && auth.request.basic
+                ? [auth.request.basic.password]
+                : [];
 
   for (const key of secrets) {
     const field = credentials.properties[key];
@@ -512,6 +532,10 @@ function credentialReferences(auth: AuthManifest): readonly string[] {
   switch (auth.type) {
     case "none":
       return [];
+    case "aws_sigv4":
+      return auth.credentialSource === "assume_role"
+        ? ["roleArn"]
+        : ["accessKeyId", "secretAccessKey", "sessionToken"];
     case "bearer":
       return ["token"];
     case "basic":

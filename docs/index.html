@@ -181,6 +181,10 @@ inputs: z.strictObject({ environment: z.enum([&quot;live&quot;, &quot;test&quot;
                   <td>Exchange credentials for a session token</td>
                 </tr>
                 <tr>
+                  <td><code>auth.awsSigV4({ region, service: "s3" })</code></td>
+                  <td>AWS Signature Version 4 with fixed keys or renewable role credentials</td>
+                </tr>
+                <tr>
                   <td><code>auth.custom({ credentials, headers, query })</code></td>
                   <td>Provider-specific credential placement</td>
                 </tr>

@@ -2,6 +2,7 @@ import { z } from "zod";
 import type {
   JsonObject,
   ProviderOriginDefinition,
+  ProviderOriginInputDefinition,
   RetryDefinition,
   RetryPolicy,
   SyncFetchInit,
@@ -136,16 +137,29 @@ export async function* paginate<S extends z.ZodType>(
   }
 }
 
-export const OriginSchema = z.union([
-  z.string(),
-  z.strictObject({ type: z.literal("input"), input: z.string().min(1) }),
-  z.strictObject({
-    type: z.literal("environment"),
-    input: z.string().min(1),
-    values: z.record(z.string(), z.string()),
-  }),
-  z.strictObject({ type: z.literal("oauth"), oauthTokenField: z.string().min(1) }),
-]);
+export const OriginSchema = z
+  .union([
+    z.string(),
+    z.strictObject({ type: z.literal("input"), input: z.string().min(1) }),
+    z.strictObject({
+      type: z.literal("environment"),
+      input: z.string().min(1),
+      values: z.record(z.string(), z.string()),
+    }),
+    z.strictObject({ type: z.literal("oauth"), oauthTokenField: z.string().min(1) }),
+    z.strictObject({ input: z.string().min(1) }),
+    z.strictObject({
+      input: z.string().min(1),
+      values: z.record(z.string(), z.string()),
+    }),
+    z.strictObject({ oauthTokenField: z.string().min(1) }),
+  ])
+  .transform((origin) => {
+    if (typeof origin === "string" || "type" in origin) return origin;
+    if ("oauthTokenField" in origin) return { type: "oauth" as const, ...origin };
+    if ("values" in origin) return { type: "environment" as const, ...origin };
+    return { type: "input" as const, ...origin };
+  });
 
 export function providerOrigin(value: string, authenticated = false): URL {
   const origin = new URL(value);
@@ -220,7 +234,7 @@ export function resolveRetry(retry: RetryDefinition | undefined): ResolvedRetry 
 }
 
 export function resolveProviderOrigin(
-  definition: ProviderOriginDefinition,
+  definition: ProviderOriginInputDefinition,
   authorizationState?: { readonly tokenFields: Readonly<Record<string, string>> },
   authenticated = false,
   connectionConfig: JsonObject = {},

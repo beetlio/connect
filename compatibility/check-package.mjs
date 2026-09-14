@@ -42,7 +42,14 @@ try {
   const installed = join(consumer, "node_modules/@beetlio/connect");
   const definition = JSON.parse(await readFile(join(installed, "package.json"), "utf8"));
 
-  assert.deepEqual(Object.keys(definition.exports).sort(), [".", "./builder", "./host"]);
+  assert.deepEqual(Object.keys(definition.exports).sort(), [
+    ".",
+    "./aws-role",
+    "./builder",
+    "./host",
+    "./local-host",
+    "./oauth",
+  ]);
 
   await writeFile(
     join(consumer, "consumer.ts"),
@@ -61,9 +68,14 @@ import {
   runDestinationBatch,
   type CommitAction,
 } from "@beetlio/connect/host";
+import { assumeAwsRole } from "@beetlio/connect/aws-role";
+import { LocalHost } from "@beetlio/connect/local-host";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+
+void assumeAwsRole;
+void LocalHost;
 
 const integration = defineIntegration({
   key: "consumer",

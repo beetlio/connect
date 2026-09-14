@@ -10,6 +10,7 @@ import {
   type ResolvedRetry,
 } from "./http.ts";
 import type { ConnectionDefinition } from "./index.ts";
+import { signS3Request } from "./aws-sigv4.ts";
 import {
   OAuthAuthorizationStateSchema,
   refreshOAuthAuthorization,
@@ -18,9 +19,19 @@ import {
 
 const MaxProviderResponseBytes = 16 * 1024 * 1024;
 
+export interface AwsSessionCredentials {
+  readonly accessKeyId: string;
+  readonly secretAccessKey: string;
+  readonly sessionToken: string;
+  /** Unix milliseconds. */
+  readonly expiration: number;
+}
+
 export interface ProviderOptions {
   readonly connectionConfig?: unknown;
   readonly credentials?: unknown;
+  /** Trusted host callback, bound to the connection role and tenant. */
+  readonly awsCredentials?: () => Promise<AwsSessionCredentials>;
   readonly authorizationState?: OAuthAuthorizationState;
   readonly fetch?: typeof globalThis.fetch;
   readonly signal?: AbortSignal;
@@ -51,6 +62,8 @@ export function createProvider(connection: ConnectionDefinition, options: Provid
     connectionConfig,
   );
   let token: { readonly accessToken: string; readonly expiresAt: number } | undefined;
+  let awsSession: AwsSessionCredentials | undefined;
+  let awsRenewing: Promise<AwsSessionCredentials> | undefined;
   let version = 0;
   let renewing: Promise<boolean> | undefined;
   let failure: { readonly error: unknown } | undefined;
@@ -69,7 +82,7 @@ export function createProvider(connection: ConnectionDefinition, options: Provid
   return {
     request,
     async settleAuthentication() {
-      await Promise.allSettled([renewing]);
+      await Promise.allSettled([renewing, awsRenewing]);
 
       if (failure) throw failure.error;
     },
@@ -99,7 +112,7 @@ export function createProvider(connection: ConnectionDefinition, options: Provid
         request.headers.map(([name, value]): [string, string] => [name, value]),
       );
 
-      applyAuthentication(url, headers);
+      await applyAuthentication(url, request.method, headers, request.body);
 
       let response: Response;
       let responseBody: Uint8Array;
@@ -156,12 +169,76 @@ export function createProvider(connection: ConnectionDefinition, options: Provid
     }
   }
 
-  function applyAuthentication(url: URL, headers: Headers): void {
+  async function applyAuthentication(
+    url: URL,
+    method: string,
+    headers: Headers,
+    body: Uint8Array | undefined,
+  ): Promise<void> {
     if (authentication.type === "none") {
       return;
     }
 
     providerOrigin(url.origin, true);
+
+    if (authentication.type === "aws_sigv4") {
+      let signingCredentials: Pick<
+        AwsSessionCredentials,
+        "accessKeyId" | "secretAccessKey" | "sessionToken"
+      >;
+
+      if (authentication.credentialSource === "assume_role") {
+        if (!options.awsCredentials)
+          throw new Error("AWS role authentication requires a trusted host credential provider");
+
+        if (!awsSession || awsSession.expiration <= now() + 60_000) {
+          awsRenewing ??= options
+            .awsCredentials()
+            .then((session) => {
+              if (
+                !session.accessKeyId ||
+                !session.secretAccessKey ||
+                !session.sessionToken ||
+                !Number.isFinite(session.expiration) ||
+                session.expiration <= now() + 60_000
+              )
+                throw new Error("AWS credential provider returned invalid or expiring credentials");
+
+              awsSession = session;
+              return session;
+            })
+            .finally(() => {
+              awsRenewing = undefined;
+            });
+          signingCredentials = await awsRenewing;
+        } else {
+          signingCredentials = awsSession;
+        }
+      } else {
+        signingCredentials = {
+          accessKeyId: credential("accessKeyId"),
+          secretAccessKey: credential("secretAccessKey"),
+          sessionToken: credential("sessionToken"),
+        };
+      }
+
+      signS3Request(
+        url,
+        method,
+        headers,
+        body,
+        {
+          region:
+            typeof authentication.region === "string"
+              ? authentication.region
+              : String(connectionConfig[authentication.region.input] ?? ""),
+          ...signingCredentials,
+        },
+        new Date(now()),
+      );
+
+      return;
+    }
 
     if (authentication.type === "bearer") {
       headers.set("authorization", `Bearer ${credential("token")}`);

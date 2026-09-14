@@ -34,6 +34,18 @@
     "./builder": {
       "types": "./dist/artifact.d.ts",
       "default": "./dist/artifact.js"
+    },
+    "./local-host": {
+      "types": "./dist/local-host.d.ts",
+      "default": "./dist/local-host.js"
+    },
+    "./oauth": {
+      "types": "./dist/oauth.d.ts",
+      "default": "./dist/oauth.js"
+    },
+    "./aws-role": {
+      "types": "./dist/aws-role.d.ts",
+      "default": "./dist/aws-role.js"
     }
   },
   "engines": {
@@ -62,7 +74,8 @@
     "sharp": "^0.35.4",
     "tar": "^7.5.22",
     "typescript": "^5.9.3",
-    "zod": "^4.4.3"
+    "zod": "4.4.3",
+    "@aws-sdk/credential-providers": "^3.1129.0"
   },
   "devDependencies": {
     "prettier": "^3.9.6"

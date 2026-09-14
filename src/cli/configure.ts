@@ -9,6 +9,7 @@ import password from "@inquirer/password";
 import envPaths from "env-paths";
 import { z } from "zod";
 
+import { assumeAwsRole } from "../aws-role.ts";
 import { replacePrivateFile } from "../file-sink.ts";
 import { verifyConnection } from "../host.ts";
 import { resolveProviderOrigin } from "../http.ts";
@@ -512,6 +513,18 @@ export function createConfiguredProvider(
       connectionConfig: parseConnectionInputs(integration, connection.inputs),
       fetch: ProviderFetch,
       credentials: parseCredentials(auth?.credentials ?? EmptyInputs, connection.credentials),
+      ...(auth?.type === "aws_sigv4" && auth.credentialSource === "assume_role"
+        ? {
+            awsCredentials: () =>
+              assumeAwsRole(
+                connection.credentials.roleArn ?? "",
+                process.env.BEETL_AWS_EXTERNAL_ID ?? "",
+                typeof auth.region === "string"
+                  ? auth.region
+                  : String(connection.inputs?.[auth.region.input] ?? ""),
+              ),
+          }
+        : {}),
       ...(connection.authorizationState === undefined
         ? {}
         : { authorizationState: connection.authorizationState }),
