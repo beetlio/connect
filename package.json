@@ -62,6 +62,7 @@
     "test:sdk": "node --test \"tests/*.test.ts\"",
     "test:compatibility": "node compatibility/build.mjs && node dist/cli/main.js compatibility",
     "test:package": "node compatibility/build.mjs && node compatibility/check-package.mjs",
+    "prepare": "npm run build",
     "prepack": "npm run build && node compatibility/build.mjs"
   },
   "dependencies": {
