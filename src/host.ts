@@ -9,6 +9,7 @@ import type {
   JsonObject,
   JsonValue,
   RetryDefinition,
+  SyncContext,
   SyncDefinition,
   SyncFetchInit,
 } from "./index.ts";
@@ -66,7 +67,8 @@ export interface RequestHost {
 }
 
 export interface SyncHost extends RequestHost {
-  commit(batch: EmittedBatch): Promise<CommitAction>;
+  commit?(batch: EmittedBatch): Promise<CommitAction>;
+  emit?(batch: EmittedBatch): Promise<"continue" | "yield" | void>;
 }
 
 export interface VerifyConnectionInput {
@@ -168,11 +170,28 @@ export async function runDestinationBatch(
   throwFailures(failures, input.signal);
 }
 
-export async function runSync(
+export function runSync(
   integration: IntegrationDefinition,
   input: RunSyncInput,
   host: SyncHost,
+): Promise<RunSyncResult>;
+export function runSync(
+  integration: IntegrationDefinition,
+  sync: string,
+  input: Omit<RunSyncInput, "sync">,
+  host: SyncHost,
+): Promise<RunSyncResult>;
+export async function runSync(
+  integration: IntegrationDefinition,
+  inputOrSync: RunSyncInput | string,
+  inputOrHost: Omit<RunSyncInput, "sync"> | SyncHost,
+  legacyHost?: SyncHost,
 ): Promise<RunSyncResult> {
+  const input: RunSyncInput =
+    typeof inputOrSync === "string"
+      ? { ...(inputOrHost as Omit<RunSyncInput, "sync">), sync: inputOrSync }
+      : inputOrSync;
+  const host = typeof inputOrSync === "string" ? legacyHost! : (inputOrHost as SyncHost);
   createIntegrationManifest(integration);
 
   const sync = integration.syncs[input.sync];
@@ -203,9 +222,12 @@ export async function runSync(
   try {
     iterator = sync.run({
       ...scope.context,
+      emit: async () => {
+        throw new Error("Legacy emit adapter is unavailable at the execution boundary");
+      },
       config: { connection, sync: config },
       checkpoint: checkpoint === undefined ? undefined : structuredClone(checkpoint),
-    });
+    } as unknown as SyncContext);
 
     while (true) {
       scope.context.signal.throwIfAborted();
@@ -236,13 +258,22 @@ export async function runSync(
 
       scope.context.signal.throwIfAborted();
 
-      const action = await host.commit({
+      const batch = {
         batchId: crypto.randomUUID(),
         sequence: batches,
         records: parsedRecords,
         ...(deletedKeys.length ? { deletedKeys } : {}),
         ...(next === undefined ? {} : { checkpoint: next }),
-      });
+      };
+      const action = host.commit
+        ? await host.commit(batch)
+        : host.emit
+          ? (await host.emit(batch)) === "yield"
+            ? "stop"
+            : "continue"
+          : (() => {
+              throw new Error("Sync host must implement commit or emit");
+            })();
 
       if (action !== "continue" && action !== "stop")
         throw new Error("Host commit must return continue or stop");
@@ -571,4 +602,9 @@ async function parseCheckpoint(sync: SyncDefinition, value: JsonValue): Promise<
   }
 
   return value;
+}
+
+/** Validate an integration without constructing a separate host. */
+export function validateIntegration(integration: IntegrationDefinition): void {
+  createIntegrationManifest(integration);
 }
