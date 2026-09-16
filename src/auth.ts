@@ -34,6 +34,12 @@ const Exchange = z.strictObject({
 export const AuthManifestSchema = z
   .discriminatedUnion("type", [
     z.strictObject({ type: z.literal("none") }),
+    z.strictObject({
+      type: z.literal("aws_sigv4"),
+      region: z.union([z.string().min(1), z.strictObject({ input: z.string().min(1) })]),
+      service: z.literal("s3"),
+      credentialSource: z.literal("assume_role").optional(),
+    }),
     z.strictObject({ type: z.literal("bearer") }),
     z.strictObject({ type: z.literal("basic") }),
     z.strictObject({ type: z.literal("api_key"), in: z.enum(["header", "query"]), name: Name }),
@@ -53,11 +59,39 @@ export const AuthManifestSchema = z
 
 export type AuthManifest = z.output<typeof AuthManifestSchema>;
 
-export type AuthDefinition = AuthManifest & { readonly credentials: z.ZodObject };
+type AuthDefinitionFor<M extends AuthManifest> = M extends { type: "token_exchange" }
+  ? M & { readonly credentials: z.ZodObject } & Partial<
+        Omit<LegacyTokenExchangeOptions<z.ZodObject>, "credentials">
+      >
+  : M & { readonly credentials: z.ZodObject };
+
+export type AuthDefinition = AuthDefinitionFor<AuthManifest>;
 
 type FieldValue<K extends string> = string | { readonly credential: K };
 
 type FieldMap<K extends string> = Readonly<Record<string, FieldValue<K>>>;
+
+export interface LegacyTokenExchangeOptions<S extends z.ZodObject> {
+  readonly credentials: S;
+  readonly tokenUrl: string;
+  readonly headers?: Readonly<Record<string, keyof z.output<S> & string>>;
+  readonly body?: {
+    readonly encoding: "json" | "form";
+    readonly fields: Readonly<Record<string, keyof z.output<S> & string>>;
+    readonly values?: Readonly<Record<string, string>>;
+  };
+  readonly basic?: {
+    readonly username: keyof z.output<S> & string;
+    readonly password: keyof z.output<S> & string;
+  };
+  readonly tokenPath?: string;
+  readonly expiresAtPath?: string;
+  readonly expiresInPath?: string;
+  readonly expiresInSeconds?: number;
+  readonly tokenHeader?: string;
+  readonly tokenPrefix?: string;
+  readonly requestHeaders?: Readonly<Record<string, keyof z.output<S> & string>>;
+}
 
 export interface TokenExchangeOptions<K extends string = string> {
   readonly request: {
@@ -75,6 +109,29 @@ export interface TokenExchangeOptions<K extends string = string> {
 }
 
 export const auth = {
+  none(): Extract<AuthDefinition, { type: "none" }> {
+    return { type: "none", credentials: z.strictObject({}) };
+  },
+  awsSigV4(options: {
+    readonly region: string | { readonly input: string };
+    readonly service: "s3";
+    readonly credentialSource?: "assume_role";
+  }): Extract<AuthDefinition, { type: "aws_sigv4" }> {
+    return {
+      type: "aws_sigv4",
+      ...options,
+      credentials:
+        options.credentialSource === "assume_role"
+          ? z.strictObject({ roleArn: secret(z.string().min(1).meta({ title: "AWS role ARN" })) })
+          : z.strictObject({
+              accessKeyId: secret(z.string().min(1).meta({ title: "AWS access key ID" })),
+              secretAccessKey: secret(z.string().min(1).meta({ title: "AWS secret access key" })),
+              sessionToken: secret(
+                z.string().meta({ title: "AWS session token (empty for long-lived keys)" }),
+              ),
+            }),
+    };
+  },
   bearer(): Extract<AuthDefinition, { type: "bearer" }> {
     return {
       type: "bearer",
@@ -121,22 +178,94 @@ export const auth = {
       }),
     };
   },
-  tokenExchange<S extends z.ZodObject>(
-    options: TokenExchangeOptions<keyof z.output<S> & string> & { readonly credentials: S },
-  ): Extract<AuthDefinition, { type: "token_exchange" }> {
-    return { type: "token_exchange", ...options };
+  tokenExchange<
+    S extends z.ZodObject,
+    O extends
+      | (TokenExchangeOptions<keyof z.output<S> & string> & { readonly credentials: S })
+      | LegacyTokenExchangeOptions<S>,
+  >(options: O): Extract<AuthDefinition, { type: "token_exchange" }> & O {
+    if (!("tokenUrl" in options))
+      return { type: "token_exchange", ...options } as Extract<
+        AuthDefinition,
+        { type: "token_exchange" }
+      > &
+        O;
+    const keys = new Set(Object.keys(options.credentials.shape));
+    const references = (fields: Readonly<Record<string, string>> | undefined) =>
+      Object.fromEntries(
+        Object.entries(fields ?? {}).map(([name, value]) => [
+          name,
+          keys.has(value) ? { credential: value } : value,
+        ]),
+      );
+    const requestFields = {
+      ...Object.fromEntries(
+        Object.entries(options.body?.values ?? {}).map(([name, value]) => [name, value]),
+      ),
+      ...references(options.body?.fields),
+    };
+    const result = {
+      type: "token_exchange" as const,
+      credentials: options.credentials,
+      request: {
+        path: options.tokenUrl,
+        ...(Object.keys(references(options.headers)).length
+          ? { headers: references(options.headers) }
+          : {}),
+        ...(options.basic === undefined ? {} : { basic: options.basic }),
+        ...(options.body === undefined
+          ? {}
+          : { body: { encoding: options.body.encoding, fields: requestFields } }),
+      },
+      response: {
+        tokenPath: options.tokenPath ?? "token",
+        expiry: options.expiresInPath
+          ? { type: "relative" as const, path: options.expiresInPath }
+          : options.expiresInSeconds
+            ? { type: "fixed" as const, seconds: options.expiresInSeconds }
+            : { type: "absolute" as const, path: options.expiresAtPath ?? "expires_at" },
+      },
+      session: {
+        ...(options.tokenHeader === undefined ? {} : { header: options.tokenHeader }),
+        ...(options.tokenPrefix === undefined ? {} : { prefix: options.tokenPrefix }),
+        ...(Object.keys(references(options.requestHeaders)).length
+          ? { headers: references(options.requestHeaders) }
+          : {}),
+      },
+    };
+    for (const [name, value] of Object.entries(options))
+      if (!(name in result)) Object.defineProperty(result, name, { value });
+    return result as unknown as Extract<AuthDefinition, { type: "token_exchange" }> & O;
   },
   custom<S extends z.ZodObject>(options: {
     readonly credentials: S;
     readonly headers?: FieldMap<keyof z.output<S> & string>;
     readonly query?: FieldMap<keyof z.output<S> & string>;
   }): Extract<AuthDefinition, { type: "custom" }> {
+    const keys = new Set(Object.keys(options.credentials.shape));
+    const fields = (values: FieldMap<keyof z.output<S> & string> | undefined) =>
+      Object.fromEntries(
+        Object.entries(values ?? {}).map(([name, value]) => [
+          name,
+          typeof value === "string" && keys.has(value) ? { credential: value } : value,
+        ]),
+      );
     return {
       type: "custom",
       credentials: options.credentials,
-      headers: { ...options.headers },
-      query: { ...options.query },
+      headers: fields(options.headers),
+      query: fields(options.query),
     };
+  },
+  oauth2AuthorizationCode(options: {
+    readonly issuer: string;
+    readonly authorizationUrl: string;
+    readonly tokenUrl: string;
+    readonly scopes: readonly string[];
+    readonly clientSecret?: true;
+    readonly tokenFields?: Readonly<Record<string, string>>;
+  }): Extract<AuthDefinition, { type: "oauth2_authorization_code" }> {
+    return auth.oauth2(options);
   },
 };
 

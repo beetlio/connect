@@ -1,0 +1,15 @@
+FROM node:24-bookworm-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json tsconfig.json tsconfig.build.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY src ./src
+RUN npm run build --silent
+
+FROM node:24-bookworm-slim
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build /app/package.json /app/package-lock.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+USER node
+ENTRYPOINT ["timeout", "--signal=KILL", "900", "node", "--permission", "--allow-fs-read=/app", "--allow-fs-read=/tmp", "--allow-fs-read=/etc/ssl", "--allow-fs-read=/etc/hosts", "--allow-fs-read=/etc/resolv.conf", "--allow-fs-write=/tmp", "dist/sandbox-host.js"]

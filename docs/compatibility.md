@@ -217,3 +217,12 @@ replace frozen artifacts with current builds. Later SDKs supporting v3 must exec
 its unchanged artifacts alongside source-build checks.
 
 Core's package admission and upgrade gate belong to Core.
+
+## Transitional v0.3 authoring support
+
+The v0.4 package accepts v0.3 input and credential helpers, array-based sync definitions,
+`ctx.emit()` runs, declarative pagination, legacy origin objects, and the four-argument
+`runSync()` host call. These definitions are normalized to the v0.4 manifest and runtime
+contract at the SDK boundary. New integrations should use the v0.4 Zod schemas, named sync
+records, async-generator runs, and three-argument host API. The `local-host` export remains
+available as a migration adapter for execution hosts.
