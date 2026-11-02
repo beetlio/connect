@@ -612,6 +612,8 @@ async function compileIntegration(sourceDirectory: string, outputDirectory: stri
     allowImportingTsExtensions: true,
     declaration: false,
     exactOptionalPropertyTypes: true,
+    // Node may resolve error stacks after the temporary runtime directory is removed.
+    inlineSourceMap: true,
     inlineSources: true,
     noEmit: false,
     noEmitOnError: true,
@@ -623,7 +625,6 @@ async function compileIntegration(sourceDirectory: string, outputDirectory: stri
     rewriteRelativeImportExtensions: true,
     rootDir: sourceDirectory,
     skipLibCheck: true,
-    sourceMap: true,
     sourceRoot: "beetl://source/",
     strict: true,
     types: ["node"],
