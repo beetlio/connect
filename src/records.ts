@@ -46,8 +46,11 @@ function nonNull(schema: Schema): { schema: Schema; nullable: boolean } {
   if (Array.isArray(schema.type)) {
     const values = schema.type.filter((type) => type !== "null");
 
-    if (values.length === 1)
-      return { schema: { ...schema, type: values[0] }, nullable: schema.type.includes("null") };
+    if (values.length > 0)
+      return {
+        schema: { ...schema, type: values.length === 1 ? values[0] : values },
+        nullable: schema.type.includes("null"),
+      };
   }
 
   return { schema, nullable: false };
@@ -112,10 +115,12 @@ function project(original: Schema, value: unknown): unknown {
 
   // Primitive ID/amount unions have one text column; structured and dynamic values retain JSON encoding.
   if (
-    Array.isArray(schema.anyOf) &&
-    (schema.anyOf as Schema[]).every((branch) =>
-      ["string", "number", "integer", "boolean"].includes(String(branch.type)),
-    )
+    (Array.isArray(schema.type) &&
+      schema.type.every((type) => ["string", "number", "integer", "boolean"].includes(type))) ||
+    (Array.isArray(schema.anyOf) &&
+      (schema.anyOf as Schema[]).every((branch) =>
+        ["string", "number", "integer", "boolean"].includes(String(branch.type)),
+      ))
   )
     return String(value);
 

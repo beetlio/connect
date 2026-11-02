@@ -59,10 +59,10 @@
     "@types/node": "24.2.0",
     "env-paths": "^4.0.0",
     "oauth4webapi": "^3.8.6",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "tar": "^7.5.22",
     "typescript": "^5.9.3",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "prettier": "^3.9.6"
