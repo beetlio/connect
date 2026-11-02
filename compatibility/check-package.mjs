@@ -161,7 +161,7 @@ assert.deepEqual(built.manifest, fixture.manifest);
 
   assert.equal(host.status, 1, host.stderr);
   assert.equal(host.stdout, "");
-  assert.match(host.stderr, /Unsupported execution protocol version 999.*supported: 1.*Upgrade/);
+  assert.match(host.stderr, /Unsupported execution protocol version 999.*supported: 2.*Upgrade/);
 
   const result = await exec(
     process.execPath,

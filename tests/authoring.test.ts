@@ -170,44 +170,15 @@ test("portable forms reject behavior that cannot be represented faithfully", () 
   );
 });
 
-test("merge primary keys and normalization are validated before execution", () => {
-  const integration = defineIntegration({
-    key: "invalid-merge-key",
-    displayName: "Invalid merge key",
-    connection: { origin: "https://api.example.com" },
-    syncs: (sync) => ({
-      items: sync({
-        displayName: "Items",
-        mode: "merge",
-        primaryKey: ["id"],
-        records: z.object({ id: z.string().optional() }),
-        async *run() {},
-      }),
-    }),
-  });
-
-  assert.throws(
-    () => createIntegrationManifest(integration),
-    /must be required, scalar, and non-null/,
-  );
-
-  const overwritten = {
-    ...integration,
-    syncs: {
-      items: {
-        ...integration.syncs.items,
-        records: z
-          .object({ id: z.string() })
-          .overwrite((record) => ({ id: record.id.toLowerCase() })),
-      },
-    },
-  };
-
-  assert.throws(() => createIntegrationManifest(overwritten), /cannot use root-level overwrite/);
-});
-
 // These checks compile but never execute deliberately invalid integration definitions.
 function checkAuthoringTypes() {
+  defineIntegration({
+    key: "callback-only",
+    displayName: "Callback only",
+    connection: { origin: "https://example.com" },
+    // @ts-expect-error Destination authoring uses a callback, just like sync authoring.
+    destinations: {},
+  });
   defineIntegration({
     key: "types",
     displayName: "Types",
@@ -216,10 +187,10 @@ function checkAuthoringTypes() {
       inputs: z.strictObject({ workspace: z.string() }),
     },
     syncs: (sync) => ({
-      // @ts-expect-error Merge requires primary keys.
+      // @ts-expect-error Integrations cannot select a mode.
       missingKeys: sync({ mode: "merge", records: z.object({ id: z.string() }), async *run() {} }),
       extraKeys: sync({
-        // @ts-expect-error Append forbids primary keys.
+        // @ts-expect-error Syncs do not declare primary keys.
         primaryKey: ["id"],
         records: z.object({ id: z.string() }),
         async *run() {},

@@ -1,19 +1,21 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import type { EmittedBatch, RunSyncResult } from "./execution-schema.ts";
+import { SyncOptionsSchema, type EmittedBatch, type RunSyncResult } from "./execution-schema.ts";
 import { paginate, parseResponse } from "./http.ts";
 import type {
   DestinationBatch,
+  DestinationDefinition,
   IntegrationDefinition,
   IntegrationLogger,
   JsonObject,
   JsonValue,
   RetryDefinition,
+  RequestContext,
   SyncDefinition,
   SyncFetchInit,
 } from "./index.ts";
 import { isJsonValue, jsonSnapshot } from "./json.ts";
-import { createIntegrationManifest } from "./manifest.ts";
+import { parseIntegration } from "./manifest.ts";
 
 export type { EmittedBatch, RunSyncResult } from "./execution-schema.ts";
 
@@ -77,6 +79,8 @@ export interface VerifyConnectionInput {
 export interface RunSyncInput extends VerifyConnectionInput {
   readonly sync: string;
   readonly syncConfig?: unknown;
+  readonly mode?: "append" | "replace";
+  readonly checkpointing?: boolean;
   readonly checkpoint?: unknown;
 }
 
@@ -97,11 +101,11 @@ const ProviderResponseSchema = z.strictObject({
 const EmptyConfig = z.strictObject({});
 const YieldedBatch = z.strictObject({
   records: z.array(z.unknown()),
-  deletedKeys: z.array(z.unknown()).optional(),
   checkpoint: z.unknown().optional(),
 });
 const DestinationBatchInput = YieldedBatch.omit({ checkpoint: true }).extend({
   batchId: z.string().min(1),
+  deletedKeys: z.array(z.unknown()).optional(),
 });
 
 /** Apply one prepared batch. The caller owns durable acknowledgments and replay. */
@@ -110,9 +114,9 @@ export async function runDestinationBatch(
   input: RunDestinationBatchInput,
   host: RequestHost,
 ): Promise<void> {
-  createIntegrationManifest(integration);
-  const destination = Object.hasOwn(integration.destinations ?? {}, input.destination)
-    ? integration.destinations?.[input.destination]
+  integration = parseIntegration(integration).integration;
+  const destination = Object.hasOwn(integration.destinations, input.destination)
+    ? integration.destinations[input.destination]
     : undefined;
   if (!destination) throw new Error(`Unknown destination ${JSON.stringify(input.destination)}`);
 
@@ -140,7 +144,7 @@ export async function runDestinationBatch(
   );
   const records = await parseRecords(destination.records.strict(), value.records);
   const deletedKeys = await parseDeletedKeys(destination, value.deletedKeys);
-  validateRecordKeys(destination.primaryKey, records, deletedKeys, "destination");
+  validateRecordKeys(destination.primaryKey, records, deletedKeys);
   const batch: DestinationBatch<JsonObject> = {
     batchId: value.batchId,
     records,
@@ -149,23 +153,14 @@ export async function runDestinationBatch(
   if (Buffer.byteLength(JSON.stringify(batch)) > 8 * 1024 * 1024)
     throw new Error("Destination batch exceeds 8 MiB");
 
-  const scope = executionScope(host, { signal: input.signal, retry: integration.connection.retry });
-  const failures: unknown[] = [];
-  try {
-    scope.context.signal.throwIfAborted();
-    await destination.run({ ...scope.context, config: { connection, destination: config } }, batch);
-    input.signal?.throwIfAborted();
-  } catch (error) {
-    failures.push(error);
-  } finally {
-    scope.abort();
-    try {
-      await scope.settle();
-    } catch (error) {
-      failures.push(error);
-    }
-  }
-  throwFailures(failures, input.signal);
+  await withExecution(
+    host,
+    { signal: input.signal, retry: integration.connection.retry },
+    async (context) => {
+      context.signal.throwIfAborted();
+      await destination.run({ ...context, config: { connection, destination: config } }, batch);
+    },
+  );
 }
 
 export async function runSync(
@@ -173,7 +168,9 @@ export async function runSync(
   input: RunSyncInput,
   host: SyncHost,
 ): Promise<RunSyncResult> {
-  createIntegrationManifest(integration);
+  const options = SyncOptionsSchema.parse(input);
+  const checkpointing = options.mode === "append" && options.checkpointing;
+  integration = parseIntegration(integration).integration;
 
   const sync = integration.syncs[input.sync];
 
@@ -186,109 +183,80 @@ export async function runSync(
   );
   const config = await parse(sync.inputs ?? EmptyConfig, input.syncConfig ?? {}, "sync config");
   let checkpoint =
-    input.checkpoint === undefined
+    !checkpointing || input.checkpoint === undefined
       ? undefined
       : jsonSnapshot(input.checkpoint, "Invalid checkpoint input: must be JSON-compatible");
 
   if (checkpoint !== undefined) await parseCheckpoint(sync, checkpoint);
 
-  const scope = executionScope(host, { signal: input.signal, retry: integration.connection.retry });
   let iterator: ReturnType<SyncDefinition["run"]> | undefined;
   let batches = 0,
-    records = 0,
-    deleted = 0;
+    records = 0;
   let stopped = false;
-  const failures: unknown[] = [];
-
-  try {
-    iterator = sync.run({
-      ...scope.context,
-      config: { connection, sync: config },
-      checkpoint: checkpoint === undefined ? undefined : structuredClone(checkpoint),
-    });
-
-    while (true) {
-      scope.context.signal.throwIfAborted();
-
-      const step = await iterator.next();
-
-      if (step.done) break;
-
-      const value = YieldedBatch.parse(step.value);
-
-      if (value.records.length + (value.deletedKeys?.length ?? 0) > 10_000)
-        throw new Error("Emitted batch exceeds 10000 record and deletion changes");
-
-      const parsedRecords = await parseRecords(sync.records, value.records);
-      if (value.deletedKeys !== undefined && sync.mode !== "merge")
-        throw new Error("Only merge syncs can emit deleted keys");
-      const deletedKeys = await parseDeletedKeys(sync, value.deletedKeys);
-
-      if (sync.mode === "merge")
-        validateRecordKeys(sync.primaryKey!, parsedRecords, deletedKeys, "merge");
-
-      const next =
-        value.checkpoint === undefined
-          ? undefined
-          : jsonSnapshot(value.checkpoint, "Invalid checkpoint input: must be JSON-compatible");
-
-      if (next !== undefined) await parseCheckpoint(sync, next);
-
-      scope.context.signal.throwIfAborted();
-
-      const action = await host.commit({
-        batchId: crypto.randomUUID(),
-        sequence: batches,
-        records: parsedRecords,
-        ...(deletedKeys.length ? { deletedKeys } : {}),
-        ...(next === undefined ? {} : { checkpoint: next }),
+  await withExecution(
+    host,
+    { signal: input.signal, retry: integration.connection.retry },
+    async (context) => {
+      iterator = sync.run({
+        ...context,
+        config: { connection, sync: config },
+        checkpoint: checkpoint === undefined ? undefined : structuredClone(checkpoint),
       });
 
-      if (action !== "continue" && action !== "stop")
-        throw new Error("Host commit must return continue or stop");
+      while (true) {
+        context.signal.throwIfAborted();
 
-      if (action === "stop" && next === undefined)
-        throw new Error("The controller cannot request continuation without a checkpoint");
+        const step = await iterator.next();
 
-      batches++;
-      records += parsedRecords.length;
-      deleted += deletedKeys.length;
+        if (step.done) break;
 
-      if (next !== undefined) checkpoint = next;
+        const value = YieldedBatch.parse(step.value);
 
-      if (action === "stop") {
-        stopped = true;
+        if (value.records.length > 10_000) throw new Error("Emitted batch exceeds 10000 records");
 
-        break;
+        const parsedRecords = await parseRecords(sync.records, value.records);
+
+        const next =
+          !checkpointing || value.checkpoint === undefined
+            ? undefined
+            : jsonSnapshot(value.checkpoint, "Invalid checkpoint input: must be JSON-compatible");
+
+        if (next !== undefined) await parseCheckpoint(sync, next);
+
+        context.signal.throwIfAborted();
+
+        const action = await host.commit({
+          batchId: crypto.randomUUID(),
+          sequence: batches,
+          records: parsedRecords,
+          ...(next === undefined ? {} : { checkpoint: next }),
+        });
+
+        if (action !== "continue" && action !== "stop")
+          throw new Error("Host commit must return continue or stop");
+
+        if (action === "stop" && next === undefined)
+          throw new Error("The controller cannot request continuation without a checkpoint");
+
+        batches++;
+        records += parsedRecords.length;
+
+        if (next !== undefined) checkpoint = next;
+
+        if (action === "stop") {
+          stopped = true;
+
+          break;
+        }
       }
-    }
-
-    input.signal?.throwIfAborted();
-  } catch (error) {
-    failures.push(error);
-  } finally {
-    scope.abort();
-
-    try {
-      await iterator?.return();
-    } catch (error) {
-      failures.push(error);
-    }
-
-    try {
-      await scope.settle();
-    } catch (error) {
-      failures.push(error);
-    }
-  }
-
-  throwFailures(failures, input.signal);
+    },
+    () => iterator?.return(),
+  );
 
   return {
     outcome: stopped ? "continuation_required" : "completed",
     batches,
     records,
-    deleted,
     ...(checkpoint === undefined ? {} : { checkpoint }),
   };
 }
@@ -298,7 +266,7 @@ export async function verifyConnection(
   input: VerifyConnectionInput,
   host: RequestHost,
 ): Promise<void> {
-  createIntegrationManifest(integration);
+  integration = parseIntegration(integration).integration;
 
   const verify = integration.connection.verify;
 
@@ -312,42 +280,22 @@ export async function verifyConnection(
     input.connectionConfig ?? {},
     "connection config",
   );
-  const scope = executionScope(host, { signal: input.signal, retry: integration.connection.retry });
-  const failures: unknown[] = [];
-
-  try {
-    scope.context.signal.throwIfAborted();
-    await verify({ ...scope.context, config });
-    input.signal?.throwIfAborted();
-  } catch (error) {
-    failures.push(error);
-  } finally {
-    scope.abort();
-
-    try {
-      await scope.settle();
-    } catch (error) {
-      failures.push(error);
-    }
-  }
-
-  throwFailures(failures, input.signal);
+  await withExecution(
+    host,
+    { signal: input.signal, retry: integration.connection.retry },
+    async (context) => {
+      context.signal.throwIfAborted();
+      await verify({ ...context, config });
+    },
+  );
 }
 
-function throwFailures(failures: readonly unknown[], signal?: AbortSignal): void {
-  const unique = [...new Set(failures)];
-
-  if (unique.length === 1) throw unique[0];
-
-  if (unique.length) throw new AggregateError(unique, "Execution and cleanup failed");
-
-  signal?.throwIfAborted();
-}
-
-function executionScope(
+async function withExecution(
   host: RequestHost,
   options: { signal: AbortSignal | undefined; retry: RetryDefinition | undefined },
-) {
+  run: (context: RequestContext) => Promise<void>,
+  cleanup?: () => Promise<unknown> | undefined,
+): Promise<void> {
   const lifecycle = new AbortController();
   const signal = options.signal
     ? AbortSignal.any([options.signal, lifecycle.signal])
@@ -387,23 +335,39 @@ function executionScope(
     error: (message, fields) => log("error", message, fields),
   };
 
-  return {
-    context: {
-      signal,
-      fetch,
-      log: logger,
-      json: <S extends z.ZodType>(path: string, schema: S, init?: SyncFetchInit) =>
-        fetch(path, init).then((response) => parseResponse(response, schema)),
-      paginate: <S extends z.ZodType>(options: import("./http.ts").PaginateOptions<S>) =>
-        paginate(fetch, options),
-    },
-    abort: () => lifecycle.abort(new Error("Execution context is closed")),
-    async settle() {
+  const context: RequestContext = {
+    signal,
+    fetch,
+    log: logger,
+    json: <S extends z.ZodType>(path: string, schema: S, init?: SyncFetchInit) =>
+      fetch(path, init).then((response) => parseResponse(response, schema)),
+    paginate: <S extends z.ZodType>(options: import("./http.ts").PaginateOptions<S>) =>
+      paginate(fetch, options),
+  };
+  const failures = new Set<unknown>();
+  try {
+    await run(context);
+    options.signal?.throwIfAborted();
+  } catch (error) {
+    failures.add(error);
+  } finally {
+    lifecycle.abort(new Error("Execution context is closed"));
+    try {
+      await cleanup?.();
+    } catch (error) {
+      failures.add(error);
+    }
+    try {
       await Promise.allSettled(pending);
       loggingClosed = true;
       await logs;
-    },
-  };
+    } catch (error) {
+      failures.add(error);
+    }
+  }
+  if (failures.size === 1) throw failures.values().next().value;
+  if (failures.size) throw new AggregateError(failures, "Execution and cleanup failed");
+  options.signal?.throwIfAborted();
 }
 
 async function hostFetch(
@@ -493,12 +457,12 @@ async function parseRecords(
 }
 
 async function parseDeletedKeys(
-  definition: Pick<SyncDefinition, "records" | "primaryKey">,
+  definition: Pick<DestinationDefinition, "records" | "primaryKey">,
   value: readonly unknown[] | undefined,
 ): Promise<JsonObject[]> {
   if (value === undefined) return [];
 
-  const fields = definition.primaryKey!;
+  const fields = definition.primaryKey;
   const schema = z.strictObject(
     Object.fromEntries(fields.map((field) => [field, definition.records.shape[field]!])),
   );
@@ -520,7 +484,6 @@ function validateRecordKeys(
   primaryKey: readonly string[],
   records: readonly JsonObject[],
   deletedKeys: readonly JsonObject[],
-  kind: "merge" | "destination",
 ): void {
   const identities = new Set<string>();
 
@@ -528,13 +491,15 @@ function validateRecordKeys(
     const values = primaryKey.map((field) => record[field]);
 
     if (values.some((value) => !isJsonScalar(value))) {
-      throw new Error(`Invalid record ${index}: ${kind} primary keys must be scalar and non-null`);
+      throw new Error(
+        `Invalid record ${index}: destination primary keys must be scalar and non-null`,
+      );
     }
 
     const identity = JSON.stringify(values);
 
     if (identities.has(identity)) {
-      throw new Error(`Duplicate ${kind} key in record ${index}`);
+      throw new Error(`Duplicate destination key in record ${index}`);
     }
 
     identities.add(identity);
@@ -544,7 +509,7 @@ function validateRecordKeys(
     const identity = JSON.stringify(primaryKey.map((field) => key[field]));
 
     if (identities.has(identity)) {
-      throw new Error(`Duplicate or conflicting ${kind} deletion key ${index}`);
+      throw new Error(`Duplicate or conflicting destination deletion key ${index}`);
     }
 
     identities.add(identity);

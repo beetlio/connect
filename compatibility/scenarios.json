@@ -66,7 +66,9 @@
             "credentials": {
               "token": "bearer"
             },
-            "syncKey": "items"
+            "syncKey": "items",
+            "mode": "append",
+            "checkpointing": true
           },
           "provider": [
             {
@@ -144,11 +146,6 @@
                     "id": "two"
                   }
                 ],
-                "deletedKeys": [
-                  {
-                    "id": "gone"
-                  }
-                ],
                 "checkpoint": {
                   "cursor": null,
                   "opaque": ["keep", null, false, 0]
@@ -159,7 +156,6 @@
               "outcome": "completed",
               "batches": 2,
               "records": 2,
-              "deleted": 1,
               "checkpoint": {
                 "cursor": null,
                 "opaque": ["keep", null, false, 0]
@@ -175,7 +171,9 @@
             "credentials": {
               "token": "bearer"
             },
-            "syncKey": "items"
+            "syncKey": "items",
+            "mode": "append",
+            "checkpointing": true
           },
           "provider": [
             {
@@ -231,7 +229,6 @@
               "outcome": "continuation_required",
               "batches": 1,
               "records": 1,
-              "deleted": 0,
               "checkpoint": {
                 "cursor": "two",
                 "opaque": ["keep", null, false, 0]
@@ -251,7 +248,9 @@
             "checkpoint": {
               "cursor": "two",
               "opaque": ["keep", null, false, 0]
-            }
+            },
+            "mode": "append",
+            "checkpointing": true
           },
           "provider": [
             {
@@ -285,11 +284,6 @@
                     "id": "two"
                   }
                 ],
-                "deletedKeys": [
-                  {
-                    "id": "gone"
-                  }
-                ],
                 "checkpoint": {
                   "cursor": null,
                   "opaque": ["keep", null, false, 0]
@@ -300,7 +294,6 @@
               "outcome": "completed",
               "batches": 1,
               "records": 1,
-              "deleted": 1,
               "checkpoint": {
                 "cursor": null,
                 "opaque": ["keep", null, false, 0]
@@ -316,7 +309,9 @@
             "credentials": {
               "token": "bearer"
             },
-            "syncKey": "checkpoint"
+            "syncKey": "checkpoint",
+            "mode": "append",
+            "checkpointing": true
           },
           "provider": [],
           "acknowledgments": ["continue"],
@@ -334,8 +329,7 @@
             "result": {
               "outcome": "completed",
               "batches": 1,
-              "records": 1,
-              "deleted": 0
+              "records": 1
             }
           }
         },
@@ -348,7 +342,9 @@
               "token": "bearer"
             },
             "syncKey": "checkpoint",
-            "checkpoint": null
+            "checkpoint": null,
+            "mode": "append",
+            "checkpointing": true
           },
           "provider": [],
           "acknowledgments": ["continue"],
@@ -368,7 +364,6 @@
               "outcome": "completed",
               "batches": 1,
               "records": 1,
-              "deleted": 0,
               "checkpoint": null
             }
           }
@@ -387,7 +382,9 @@
                 "values": [false, 0, "", null]
               },
               "cursor": "opaque"
-            }
+            },
+            "mode": "append",
+            "checkpointing": true
           },
           "provider": [],
           "acknowledgments": ["continue"],
@@ -412,7 +409,6 @@
               "outcome": "completed",
               "batches": 1,
               "records": 1,
-              "deleted": 0,
               "checkpoint": {
                 "unknown": {
                   "values": [false, 0, "", null]
@@ -485,7 +481,9 @@
               "clientId": "client",
               "clientSecret": "secret"
             },
-            "syncKey": "items"
+            "syncKey": "items",
+            "mode": "append",
+            "checkpointing": true
           },
           "provider": [
             {
@@ -609,11 +607,6 @@
                     "id": "two"
                   }
                 ],
-                "deletedKeys": [
-                  {
-                    "id": "gone"
-                  }
-                ],
                 "checkpoint": {
                   "cursor": null,
                   "opaque": ["keep", null, false, 0]
@@ -624,7 +617,6 @@
               "outcome": "completed",
               "batches": 2,
               "records": 2,
-              "deleted": 1,
               "checkpoint": {
                 "cursor": null,
                 "opaque": ["keep", null, false, 0]
@@ -688,7 +680,9 @@
                 "instanceUrl": "https://tenant.example"
               }
             },
-            "syncKey": "items"
+            "syncKey": "items",
+            "mode": "append",
+            "checkpointing": true
           },
           "provider": [
             {
@@ -766,11 +760,6 @@
                     "id": "two"
                   }
                 ],
-                "deletedKeys": [
-                  {
-                    "id": "gone"
-                  }
-                ],
                 "checkpoint": {
                   "cursor": null,
                   "opaque": ["keep", null, false, 0]
@@ -781,7 +770,6 @@
               "outcome": "completed",
               "batches": 2,
               "records": 2,
-              "deleted": 1,
               "checkpoint": {
                 "cursor": null,
                 "opaque": ["keep", null, false, 0]
@@ -983,7 +971,9 @@
               "clientId": "client",
               "clientSecret": "secret"
             },
-            "syncKey": "items"
+            "syncKey": "items",
+            "mode": "append",
+            "checkpointing": true
           },
           "provider": [
             {
@@ -1115,11 +1105,6 @@
                     "id": "two"
                   }
                 ],
-                "deletedKeys": [
-                  {
-                    "id": "gone"
-                  }
-                ],
                 "checkpoint": {
                   "cursor": null,
                   "opaque": ["keep", null, false, 0]
@@ -1130,7 +1115,6 @@
               "outcome": "completed",
               "batches": 2,
               "records": 2,
-              "deleted": 1,
               "checkpoint": {
                 "cursor": null,
                 "opaque": ["keep", null, false, 0]
@@ -1149,7 +1133,9 @@
               "clientId": "client",
               "clientSecret": "secret"
             },
-            "syncKey": "projected"
+            "syncKey": "projected",
+            "mode": "append",
+            "checkpointing": true
           },
           "provider": [],
           "acknowledgments": ["continue"],
@@ -1168,8 +1154,7 @@
             "result": {
               "outcome": "completed",
               "batches": 1,
-              "records": 1,
-              "deleted": 0
+              "records": 1
             }
           }
         },
@@ -1184,7 +1169,9 @@
               "clientId": "client",
               "clientSecret": "secret"
             },
-            "syncKey": "items"
+            "syncKey": "items",
+            "mode": "append",
+            "checkpointing": true
           },
           "provider": [
             {
@@ -1294,7 +1281,9 @@
               "clientId": "client",
               "clientSecret": "secret"
             },
-            "syncKey": "items"
+            "syncKey": "items",
+            "mode": "append",
+            "checkpointing": true
           },
           "provider": [
             {
@@ -1426,11 +1415,6 @@
                     "id": "two"
                   }
                 ],
-                "deletedKeys": [
-                  {
-                    "id": "gone"
-                  }
-                ],
                 "checkpoint": {
                   "cursor": null,
                   "opaque": ["keep", null, false, 0]
@@ -1441,7 +1425,6 @@
               "outcome": "completed",
               "batches": 2,
               "records": 2,
-              "deleted": 1,
               "checkpoint": {
                 "cursor": null,
                 "opaque": ["keep", null, false, 0]
@@ -1505,7 +1488,9 @@
               "refreshToken": "refresh",
               "tokenFields": {}
             },
-            "syncKey": "items"
+            "syncKey": "items",
+            "mode": "append",
+            "checkpointing": true
           },
           "provider": [
             {
@@ -1583,11 +1568,6 @@
                     "id": "two"
                   }
                 ],
-                "deletedKeys": [
-                  {
-                    "id": "gone"
-                  }
-                ],
                 "checkpoint": {
                   "cursor": null,
                   "opaque": ["keep", null, false, 0]
@@ -1598,7 +1578,6 @@
               "outcome": "completed",
               "batches": 2,
               "records": 2,
-              "deleted": 1,
               "checkpoint": {
                 "cursor": null,
                 "opaque": ["keep", null, false, 0]

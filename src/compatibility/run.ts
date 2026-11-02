@@ -40,6 +40,8 @@ const ScenarioSchema = z.strictObject({
     authorizationState: OAuthAuthorizationStateSchema.optional(),
     syncKey: z.string().optional(),
     checkpoint: z.json().optional(),
+    mode: z.enum(["append", "replace"]).optional(),
+    checkpointing: z.boolean().optional(),
     redirectUri: z.url().optional(),
     destinationKey: z.string().optional(),
     destinationConfig: z.record(z.string(), z.json()).optional(),
@@ -213,6 +215,8 @@ async function execute(integration: IntegrationDefinition, scenario: Scenario): 
         integration,
         {
           sync: input.syncKey!,
+          mode: input.mode ?? "append",
+          checkpointing: input.checkpointing ?? false,
           connectionConfig: input.connectionConfig,
           ...(input.checkpoint === undefined ? {} : { checkpoint: input.checkpoint }),
         },
@@ -284,13 +288,13 @@ test("unsupported artifact contracts fail before importing integration code", as
   for (const [field, versions, expected] of [
     [
       "manifestVersion",
-      [1, 2, 999, "3", null],
-      /Unsupported manifest version.*supported: 3, 4.*Upgrade/,
+      [1, 2, 3, 4, 999, "5", null],
+      /Unsupported manifest version.*supported: 5.*Upgrade/,
     ],
     [
       "hostContractVersion",
-      [1, 2, 999, "3", null],
-      /Unsupported host contract version.*supported: 3, 4.*Upgrade/,
+      [1, 2, 3, 4, 999, "5", null],
+      /Unsupported host contract version.*supported: 5.*Upgrade/,
     ],
   ] as const) {
     for (const version of versions) {
@@ -310,29 +314,8 @@ test("unsupported artifact contracts fail before importing integration code", as
     }
   }
 
-  for (const [manifestVersion, hostContractVersion] of [
-    [3, 4],
-    [4, 3],
-  ]) {
-    await writeFile(
-      join(path, "package/manifest.json"),
-      JSON.stringify({
-        ...fixture.manifest,
-        manifestVersion,
-        hostContractVersion,
-      }),
-    );
-    const archive = join(path, "mixed.tgz");
-    await create({ cwd: path, file: archive, gzip: true }, ["package"]);
-    await assert.rejects(
-      withIntegration(await readFile(archive), () => assert.fail("Must not execute")),
-      /hostContractVersion/,
-    );
-  }
-
   assert.throws(() => assertSupportedHostContractVersion(), /Upgrade/);
-  assert.doesNotThrow(() => assertSupportedHostContractVersion(3));
-  assert.doesNotThrow(() => assertSupportedHostContractVersion(4));
+  assert.doesNotThrow(() => assertSupportedHostContractVersion(5));
   assert.throws(() => assertSupportedHostContractVersion(999), /Upgrade/);
 });
 
@@ -344,10 +327,14 @@ test("runtime definitions must match declared destination capabilities", async (
     file: fileURLToPath(new URL(fixture.artifact, compatibilityFixturesUrl)),
     strict: true,
   });
-  const manifest = structuredClone(fixture.manifest);
-  assert.equal(manifest.manifestVersion, 4);
-  if (manifest.manifestVersion !== 4) assert.fail("Expected manifest v4");
-  manifest.destinations[0]!.supportsDelete = false;
+  const manifest = {
+    ...fixture.manifest,
+    destinations: fixture.manifest.destinations.map((destination) => ({
+      ...destination,
+      supportsDelete: false,
+    })),
+  };
+  assert.equal(manifest.manifestVersion, 5);
   await writeFile(join(path, "package/manifest.json"), JSON.stringify(manifest));
   const archive = join(path, "mismatch.tgz");
   await create({ cwd: path, file: archive, gzip: true }, ["package"]);

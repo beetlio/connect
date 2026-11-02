@@ -55,7 +55,6 @@ export default defineIntegration({
   connection: { origin: "https://api.github.com" },
   syncs: (sync) => ({
     users: sync({
-      mode: "replace",
       records: User,
       async *run(ctx) {
         const user = await ctx.json("/users/octocat", User);
@@ -76,7 +75,9 @@ npx beetl-connect sync . users --output users.ndjson
 
 `users.ndjson` contains one validated GitHub user record. Continue with the
 [user guide](https://beetlio.github.io/connect/) for authentication, pagination,
-checkpoints, and packaging for Beetl.
+checkpoints, and packaging for Beetl. The host chooses append (default) or replace;
+checkpointing is opt-in for append. Use `--mode replace` for a full replacement or
+`--checkpointing` to resume append runs.
 
 ## Development
 

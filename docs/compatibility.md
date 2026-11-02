@@ -1,32 +1,42 @@
 # Compatibility
 
-Beetl Connect SDK 0.4 builds **manifest v4** and **host contract v4**. It also supports
-unchanged v3 pull artifacts and source. The process protocol remains **v1**; v1/v2
-artifacts are rejected before import.
+SDK 0.5 uses manifest v5, host contract v5, and process protocol v2. Older source
+definitions and artifacts are unsupported; frozen artifacts remain unchanged rejection fixtures.
 
-## Public contract
+## Sync contract
 
-The [package exports and process entry point](../ARCHITECTURE.md#public-surfaces)
-are supported APIs. Other source/dist paths, bundled dependencies, form adapters,
-and origin helpers are internal.
+Integrations emit records and optional schema-defined checkpoints. They do not choose
+a storage mode, declare sync primary keys, or emit deletions. Without a supplied checkpoint
+they start from the beginning; with one they resume from that position.
 
-For supported contracts, Connect preserves documented API and execution semantics:
-authentication ordering, records, acknowledgments, and checkpoint meaning. Security
-fixes and corrections to invalid behavior must be documented and regression-tested.
-Incidental timing is not part of the contract.
+The host chooses `mode: "append" | "replace"` (default append) and `checkpointing`
+(default false). Replace always ignores checkpoints. Append consumes and emits them
+only when checkpointing is enabled. Disabled checkpoints are ignored, including their
+validation. Enabled checkpoints must be JSON-compatible and validation cannot change
+their serialized value; absent and null are distinct.
 
-Credential prompts mask `writeOnly` fields. Explicit token-exchange headers replace
-defaults case-insensitively; a configured body determines `Content-Type`. Cancellation
-stops requests, while generator cleanup can still log. Execution drains those logs
-before returning; process-host verification and sync logs go to stderr.
-Executors recheck caller cancellation after cleanup drains, so an abort during settlement
-cannot report success. Existing execution and cleanup errors retain precedence.
+The host commits each batch before the generator advances. A failed commit cannot
+advance progress. Continuation requires an enabled checkpoint on the stopping batch.
+Replace stages records and publishes the complete dataset only after success, including
+an empty dataset. Successful runs without checkpointing clear saved progress; failed
+runs preserve it. Append does not deduplicate records or update existing rows.
 
-Provider requests use `request.retry`, then `connection.retry`, then SDK defaults;
-an explicit `false` disables retries. Authentication settlement rejects an unresolved
-renewal failure. A successful exchange, or OAuth refresh persisted and adopted by the
-provider, clears that failure. Hosts must settle on success and failure before reporting
-success or releasing resources, retaining execution errors if settlement also fails.
+Credential injection, origin restrictions, retries, OAuth refresh persistence, cancellation,
+and error precedence remain SDK responsibilities. Hosts settle authentication before
+reporting success. Integration and cleanup failures must remain visible.
+
+## Migration from 0.4
+
+Remove `mode` and `primaryKey` from sync definitions and `deletedKeys` from emitted
+sync batches. Select mode at execution time and explicitly enable checkpointing where
+needed. Sync results no longer contain a deletion count. Rebuild integrations with this
+SDK; update process requests and acknowledgments to protocol v2. CLI flags are
+`--mode append|replace` and `--checkpointing`. Destination behavior is unchanged.
+
+Author `syncs` and `destinations` through callbacks passed to `defineIntegration`.
+Both collections are optional when authoring and always present after normalization.
+The returned definition and loaded artifacts use empty objects for omitted collections.
+Plain destination objects are no longer accepted by `defineIntegration`.
 
 ## Destination batches
 
@@ -99,121 +109,21 @@ options remain supported.
 
 ## Versions and releases
 
-| Version               | Meaning                                       |
-| --------------------- | --------------------------------------------- |
-| npm version           | SDK release                                   |
-| `manifestVersion`     | Serialized manifest format                    |
-| `hostContractVersion` | Host behavior required to execute an artifact |
-| `protocolVersion`     | Process message format                        |
-
-- A missing host requirement means legacy v1, which this SDK rejects.
-- The builder targets v4, including for pull-only integrations; it does not infer requirements from function bodies.
-- Authoring conveniences that compile to existing behavior do not raise the requirement.
-- Behavior an older host cannot execute needs a newer requirement, even if the manifest shape is unchanged.
-- New hosts support explicitly documented contracts. Dropping one requires a breaking release.
-
-V3 covers keyed syncs, generators, ordered commits, schema-based pagination, all
-authentication and origin definitions, retries, verification, merge deletions,
-and opaque checkpoints. Hosts must use the SDK provider for these behaviors instead
-of implementing their own auth-type switch.
-
-V4 adds destination metadata and the embedded whole-batch execution contract above.
-V3 artifacts must pair manifest v3 with host contract v3; v4 artifacts must pair v4
-with v4. Loaded definitions must match the declared manifest, including destination
-schemas and deletion capability. Unsupported versions and mixed pairs fail before import.
-
-Patch releases preserve supported APIs. Compatible additions use minor releases.
-Removed exports, incompatible types, changed parameters, defaults, or execution semantics,
-and dropped contracts require a breaking release: minor before 1.0, major afterward.
-Affected host or wire contracts need their own version change. Never change published
-bytes under an existing version. New host behavior needs a fixture and documented requirements.
-
-Source compatibility is separate. An artifact requirement cannot protect source that
-no longer compiles. Build old source against the candidate SDK and execute previously
-built artifacts for supported historical contracts; neither check replaces the other.
-Source builds support native filesystem paths on Linux, macOS, and Windows.
-
-## Protocol direction
-
-New process hosts accept initial requests with no `protocolVersion` or with `1`.
-Old strict-schema hosts may reject the added field. Existing callers must keep omitting
-it until their host update is coordinated. Batch messages and acknowledgments require
-`protocolVersion: 1`; wire action `yield` maps to embedded action `stop`.
-See the [process protocol](host-protocol.md).
+The npm release, manifest format, host contract, and process protocol are separate
+versions. This release targets only manifest and host contract v5. Unsupported artifacts
+are rejected before integration code is imported. Loaded definitions must match their
+build manifests. Public breaking changes require a breaking release (minor before 1.0).
+Never replace published or frozen bytes.
 
 ## Reusable fixture inventory
 
-```sh
-npm test                    # build, run SDK and installed-package checks
-npm run test:compatibility   # prepare fixtures and check the compiled SDK
-beetl-connect compatibility # check an installed SDK
-```
+Run `npm test` for a fresh build, SDK tests, and installed-package checks. Focused
+`npm run test:compatibility` builds fixtures and executes mocked provider scenarios.
+The inventory is available as `compatibilityFixturesUrl` from `@beetlio/connect/builder`.
+Resolve its artifact and source paths relative to that URL. Hosts should execute the
+same scenarios through their own adapter; passing SDK tests alone does not verify Core.
 
-Focused `test:*` commands reuse the compiled SDK; rebuild after source changes.
-Compatibility and package checks prepare fixtures separately from ordinary compilation.
-The installed check compiles a consumer, rebuilds a shipped fixture source, runs the
-compatibility command, and checks process-host startup and version rejection.
-Detailed protocol tests run in the SDK suite. `prepack` includes prepared fixtures
-in the published package.
-
-Beetl Core uses its own RPC host. It must run the same fixtures through that path;
-passing the SDK's process-host suite alone cannot prove Core compatibility.
-
-```ts
-import { compatibilityFixturesUrl } from "@beetlio/connect/builder";
-import { readFile } from "node:fs/promises";
-
-const inventory = JSON.parse(await readFile(compatibilityFixturesUrl, "utf8"));
-```
-
-Inventory `formatVersion: 3` contains `fixtures` and `rejectedArtifacts`. Resolve paths
-relative to `compatibilityFixturesUrl`.
-
-- A fixture provides `id`, `artifact`, `sha256`, `source`, `sdk`, `hostContractVersion`,
-  `manifest`, and `scenarios`.
-- A scenario supplies an operation (`verify`, `sync`, `destination`, or `authorization`), inputs,
-  ordered provider request/response steps, optional acknowledgments, and expected outcomes.
-- Inputs include configuration, credentials, optional OAuth state, sync key, checkpoint,
-  destination key/configuration and batch, or redirect URI. Expected outcomes cover batches, result, errors, verification,
-  authorization, and authentication event ordering.
-
-Mock only provider HTTP. Match every expected request field and consume every step;
-execute real SDK authentication and sync code. Commit the requested actions and compare
-outcomes, including absent versus null checkpoints. Authorization checks use the
-prepared OAuth state and verify PKCE.
-
-Destination scenarios exercise upserts, deletion-only batches, validation before HTTP,
-and partial failure followed by replay. With `replay: true`, assert the first expected
-error, then resubmit the identical input and require success. Match the provider steps
-across both attempts and assert that execution leaves input unchanged.
-
-Three families—bearer, token exchange, and OAuth—cover fixed, environment, and configured
-origins; form/JSON exchange; relative OAuth endpoints; retries; verification; output;
-continuation; refresh persistence; and checkpoint preservation. Sources in
-`compatibility/sources/` share sync code. The destination fixture uses the runnable
-`examples/destination/integration.ts`. Builds materialize complete source packages
-at each inventory `source` path for consumers to pass to `buildIntegration`.
-
-## Frozen provenance
-
-`compatibility/frozen/` contains SDK 0.2 artifacts from commit
-`34ebde36692fa95650ee986d53c1aea47612df59`, their sources, and provenance hashes.
-They remain rejection fixtures from the 0.3 reset, not supported historical runtimes.
-Each `rejectedArtifacts` entry gives a path, checksum, SDK commit, and expected error.
-
-`compatibility/frozen/v3/` contains SDK 0.3 artifacts and unchanged source from commit
-`cc298f3ce41ab91603ca7d36449628c0c3f6d099`. The inventory executes all six frozen artifacts
-and rebuilds all six source packages with the candidate SDK. Provenance includes the
-original lockfile and source hashes; current builds never replace historical bytes.
-
-```sh
-node compatibility/freeze.mjs --check # maintainer command, run from the SDK checkout
-node compatibility/freeze.mjs --v3 --check
-```
-
-The freezer builds an isolated checkout of the pinned commit and verifies the source,
-artifact, and provenance bytes. It never trusts caller-supplied compiled files. Do not
-replace frozen artifacts with current builds. Later SDKs supporting v3 must execute
-its unchanged artifacts alongside source-build checks.
-
-Core's package admission and upgrade gate belong to Core.
+Current fixtures cover bearer, token exchange, OAuth, pagination, checkpoints, provider
+errors, and destination upserts, deletions, validation, and replay. Historical v2 and v3
+artifacts in `compatibility/frozen/` are checked for rejection and retain their hashes
+and provenance. They are never rebuilt by the current SDK.

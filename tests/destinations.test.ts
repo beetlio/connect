@@ -336,8 +336,8 @@ test("destination key pipelines reject coercion before executing records or dele
 
 test("destination manifests expose input schemas and require usable identities", () => {
   const manifest = createIntegrationManifest(fixture);
-  assert.equal(manifest.manifestVersion, 4);
-  assert.equal(manifest.hostContractVersion, 4);
+  assert.equal(manifest.manifestVersion, 5);
+  assert.equal(manifest.hostContractVersion, 5);
   assert.deepEqual(manifest.syncs, []);
   assert.equal(manifest.destinations[0]?.supportsDelete, true);
   assert.equal(manifest.destinations[1]?.supportsDelete, false);

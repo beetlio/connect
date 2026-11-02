@@ -16,7 +16,8 @@ import { path as pathValue } from "@optique/run/valueparser";
 import { z } from "zod";
 
 import { buildIntegration, packIntegration, withIntegration } from "../artifact.ts";
-import { replacePrivateFile, withFileSink } from "../file-sink.ts";
+import { replacePrivateFile, withFileSink, withFileLock } from "../file-sink.ts";
+import { SyncOptionsSchema } from "../execution-schema.ts";
 import { runSync } from "../host.ts";
 import { withAuthenticationSettlement } from "../provider.ts";
 
@@ -31,7 +32,6 @@ import {
   readConnection,
   resolveProfile,
   selectSyncKey,
-  withFileLock,
 } from "./configure.ts";
 
 const Package = z
@@ -117,6 +117,16 @@ const Cli = or(
       outputPath: optional(
         option("--output", pathValue({ metavar: "PATH" }), {
           description: message`NDJSON output path.`,
+        }),
+      ),
+      mode: optional(
+        option("--mode", string({ pattern: /^(append|replace)$/ }), {
+          description: message`Storage mode: append (default) or replace.`,
+        }),
+      ),
+      checkpointing: optional(
+        option("--checkpointing", {
+          description: message`Resume and save checkpoints in append mode.`,
         }),
       ),
       statePath: optional(
@@ -252,26 +262,26 @@ async function main(args = process.argv.slice(2)): Promise<void> {
         });
 
         try {
-          const result = await withFileSink(
-            { outputPath, statePath, mode: sync.mode ?? "append" },
-            (sink) =>
-              withAuthenticationSettlement(provider, () =>
-                runSync(
-                  integration,
-                  {
-                    sync: syncKey,
-                    connectionConfig: connection.inputs,
-                    syncConfig: configuration.inputs,
-                    ...(sink.checkpoint === undefined ? {} : { checkpoint: sink.checkpoint }),
-                    signal: controller.signal,
-                  },
-                  { ...provider, commit: sink.commit },
-                ),
+          const syncOptions = SyncOptionsSchema.parse(options);
+          const result = await withFileSink({ outputPath, statePath, ...syncOptions }, (sink) =>
+            withAuthenticationSettlement(provider, () =>
+              runSync(
+                integration,
+                {
+                  sync: syncKey,
+                  ...syncOptions,
+                  connectionConfig: connection.inputs,
+                  syncConfig: configuration.inputs,
+                  ...(sink.checkpoint === undefined ? {} : { checkpoint: sink.checkpoint }),
+                  signal: controller.signal,
+                },
+                { ...provider, commit: sink.commit },
               ),
+            ),
           );
 
           console.log(
-            `Emitted ${result.records} records${result.deleted ? ` and ${result.deleted} deletes` : ""} in ${result.batches} batches to ${outputPath}`,
+            `Emitted ${result.records} records in ${result.batches} batches to ${outputPath}`,
           );
         } finally {
           process.removeListener("SIGINT", abort);

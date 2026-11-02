@@ -11,7 +11,7 @@ import { extract } from "tar";
 import { z } from "zod";
 
 import { buildIntegration, withIntegration } from "./artifact.ts";
-import { BatchSchema, RunResultSchema } from "./execution-schema.ts";
+import { BatchSchema, RunResultSchema, SyncOptionsSchema } from "./execution-schema.ts";
 import { replacePrivateFile } from "./file-sink.ts";
 import {
   runSync,
@@ -45,16 +45,17 @@ const HostError = console.error.bind(console);
 const ExecFile = promisify(execFile);
 const MaxBatchBytes = 8 * 1024 * 1024;
 const SourceRequest = z.strictObject({
-  protocolVersion: z.literal(1).optional(),
+  protocolVersion: z.literal(2),
   integrationPath: z.string().min(1),
   resultPath: z.string().min(1),
 });
 const RuntimeSyncRequest = z.strictObject({
-  protocolVersion: z.literal(1).optional(),
+  protocolVersion: z.literal(2),
   operation: z.literal("sync"),
   runtimePath: z.string().min(1),
   resultPath: z.string().min(1),
   syncKey: z.string().min(1),
+  ...SyncOptionsSchema.shape,
   connectionConfig: JsonObject.default({}),
   syncConfig: JsonObject.default({}),
   credentials: Credentials.default({}),
@@ -65,7 +66,7 @@ const RuntimeSyncRequest = z.strictObject({
 type RuntimeSyncRequest = z.output<typeof RuntimeSyncRequest>;
 
 const BatchCommitted = z.strictObject({
-  protocolVersion: z.literal(1),
+  protocolVersion: z.literal(2),
   kind: z.literal("batch_committed"),
   batchId: z.string().min(1),
   action: z.enum(["continue", "yield"]),
@@ -111,7 +112,7 @@ async function main(): Promise<void> {
   try {
     const message = await readMessage("Host request", 4 * 1024 * 1024);
 
-    assertProtocolVersion(message, true);
+    assertProtocolVersion(message);
 
     const request = Request.parse(message);
     const directory = await mkdtemp(join(tmpdir(), "beetl-connect-server-host-"));
@@ -200,10 +201,6 @@ async function main(): Promise<void> {
         onAuthorizationStateChanged: (state) => void (authorizationState = state),
       });
 
-      await (integration.connection.auth?.credentials ?? z.strictObject({})).parseAsync(
-        request.credentials,
-      );
-
       for (const selected of request.syncs) {
         const sync = integration.syncs[selected.key];
 
@@ -253,10 +250,6 @@ async function runRuntimeSync(
     request.connectionConfig,
   );
 
-  await (integration.connection.auth?.credentials ?? z.strictObject({})).parseAsync(
-    request.credentials,
-  );
-
   let authorizationState: OAuthAuthorizationState | undefined = request.authorizationState;
   const providerHost = createProvider(integration.connection, {
     connectionConfig,
@@ -279,6 +272,8 @@ async function runRuntimeSync(
       integration,
       {
         sync: request.syncKey,
+        mode: request.mode,
+        checkpointing: request.checkpointing,
         connectionConfig,
         syncConfig: request.syncConfig,
         ...(request.checkpoint === undefined ? {} : { checkpoint: request.checkpoint }),
@@ -305,8 +300,8 @@ async function exchangeBatch(
   readMessage: (label: string, maxBytes: number) => Promise<unknown>,
 ): Promise<CommitAction> {
   await writeMessage(
-    BatchSchema.extend({ protocolVersion: z.literal(1), kind: z.literal("batch") }).parse({
-      protocolVersion: 1,
+    BatchSchema.extend({ protocolVersion: z.literal(2), kind: z.literal("batch") }).parse({
+      protocolVersion: 2,
       kind: "batch",
       ...batch,
     }),
@@ -325,16 +320,16 @@ async function exchangeBatch(
   return committed.action === "yield" ? "stop" : "continue";
 }
 
-function assertProtocolVersion(message: unknown, allowLegacy = false): void {
+function assertProtocolVersion(message: unknown): void {
   const version =
     typeof message === "object" && message !== null && "protocolVersion" in message
       ? message.protocolVersion
       : undefined;
 
-  if (version === 1 || (allowLegacy && version === undefined)) return;
+  if (version === 2) return;
 
   throw new Error(
-    `Unsupported execution protocol version ${JSON.stringify(version)}; supported: 1. Upgrade the execution host/controller or send protocol v1.`,
+    `Unsupported execution protocol version ${JSON.stringify(version)}; supported: 2. Upgrade the execution host/controller or send protocol v2.`,
   );
 }
 

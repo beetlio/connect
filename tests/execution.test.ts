@@ -57,7 +57,7 @@ test("commits apply backpressure and continuation closes the generator", async (
   });
   const running = runSync(
     source,
-    { sync: "items" },
+    { sync: "items", checkpointing: true },
     syncHost({
       async log(entry) {
         await Promise.resolve();
@@ -87,13 +87,15 @@ test("commits apply backpressure and continuation closes the generator", async (
   await assert.rejects(logger!.info("late"), /Execution context is closed/);
 });
 
-test("commit and generator cleanup failures remain visible", async () => {
+test("commit, generator cleanup, and log failures retain their order", async () => {
   const commitFailure = new Error("commit failed"),
-    cleanupFailure = new Error("cleanup failed");
-  const source = integration(async function* () {
+    cleanupFailure = new Error("cleanup failed"),
+    logFailure = new Error("log failed");
+  const source = integration(async function* (ctx) {
     try {
       yield { records: [{ id: 1 }], checkpoint: 1 };
     } finally {
+      void ctx.log.info("closing");
       throw cleanupFailure;
     }
   });
@@ -101,17 +103,21 @@ test("commit and generator cleanup failures remain visible", async () => {
   await assert.rejects(
     runSync(
       source,
-      { sync: "items" },
+      { sync: "items", checkpointing: true },
       syncHost({
+        async log() {
+          throw logFailure;
+        },
         async commit() {
           throw commitFailure;
         },
       }),
     ),
-    (error) =>
-      error instanceof AggregateError &&
-      error.errors.includes(commitFailure) &&
-      error.errors.includes(cleanupFailure),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [commitFailure, cleanupFailure, logFailure]);
+      return true;
+    },
   );
 });
 
@@ -131,7 +137,7 @@ test("cancellation closes the generator and cannot commit another batch", async 
   await assert.rejects(
     runSync(
       source,
-      { sync: "items", signal: controller.signal },
+      { sync: "items", checkpointing: true, signal: controller.signal },
       syncHost({
         async commit() {
           commits++;
@@ -192,7 +198,7 @@ test("cancellation during log settlement prevents success and preserves cleanup 
               host,
             )
           : operation === "sync"
-            ? runSync(definition, { ...input, sync: "items" }, host)
+            ? runSync(definition, { ...input, sync: "items", checkpointing: true }, host)
             : verifyConnection(definition, input, host);
       const rejected = assert.rejects(running, (error) => error === (cleanupError ?? cancellation));
 
@@ -218,7 +224,7 @@ test("execution drains submitted logs and cancels abandoned requests", async () 
 
   await runSync(
     source,
-    { sync: "items" },
+    { sync: "items", checkpointing: true },
     syncHost({
       async request(_request, signal) {
         await new Promise<void>((_resolve, reject) => {
@@ -276,7 +282,7 @@ test("pagination follows next requests through empty pages", async () => {
   });
   const result = await runSync(
     source,
-    { sync: "items" },
+    { sync: "items", checkpointing: true },
     {
       ...provider,
       async commit() {
@@ -310,7 +316,7 @@ test("pagination rejects repetition, invalid data, and cross-origin requests", a
     await assert.rejects(
       runSync(
         source,
-        { sync: "items" },
+        { sync: "items", checkpointing: true },
         {
           ...provider,
           async commit() {
@@ -345,7 +351,7 @@ test("json returns parsed output and exposes bounded HTTP errors", async () => {
   );
   const result = await runSync(
     source,
-    { sync: "items" },
+    { sync: "items", checkpointing: true },
     {
       ...provider,
       async commit(batch) {
@@ -375,7 +381,7 @@ test("pagination rejects ambiguous paths before provider HTTP", async () => {
     await assert.rejects(
       runSync(
         source,
-        { sync: "items" },
+        { sync: "items", checkpointing: true },
         syncHost({
           async request() {
             requests++;
@@ -398,7 +404,7 @@ test("execution validates custom host responses before exposing them to integrat
   await assert.rejects(
     runSync(
       source,
-      { sync: "items" },
+      { sync: "items", checkpointing: true },
       syncHost({
         async request() {
           return { status: 999, headers: [], body: new Uint8Array() };
@@ -425,34 +431,14 @@ test("mutating the initial checkpoint cannot advance committed state", async () 
     }),
   });
   const checkpoint = { cursor: 1 };
-  const result = await runSync(source, { sync: "items", checkpoint }, syncHost());
+  const result = await runSync(
+    source,
+    { sync: "items", checkpointing: true, checkpoint },
+    syncHost(),
+  );
 
   assert.deepEqual(checkpoint, { cursor: 1 });
   assert.deepEqual(result.checkpoint, { cursor: 1 });
-});
-
-test("merge rejects duplicate or conflicting keys within one batch", async () => {
-  const integration = defineIntegration({
-    key: "merge-conflict",
-    displayName: "Merge conflict",
-    connection: { origin: "https://api.example.com" },
-    syncs: (sync) => ({
-      items: sync({
-        displayName: "Items",
-        mode: "merge",
-        primaryKey: ["id"],
-        records: z.object({ id: z.string() }),
-        async *run(ctx) {
-          yield { records: [{ id: "same" }], deletedKeys: [{ id: "same" }] };
-        },
-      }),
-    }),
-  });
-
-  await assert.rejects(
-    runSync(integration, { sync: "items" }, syncHost()),
-    /Duplicate or conflicting merge deletion key/,
-  );
 });
 
 test("checkpoint schemas cannot rewrite serialized values", async () => {
@@ -473,7 +459,7 @@ test("checkpoint schemas cannot rewrite serialized values", async () => {
   });
 
   await assert.rejects(
-    runSync(integration, { sync: "items" }, syncHost()),
+    runSync(integration, { sync: "items", checkpointing: true }, syncHost()),
     /must preserve the serialized JSON value/,
   );
 });
@@ -518,6 +504,7 @@ test("runSync validates async schemas and transforms boundary values once", asyn
     integration,
     {
       sync: "items",
+      checkpointing: true,
       connectionConfig: { account: "acme" },
       syncConfig: { limit: 2 },
       checkpoint: 1,
@@ -536,7 +523,6 @@ test("runSync validates async schemas and transforms boundary values once", asyn
     outcome: "completed",
     batches: 1,
     records: 1,
-    deleted: 0,
     checkpoint: 2,
   });
 });
@@ -566,7 +552,10 @@ test("batch change limits are checked before record parsing", async () => {
     }),
   });
 
-  await assert.rejects(runSync(integration, { sync: "items" }, syncHost()), /exceeds 10000/);
+  await assert.rejects(
+    runSync(integration, { sync: "items", checkpointing: true }, syncHost()),
+    /exceeds 10000/,
+  );
 
   assert.equal(parsed, 0);
 });
@@ -591,7 +580,7 @@ test("record outputs must be JSON-compatible", async () => {
   await assert.rejects(
     runSync(
       integration,
-      { sync: "items" },
+      { sync: "items", checkpointing: true },
       syncHost({
         commit: async () => {
           emitted = true;

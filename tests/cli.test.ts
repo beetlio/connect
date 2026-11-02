@@ -1,4 +1,4 @@
-import { defineIntegration, z } from "@beetlio/connect";
+import { auth, defineIntegration, z } from "@beetlio/connect";
 import { buildIntegration } from "@beetlio/connect/builder";
 import { createProvider, runSync, withFileSink } from "@beetlio/connect/host";
 import assert from "node:assert/strict";
@@ -6,10 +6,58 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { createServer } from "node:http";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { fixtureDirectory, integrationPackage } from "./support.ts";
+import { authorizeLocalOAuth, readConnection } from "../src/cli/configure.ts";
+
+test("local OAuth validates the callback and releases its listener", async () => {
+  const reservation = createServer();
+  reservation.listen(0, "127.0.0.1");
+  await once(reservation, "listening");
+  const address = reservation.address();
+  assert.ok(address && typeof address !== "string");
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  const redirectUri = `http://127.0.0.1:${address.port}/oauth/callback`;
+  const options = {
+    auth: auth.oauth2({
+      issuer: "https://provider.example",
+      authorizationUrl: "https://provider.example/authorize",
+      tokenUrl: "https://provider.example/token",
+      scopes: ["read"],
+    }),
+    credentials: { clientId: "mock-client" },
+    redirectUri,
+    fetch: async () => Response.json({ access_token: "mock-access", token_type: "Bearer" }),
+  };
+
+  for (const validState of [true, false]) {
+    const run = authorizeLocalOAuth({
+      ...options,
+      async onAuthorizationUrl(value) {
+        assert.equal((await fetch(new URL("/wrong", redirectUri))).status, 404);
+        const state = validState ? new URL(value).searchParams.get("state")! : "wrong-state";
+        await fetch(`${redirectUri}?${new URLSearchParams({ code: "mock-code", state })}`);
+      },
+    });
+    if (validState) assert.equal((await run).accessToken, "mock-access");
+    else await assert.rejects(run);
+  }
+});
+
+test("stored connection reads preserve missing-file and validation errors", async (t) => {
+  const directory = await fixtureDirectory(t, "beetl-connection-reader");
+  const path = join(directory, "connection.json");
+  assert.equal(await readConnection(path, "example", "default"), undefined);
+  await writeFile(path, "{");
+  await assert.rejects(readConnection(path, "example", "default"), {
+    message: `Local connection ${path} is not valid JSON`,
+  });
+  await writeFile(path, "{}");
+  await assert.rejects(readConnection(path, "example", "default"), /Invalid local connection/);
+});
 
 const CliPath = resolve("dist/cli/main.js");
 const ConnectionRevision = "22222222-2222-4222-8222-222222222222";
@@ -202,7 +250,15 @@ export default defineIntegration({
 
   const sourceState = join(directory, "source-state.json");
   const sync = () =>
-    runCli(workingDirectory, ["sync", directory, "--output", sourceOutput, "--state", sourceState]);
+    runCli(workingDirectory, [
+      "sync",
+      directory,
+      "--checkpointing",
+      "--output",
+      sourceOutput,
+      "--state",
+      sourceState,
+    ]);
   const sourceSync = sync();
 
   assert.equal(sourceSync.status, 0, sourceSync.stderr);
@@ -295,7 +351,7 @@ export default defineIntegration({
     items: sync({
       displayName: "Items",
       records: z.object({ id: z.string() }),
-      mode: "replace",
+
       inputs: z.strictObject({ ignoreFailure: z.boolean().default(false) }),
       async *run(ctx) {
         try {
@@ -375,7 +431,7 @@ export default defineIntegration({
       process.execPath,
       ["--import", pathToFileURL(bootstrap).href, resolve("dist/server-host.js")],
       {
-        input: `${JSON.stringify({ ...request, credentials: storedConnection.credentials })}\n`,
+        input: `${JSON.stringify({ protocolVersion: 2, ...request, credentials: storedConnection.credentials })}\n`,
         encoding: "utf8",
         timeout: 30_000,
       },
@@ -393,7 +449,11 @@ export default defineIntegration({
   await writeFile(profilePath, JSON.stringify({ ...profile, inputs: { ignoreFailure: true } }));
   await writeFile(output, '{"id":"original"}\n');
 
-  const settlementOnly = runCli(directory, ["sync", directory, "--output", output], bootstrap);
+  const settlementOnly = runCli(
+    directory,
+    ["sync", directory, "--mode", "replace", "--output", output],
+    bootstrap,
+  );
 
   assert.equal(settlementOnly.status, 1, settlementOnly.stderr);
   assert.match(settlementOnly.stderr, /provider failed/);
@@ -413,7 +473,6 @@ test("replace output is published only after a successful run", async (t) => {
     syncs: (sync) => ({
       items: sync({
         displayName: "Items",
-        mode: "replace",
         records: z.object({ id: z.number() }),
         async *run(ctx) {
           yield { records };
@@ -441,43 +500,6 @@ test("replace output is published only after a successful run", async (t) => {
 
   assert.equal(await readFile(outputPath, "utf8"), '{"id":1}\n{"id":2}\n');
   assert.deepEqual(await readdir(directory), ["items.ndjson"]);
-});
-
-test("merge local output mirrors emitted batch records and deleted keys", async (t) => {
-  const directory = await fixtureDirectory(t, "beetl-merge");
-  const outputPath = join(directory, "items.ndjson");
-  const integration = defineIntegration({
-    key: "merge-output",
-    displayName: "Merge output",
-    connection: { origin: "https://api.example.com" },
-    syncs: (sync) => ({
-      items: sync({
-        displayName: "Items",
-        mode: "merge",
-        primaryKey: ["id"],
-        records: z.object({ id: z.string(), name: z.string() }),
-        async *run(ctx) {
-          yield {
-            records: [{ id: "upserted", name: "Updated" }],
-            deletedKeys: [{ id: "deleted" }],
-          };
-        },
-      }),
-    }),
-  });
-  const provider = createProvider(integration.connection);
-
-  await withFileSink(
-    { outputPath, statePath: join(directory, "state.json"), mode: "merge" },
-    (sink) => runSync(integration, { sync: "items" }, { ...provider, commit: sink.commit }),
-  );
-
-  const output = JSON.parse((await readFile(outputPath, "utf8")).trim());
-
-  assert.deepEqual(output, {
-    records: [{ id: "upserted", name: "Updated" }],
-    deletedKeys: [{ id: "deleted" }],
-  });
 });
 
 const OriginalOrigin = "https://tenant-a.example.com";

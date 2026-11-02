@@ -53,9 +53,7 @@ export default defineIntegration({
   syncs: (defineSync) => ({
     contacts: defineSync({
       displayName: "Contacts",
-      mode: "merge",
       records: Contact,
-      primaryKey: ["id"],
       checkpoint: z.object({
         pagination: z.object({ offset: z.number().int().nonnegative() }),
       }),

@@ -26,7 +26,7 @@ export type JsonValue = JSONType;
 
 export type JsonObject = { readonly [key: string]: JsonValue | undefined };
 
-export type SyncMode = "append" | "replace" | "merge";
+export type SyncMode = "append" | "replace";
 
 export type SyncFetchInit = Pick<RequestInit, "body" | "headers" | "method" | "signal">;
 
@@ -96,20 +96,15 @@ export type DestinationBatch<R = unknown, K = JsonObject> = {
   readonly deletedKeys?: readonly Readonly<K>[];
 };
 
-export type Batch<R = unknown, K = JsonValue, M extends SyncMode = SyncMode> = {
+export type Batch<R = unknown, K = JsonValue> = {
   readonly records: readonly R[];
   readonly checkpoint?: K;
-} & (M extends "merge"
-  ? { readonly deletedKeys?: readonly JsonObject[] }
-  : { readonly deletedKeys?: never });
+  readonly deletedKeys?: never;
+};
 
 type Config<C> = C extends z.ZodType ? z.output<C> : Readonly<Record<string, never>>;
 
 type Checkpoint<K> = K extends z.ZodType ? z.output<K> : never;
-
-type Mode<M, R> = M extends "merge"
-  ? { readonly primaryKey: readonly [keyof R & string, ...(keyof R & string)[]] }
-  : { readonly primaryKey?: never };
 
 /** Runtime definition. Author it through the scoped sync function for inference. */
 export interface SyncDefinition {
@@ -117,8 +112,6 @@ export interface SyncDefinition {
   readonly records: z.ZodObject;
   readonly inputs?: z.ZodObject;
   readonly checkpoint?: z.ZodType;
-  readonly mode?: SyncMode;
-  readonly primaryKey?: readonly string[];
   run(context: SyncContext): AsyncGenerator<Batch, void, unknown>;
 }
 
@@ -126,19 +119,15 @@ type DefineSync<Connection extends object> = <
   R extends z.ZodObject,
   C extends z.ZodObject | undefined = undefined,
   K extends z.ZodType | undefined = undefined,
-  M extends SyncMode = "append",
->(
-  definition: {
-    readonly displayName?: string;
-    readonly records: R;
-    readonly inputs?: C;
-    readonly checkpoint?: K;
-    readonly mode?: M;
-    run(
-      context: SyncContext<Config<C>, Checkpoint<K>, Connection>,
-    ): AsyncGenerator<Batch<z.input<R>, Checkpoint<K>, M>, void, unknown>;
-  } & Mode<M, z.output<R>>,
-) => SyncDefinition;
+>(definition: {
+  readonly displayName?: string;
+  readonly records: R;
+  readonly inputs?: C;
+  readonly checkpoint?: K;
+  run(
+    context: SyncContext<Config<C>, Checkpoint<K>, Connection>,
+  ): AsyncGenerator<Batch<z.input<R>, Checkpoint<K>>, void, unknown>;
+}) => SyncDefinition;
 
 /** Runtime definition. Author it through the scoped destination function for inference. */
 export interface DestinationDefinition {
@@ -182,7 +171,7 @@ export interface IntegrationDefinition {
   readonly icon?: "icon.png" | "icon.webp";
   readonly connection: ConnectionDefinition;
   readonly syncs: Readonly<Record<string, SyncDefinition>>;
-  readonly destinations?: Readonly<Record<string, DestinationDefinition>>;
+  readonly destinations: Readonly<Record<string, DestinationDefinition>>;
 }
 
 export function defineIntegration<
@@ -198,7 +187,7 @@ export function defineIntegration<
   readonly icon?: "icon.png" | "icon.webp";
   readonly connection: ConnectionDefinition<C>;
   readonly syncs?: (sync: DefineSync<Config<C>>) => S;
-  readonly destinations?: ((destination: DefineDestination<Config<C>>) => D) | D;
+  readonly destinations?: (destination: DefineDestination<Config<C>>) => D;
 }): IntegrationDefinition & { readonly syncs: S; readonly destinations: D } {
   // Generic callback types are erased only at the authoring boundary. The builder
   // validates the complete definition before it becomes an executable artifact.
@@ -209,9 +198,6 @@ export function defineIntegration<
   return {
     ...definition,
     syncs: definition.syncs?.(sync) ?? ({} as S),
-    destinations:
-      typeof definition.destinations === "function"
-        ? definition.destinations(destination)
-        : (definition.destinations ?? ({} as D)),
+    destinations: definition.destinations?.(destination) ?? ({} as D),
   };
 }

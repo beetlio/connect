@@ -39,7 +39,6 @@ export default defineIntegration({
   syncs: (defineSync) => ({
     entities: defineSync({
       displayName: "Entities",
-      mode: "replace",
       records: Entity,
       inputs: z.strictObject({
         search: z.string().min(1).meta({

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { dirname, isAbsolute, join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { isDeepStrictEqual } from "node:util";
 
@@ -9,7 +9,7 @@ import password from "@inquirer/password";
 import envPaths from "env-paths";
 import { z } from "zod";
 
-import { replacePrivateFile } from "../file-sink.ts";
+import { replacePrivateFile, withFileLock } from "../file-sink.ts";
 import { verifyConnection } from "../host.ts";
 import { resolveProviderOrigin } from "../http.ts";
 import type { IntegrationDefinition, JsonObject } from "../index.ts";
@@ -97,11 +97,11 @@ export async function resolveProfile(
     syncKey,
     `${profileName}.json`,
   );
-  let profile = await readProfile(path);
+  let profile = await readConfiguration(path, ProfileSchema, "profile");
 
   if (requestedProfile === undefined && profile === undefined) {
     await configureIntegration(integration, manifest, syncKey, profileName);
-    profile = await readProfile(path);
+    profile = await readConfiguration(path, ProfileSchema, "profile");
   }
 
   if (profile === undefined) {
@@ -147,7 +147,7 @@ export async function configureIntegration(
     syncKey,
     `${profileName}.json`,
   );
-  const existingProfile = await readProfile(profilePath);
+  const existingProfile = await readConfiguration(profilePath, ProfileSchema, "profile");
 
   if (existingProfile !== undefined && existingProfile.integration !== integration.key) {
     throw new Error(`Profile belongs to integration ${existingProfile.integration}`);
@@ -231,10 +231,7 @@ export async function configureIntegration(
       const credentials =
         existingConnection !== undefined && !reauthorize
           ? existingConnection.credentials
-          : await promptCredentials(
-              manifest.connection.credentials,
-              reauthorize ? {} : (existingConnection?.credentials ?? {}),
-            );
+          : await promptCredentials(manifest.connection.credentials);
       const parsedCredentials = parseCredentials(
         integration.connection.auth?.credentials ?? EmptyInputs,
         credentials,
@@ -250,7 +247,7 @@ export async function configureIntegration(
           integration.connection.auth?.type === "oauth2_authorization_code"
             ? existingConnection?.authorizationState !== undefined && !reauthorize
               ? existingConnection.authorizationState
-              : await authorizeOAuth({
+              : await authorizeLocalOAuth({
                   ...(await prepareOAuthAuthorization(
                     {
                       ...integration.connection,
@@ -364,32 +361,6 @@ export async function configureIntegration(
   );
 }
 
-export async function withFileLock<Value>(
-  path: string,
-  inUseMessage: string,
-  action: () => Promise<Value>,
-): Promise<Value> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-
-  const lock = await open(path, "wx", 0o600).catch((error: unknown) => {
-    if (error instanceof Error && "code" in error && error.code === "EEXIST") {
-      throw new Error(inUseMessage, { cause: error });
-    }
-
-    throw error;
-  });
-
-  try {
-    return await action();
-  } finally {
-    try {
-      await lock.close();
-    } finally {
-      await rm(path, { force: true });
-    }
-  }
-}
-
 async function promptConfigurationInputs(current: {
   connection: JsonObject;
   sync: JsonObject;
@@ -426,7 +397,6 @@ async function promptConfigurationInputs(current: {
 
 async function promptCredentials(
   schema: InputObjectSchema,
-  existing: Readonly<Record<string, string>>,
 ): Promise<Readonly<Record<string, string>>> {
   if (
     Object.keys(schema.properties).length > 0 &&
@@ -438,7 +408,6 @@ async function promptCredentials(
   const values: Record<string, string> = {};
 
   for (const [name, field] of Object.entries(schema.properties)) {
-    const current = existing[name];
     const label = field.title ?? name;
     let answer: string;
 
@@ -447,28 +416,30 @@ async function promptCredentials(
       ("x-beetl-widget" in field && field["x-beetl-widget"] === "password")
     ) {
       answer = await password({
-        message: current === undefined ? label : `${label} [configured]`,
+        message: label,
         mask: true,
       });
     } else {
       const lines = createInterface({ input: process.stdin, output: process.stdout });
 
       try {
-        answer = await lines.question(
-          current === undefined ? `${label}: ` : `${label} [configured]: `,
-        );
+        answer = await lines.question(`${label}: `);
       } finally {
         lines.close();
       }
     }
 
-    values[name] = answer === "" && current !== undefined ? current : answer;
+    values[name] = answer;
   }
 
   return values;
 }
 
-async function readProfile(path: string): Promise<Profile | undefined> {
+async function readConfiguration<T>(
+  path: string,
+  schema: z.ZodType<T>,
+  label: string,
+): Promise<T | undefined> {
   let source: string;
 
   try {
@@ -476,7 +447,7 @@ async function readProfile(path: string): Promise<Profile | undefined> {
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
 
-    throw new Error(`Could not read profile ${path}`, { cause: error });
+    throw new Error(`Could not read ${label} ${path}`, { cause: error });
   }
 
   let value: unknown;
@@ -484,15 +455,17 @@ async function readProfile(path: string): Promise<Profile | undefined> {
   try {
     value = JSON.parse(source);
   } catch (error) {
-    throw new Error(`Profile ${path} is not valid JSON`, { cause: error });
+    throw new Error(`${label[0]!.toUpperCase()}${label.slice(1)} ${path} is not valid JSON`, {
+      cause: error,
+    });
   }
 
-  const profile = ProfileSchema.safeParse(value);
+  const result = schema.safeParse(value);
 
-  if (!profile.success)
-    throw new Error(`Invalid profile ${path}: ${z.prettifyError(profile.error)}`);
+  if (!result.success)
+    throw new Error(`Invalid ${label} ${path}: ${z.prettifyError(result.error)}`);
 
-  return profile.data;
+  return result.data;
 }
 
 export function createConfiguredProvider(
@@ -610,35 +583,14 @@ export async function readConnection(
   integration: string,
   name: string,
 ): Promise<StoredConnection | undefined> {
-  let source: string;
+  const connection = await readConfiguration(path, StoredConnectionSchema, "local connection");
+  if (connection === undefined) return;
 
-  try {
-    source = await readFile(path, "utf8");
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
-
-    throw new Error(`Could not read local connection ${path}`, { cause: error });
-  }
-
-  let value: unknown;
-
-  try {
-    value = JSON.parse(source);
-  } catch (error) {
-    throw new Error(`Local connection ${path} is not valid JSON`, { cause: error });
-  }
-
-  const connection = StoredConnectionSchema.safeParse(value);
-
-  if (!connection.success) {
-    throw new Error(`Invalid local connection ${path}: ${z.prettifyError(connection.error)}`);
-  }
-
-  if (connection.data.integration !== integration || connection.data.name !== name) {
+  if (connection.integration !== integration || connection.name !== name) {
     throw new Error(`Local connection ${path} does not match ${integration}/${name}`);
   }
 
-  return connection.data;
+  return connection;
 }
 
 export function selectSyncKey(
@@ -656,17 +608,15 @@ export function selectSyncKey(
   );
 }
 
-export interface AuthorizeOAuthOptions extends OAuthRequestOptions {
+interface LocalOAuthOptions extends OAuthRequestOptions {
   readonly redirectUri: string;
   onAuthorizationUrl(url: string): void | Promise<void>;
-  onAuthorizationCallback?(): string | Promise<string>;
 }
 
-export async function authorizeOAuth(
-  options: AuthorizeOAuthOptions,
+export async function authorizeLocalOAuth(
+  options: LocalOAuthOptions,
 ): Promise<OAuthAuthorizationState> {
   const redirect = new URL(options.redirectUri);
-  const usesLocalCallback = redirect.protocol === "http:" && Boolean(redirect.port);
   const request = await beginOAuthAuthorization(options);
 
   const validateCallback = (value: string | URL) => {
@@ -681,47 +631,37 @@ export async function authorizeOAuth(
 
   let callbackUrl: URL;
 
-  if (usesLocalCallback) {
-    const callbackServer = createServer();
-    const callbackController = new AbortController();
+  const callbackServer = createServer();
+  const callbackController = new AbortController();
 
-    await new Promise<void>((resolve, reject) => {
-      callbackServer.once("error", reject);
-      callbackServer.listen(
-        Number(redirect.port),
-        redirect.hostname === "[::1]" ? "::1" : redirect.hostname,
-        () => {
-          callbackServer.removeListener("error", reject);
-          resolve();
-        },
-      );
-    });
-
-    const callbackPromise = waitForAuthorizationCallback(
-      callbackServer,
-      redirect,
-      validateCallback,
-      options.signal === undefined
-        ? callbackController.signal
-        : AbortSignal.any([options.signal, callbackController.signal]),
+  await new Promise<void>((resolve, reject) => {
+    callbackServer.once("error", reject);
+    callbackServer.listen(
+      Number(redirect.port),
+      redirect.hostname === "[::1]" ? "::1" : redirect.hostname,
+      () => {
+        callbackServer.removeListener("error", reject);
+        resolve();
+      },
     );
+  });
 
-    try {
-      await options.onAuthorizationUrl(request.authorizationUrl);
-      callbackUrl = await callbackPromise;
-    } finally {
-      callbackController.abort(new Error("OAuth authorization stopped"));
-      await callbackPromise.catch(() => undefined);
-      await new Promise<void>((resolve) => callbackServer.close(() => resolve()));
-    }
-  } else {
+  const callbackPromise = waitForAuthorizationCallback(
+    callbackServer,
+    redirect,
+    validateCallback,
+    options.signal === undefined
+      ? callbackController.signal
+      : AbortSignal.any([options.signal, callbackController.signal]),
+  );
+
+  try {
     await options.onAuthorizationUrl(request.authorizationUrl);
-
-    if (options.onAuthorizationCallback === undefined) {
-      throw new Error("This OAuth redirect requires the callback URL to be supplied");
-    }
-
-    callbackUrl = validateCallback(await options.onAuthorizationCallback());
+    callbackUrl = await callbackPromise;
+  } finally {
+    callbackController.abort(new Error("OAuth authorization stopped"));
+    await callbackPromise.catch(() => undefined);
+    await new Promise<void>((resolve) => callbackServer.close(() => resolve()));
   }
 
   return completeOAuthAuthorization({

@@ -85,7 +85,6 @@ test("storage records preserve typed nested columns and serialize dynamic fields
     syncs: (define) => ({
       records: define({
         displayName: "Records",
-        mode: "replace",
         records,
         async *run(ctx) {
           yield {
