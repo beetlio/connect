@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFile, cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { buildIntegration } from "../dist/artifact.js";
@@ -79,37 +79,13 @@ for (const fixture of scenarios.fixtures) {
   });
 }
 
-// Execute unchanged v3 artifacts and rebuild their unchanged sources with this SDK.
 const historical = JSON.parse(await readFile(new URL("frozen/v3/provenance.json", root), "utf8"));
-for (const fixture of historical.fixtures) {
-  const { sourceHashes, ...contract } = fixture;
-  const source = new URL(fixture.source, new URL("frozen/v3/", root));
-  for (const [file, hash] of Object.entries(sourceHashes)) {
-    if (sha256(await readFile(new URL(file, source))) !== hash)
-      throw new Error(`Frozen v3 source changed: ${fixture.id}/${file}`);
-  }
-  const id = `v3-${fixture.id}`;
-  fixtures.push({
-    ...contract,
-    id,
-    artifact: `../../compatibility/frozen/v3/${fixture.artifact}`,
-    source: `../../compatibility/frozen/v3/${fixture.source}`,
-  });
-  const rebuiltSource = new URL(`sources/${id}/`, output);
-  await cp(source, rebuiltSource, { recursive: true });
-  const built = await buildIntegration(fileURLToPath(rebuiltSource));
-  await writeFile(new URL(`${id}-rebuilt.tgz`, output), built.archive);
-  fixtures.push({
-    ...contract,
-    id: `${id}-rebuilt`,
-    artifact: `${id}-rebuilt.tgz`,
-    source: `sources/${id}/`,
-    sha256: sha256(built.archive),
-    manifest: built.manifest,
-    sdk: { version: built.sdkVersion },
-    hostContractVersion: built.manifest.hostContractVersion,
-  });
-}
+const rejectedV3 = historical.fixtures.map((fixture) => ({
+  artifact: `../../compatibility/frozen/v3/${fixture.artifact}`,
+  sha256: fixture.sha256,
+  sdkCommit: historical.sdkCommit,
+  expectedError: "Unsupported manifest version 3",
+}));
 
 await writeFile(
   new URL("inventory.json", output),
@@ -118,12 +94,15 @@ await writeFile(
       formatVersion: 3,
       pathBase: "Resolve artifact and source paths relative to this inventory file.",
       fixtures,
-      rejectedArtifacts: provenance.artifacts.map((artifact) => ({
-        artifact: `../../compatibility/frozen/${artifact.file}`,
-        sha256: artifact.sha256,
-        sdkCommit: provenance.sdkCommit,
-        expectedError: "Unsupported manifest version 2",
-      })),
+      rejectedArtifacts: [
+        ...rejectedV3,
+        ...provenance.artifacts.map((artifact) => ({
+          artifact: `../../compatibility/frozen/${artifact.file}`,
+          sha256: artifact.sha256,
+          sdkCommit: provenance.sdkCommit,
+          expectedError: "Unsupported manifest version 2",
+        })),
+      ],
     },
     null,
     2,

@@ -261,8 +261,8 @@ export const RetrySchema = z.union([
   z.literal(false),
   z.strictObject({
     maxAttempts: z.number().int().positive().optional(),
-    statuses: z.array(z.number().int().min(100).max(599)).min(1).optional(),
-    methods: z.array(z.string().min(1)).min(1).optional(),
+    statuses: z.array(z.number().int().min(100).max(599)).min(1).readonly().optional(),
+    methods: z.array(z.string().min(1)).min(1).readonly().optional(),
     initialDelayMs: z.number().nonnegative().optional(),
     maxDelayMs: z.number().nonnegative().optional(),
   }),

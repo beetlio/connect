@@ -22,7 +22,6 @@ export default defineIntegration({
   syncs: (defineSync) => ({
     items: defineSync({
       displayName: "Items",
-      mode: "replace",
       records: Item,
       async *run(ctx) {
         const response = await ctx.fetch("/items");

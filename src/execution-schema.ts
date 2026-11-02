@@ -3,11 +3,15 @@ import type { JsonObject as JsonObjectValue } from "./index.ts";
 
 const JsonObject: z.ZodType<JsonObjectValue> = z.record(z.string(), z.json());
 
+export const SyncOptionsSchema = z.object({
+  mode: z.enum(["append", "replace"]).default("append"),
+  checkpointing: z.boolean().default(false),
+});
+
 export const BatchSchema = z.strictObject({
   batchId: z.string().min(1),
   sequence: z.number().int().nonnegative(),
   records: z.array(JsonObject).readonly(),
-  deletedKeys: z.array(JsonObject).readonly().optional(),
   checkpoint: z.json().optional(),
 });
 
@@ -15,7 +19,6 @@ export const RunResultSchema = z.strictObject({
   outcome: z.enum(["completed", "continuation_required"]),
   batches: z.number().int().nonnegative(),
   records: z.number().int().nonnegative(),
-  deleted: z.number().int().nonnegative(),
   checkpoint: z.json().optional(),
 });
 

@@ -3,22 +3,15 @@ import { z } from "zod";
 import { AuthManifestSchema } from "./auth.ts";
 import { InputFieldSchema, type InputObjectSchema, objectManifest } from "./forms.ts";
 import { OriginSchema, RetrySchema, providerOrigin, resolveRetry } from "./http.ts";
-import type {
-  AuthManifest,
-  ConnectionDefinition,
-  IntegrationDefinition,
-  ProviderOriginDefinition,
-  RetryDefinition,
-  SyncMode,
-} from "./index.ts";
+import type { AuthManifest, ConnectionDefinition, IntegrationDefinition } from "./index.ts";
 
 export type { InputField, InputObjectSchema, InputValueSchema } from "./forms.ts";
 
 export type JsonSchema = Readonly<Record<string, unknown>>;
 
 /** Contract targeted by artifacts built with this SDK, independent of manifest format. */
-export const HOST_CONTRACT_VERSION = 4;
-export const SUPPORTED_HOST_CONTRACT_VERSIONS = [3, 4] as const;
+export const HOST_CONTRACT_VERSION = 5;
+export const SUPPORTED_HOST_CONTRACT_VERSIONS = [5] as const;
 
 /** Omitted requirements identify legacy manifest-v2 artifacts. */
 export function assertSupportedHostContractVersion(version: unknown = 1): void {
@@ -29,54 +22,12 @@ export function assertSupportedHostContractVersion(version: unknown = 1): void {
   }
 }
 
-export interface IntegrationManifest {
-  readonly manifestVersion: 3 | 4;
-  /** Required execution behavior, independent of the SDK release. */
-  readonly hostContractVersion: 3 | 4;
-  readonly integration: {
-    readonly key: string;
-    readonly displayName: string;
-    readonly description?: string;
-    readonly icon?: "icon.png" | "icon.webp";
-  };
-  readonly connection: {
-    readonly origin: ProviderOriginDefinition;
-    readonly auth: AuthManifest;
-    readonly inputs: InputObjectSchema;
-    readonly credentials: InputObjectSchema;
-    readonly retry?: RetryDefinition;
-    readonly canVerify: boolean;
-  };
-  readonly syncs: readonly {
-    readonly key: string;
-    readonly displayName: string;
-    readonly mode: SyncMode;
-    readonly inputs: InputObjectSchema;
-    readonly records: JsonSchema;
-    readonly primaryKey?: readonly string[];
-    readonly checkpoint?: JsonSchema;
-  }[];
-  /** Present in manifest v4. V3 artifacts expose pull syncs only. */
-  readonly destinations?: readonly {
-    readonly key: string;
-    readonly displayName: string;
-    readonly inputs: InputObjectSchema;
-    readonly records: JsonSchema;
-    readonly primaryKey: readonly string[];
-    readonly supportsDelete: boolean;
-  }[];
-}
-
-export type IntegrationManifestV4 = IntegrationManifest & {
-  readonly manifestVersion: 4;
-  readonly hostContractVersion: 4;
-  readonly destinations: NonNullable<IntegrationManifest["destinations"]>;
-};
+export type IntegrationManifest = z.output<typeof IntegrationManifestSchema>;
 
 /** Parse one definition boundary and derive its manifest from the same values. */
 export function parseIntegration(value: unknown): {
   readonly integration: IntegrationDefinition;
-  readonly manifest: IntegrationManifestV4;
+  readonly manifest: IntegrationManifest;
 } {
   const integration = Definition.parse(value) as IntegrationDefinition;
 
@@ -84,21 +35,19 @@ export function parseIntegration(value: unknown): {
 
   if (!integration.displayName.trim()) throw new Error("Integration display name cannot be empty");
 
-  if (!Object.keys(integration.syncs).length && !Object.keys(integration.destinations ?? {}).length)
+  if (!Object.keys(integration.syncs).length && !Object.keys(integration.destinations).length)
     throw new Error("Integration must define at least one sync or destination");
 
   return { integration, manifest: integrationManifest(integration) };
 }
 
-export function createIntegrationManifest(
-  integration: IntegrationDefinition,
-): IntegrationManifestV4 {
+export function createIntegrationManifest(integration: IntegrationDefinition): IntegrationManifest {
   return parseIntegration(integration).manifest;
 }
 
-function integrationManifest(integration: IntegrationDefinition): IntegrationManifestV4 {
+function integrationManifest(integration: IntegrationDefinition): IntegrationManifest {
   return {
-    manifestVersion: 4,
+    manifestVersion: 5,
     hostContractVersion: HOST_CONTRACT_VERSION,
     integration: {
       key: integration.key,
@@ -110,49 +59,20 @@ function integrationManifest(integration: IntegrationDefinition): IntegrationMan
     syncs: Object.entries(integration.syncs).map(([key, sync]) => {
       validateKey(key);
 
-      const mode = sync.mode ?? "append";
-
-      if (mode !== "append" && mode !== "replace" && mode !== "merge") {
-        throw new Error(`Sync ${JSON.stringify(key)} has invalid mode ${JSON.stringify(mode)}`);
-      }
-
       const records = jsonSchema(sync.records);
       recordProperties(records, `Sync ${JSON.stringify(key)} records`);
-      const declaredPrimaryKey = sync.primaryKey;
-
-      if (mode !== "merge" && declaredPrimaryKey !== undefined) {
-        throw new Error(`Sync ${JSON.stringify(key)} only merge mode may declare primaryKey`);
-      }
-
-      const primaryKey = mode === "merge" ? declaredPrimaryKey : undefined;
-
-      if (mode === "merge") {
-        if (hasRootOverwrite(sync.records)) {
-          throw new Error(
-            `Sync ${JSON.stringify(key)} merge records cannot use root-level overwrite(); normalize individual fields instead`,
-          );
-        }
-
-        if (!primaryKey || primaryKey.length === 0) {
-          throw new Error(`Sync ${JSON.stringify(key)} merge mode requires a primary key`);
-        }
-
-        validatePrimaryKey(records, primaryKey, `Sync ${JSON.stringify(key)}`);
-      }
 
       return {
         key,
         displayName: sync.displayName ?? key,
-        mode,
         inputs: objectManifest(sync.inputs),
         records,
-        ...(primaryKey === undefined ? {} : { primaryKey }),
         ...(sync.checkpoint === undefined
           ? {}
           : { checkpoint: jsonSchema(sync.checkpoint, "input") }),
       };
     }),
-    destinations: Object.entries(integration.destinations ?? {}).map(([key, destination]) => {
+    destinations: Object.entries(integration.destinations).map(([key, destination]) => {
       validateKey(key);
       const label = `Destination ${JSON.stringify(key)}`;
 
@@ -265,59 +185,63 @@ function hasRootOverwrite(schema: z.ZodObject): boolean {
   return schema._zod.def.checks?.some((check) => check._zod.def.check === "overwrite") ?? false;
 }
 
-const JsonSchemaValue = z.record(z.string(), z.json());
+const JsonSchemaValue: z.ZodType<JsonSchema> = z.record(z.string(), z.json());
 const InputObject = z.custom<InputObjectSchema>((value) => {
   const parsed = InputFieldSchema.safeParse(value);
 
   return parsed.success && parsed.data.type === "object";
 });
-const ManifestV3 = z.strictObject({
-  manifestVersion: z.literal(3),
-  hostContractVersion: z.literal(3),
-  integration: z.strictObject({
-    key: z.string(),
-    displayName: z.string(),
-    description: z.string().optional(),
-    icon: z.enum(["icon.png", "icon.webp"]).optional(),
-  }),
-  connection: z.strictObject({
-    origin: OriginSchema,
-    auth: AuthManifestSchema,
-    inputs: InputObject,
-    credentials: InputObject,
-    retry: RetrySchema.optional(),
-    canVerify: z.boolean(),
-  }),
-  syncs: z.array(
-    z.strictObject({
-      key: z.string(),
-      displayName: z.string(),
-      mode: z.enum(["append", "replace", "merge"]),
-      inputs: InputObject,
-      records: JsonSchemaValue,
-      primaryKey: z.array(z.string()).optional(),
-      checkpoint: JsonSchemaValue.optional(),
-    }),
-  ),
-});
-
-export const IntegrationManifestSchema = z.discriminatedUnion("manifestVersion", [
-  ManifestV3,
-  ManifestV3.extend({
-    manifestVersion: z.literal(4),
-    hostContractVersion: z.literal(4),
-    destinations: z.array(
-      z.strictObject({
+export const IntegrationManifestSchema = z
+  .strictObject({
+    manifestVersion: z.literal(5),
+    hostContractVersion: z.literal(5),
+    integration: z
+      .strictObject({
         key: z.string(),
         displayName: z.string(),
+        description: z.string().optional(),
+        icon: z.enum(["icon.png", "icon.webp"]).optional(),
+      })
+      .readonly(),
+    connection: z
+      .strictObject({
+        origin: OriginSchema,
+        auth: AuthManifestSchema,
         inputs: InputObject,
-        records: JsonSchemaValue,
-        primaryKey: z.array(z.string()).min(1),
-        supportsDelete: z.boolean(),
-      }),
-    ),
-  }),
-]);
+        credentials: InputObject,
+        retry: RetrySchema.optional(),
+        canVerify: z.boolean(),
+      })
+      .readonly(),
+    syncs: z
+      .array(
+        z
+          .strictObject({
+            key: z.string(),
+            displayName: z.string(),
+            inputs: InputObject,
+            records: JsonSchemaValue,
+            checkpoint: JsonSchemaValue.optional(),
+          })
+          .readonly(),
+      )
+      .readonly(),
+    destinations: z
+      .array(
+        z
+          .strictObject({
+            key: z.string(),
+            displayName: z.string(),
+            inputs: InputObject,
+            records: JsonSchemaValue,
+            primaryKey: z.array(z.string()).min(1).readonly(),
+            supportsDelete: z.boolean(),
+          })
+          .readonly(),
+      )
+      .readonly(),
+  })
+  .readonly();
 
 const Schema = z.custom<z.ZodType>((value) => value instanceof z.ZodType);
 const ObjectSchema = z.custom<z.ZodObject>((value) => value instanceof z.ZodObject);
@@ -344,8 +268,6 @@ const Definition = z.strictObject({
         records: ObjectSchema,
         inputs: ObjectSchema.optional(),
         checkpoint: Schema.optional(),
-        mode: z.enum(["append", "replace", "merge"]).optional(),
-        primaryKey: z.array(z.string()).optional(),
         run: FunctionSchema,
       }),
     )
@@ -362,7 +284,7 @@ const Definition = z.strictObject({
         run: FunctionSchema,
       }),
     )
-    .optional(),
+    .default({}),
 });
 
 function validateKey(key: string): void {

@@ -28,7 +28,6 @@ import {
   assertSupportedHostContractVersion,
   parseIntegration,
   type IntegrationManifest,
-  type IntegrationManifestV4,
 } from "./manifest.ts";
 
 export {
@@ -37,7 +36,6 @@ export {
   type InputObjectSchema,
   type InputValueSchema,
   type IntegrationManifest,
-  type IntegrationManifestV4,
 } from "./manifest.ts";
 
 const Require = createRequire(import.meta.url);
@@ -110,7 +108,7 @@ export interface BuiltIntegrationIcon {
 
 export interface BuiltIntegration {
   readonly archive: Uint8Array;
-  readonly manifest: IntegrationManifestV4;
+  readonly manifest: IntegrationManifest;
   readonly icon?: BuiltIntegrationIcon;
   readonly sdkVersion: string;
 }
@@ -510,9 +508,9 @@ export async function withIntegration<Value>(
       })
       .parse(manifestValue);
 
-    if (manifest.manifestVersion !== 3 && manifest.manifestVersion !== 4) {
+    if (manifest.manifestVersion !== 5) {
       throw new Error(
-        `Unsupported manifest version ${JSON.stringify(manifest.manifestVersion)}; supported: 3, 4. Upgrade the execution host SDK or rebuild with a supported SDK.`,
+        `Unsupported manifest version ${JSON.stringify(manifest.manifestVersion)}; supported: 5. Upgrade the execution host SDK or rebuild with a supported SDK.`,
       );
     }
 
@@ -524,11 +522,7 @@ export async function withIntegration<Value>(
       "runtime artifact",
     );
 
-    const expected =
-      declared.manifestVersion === 3
-        ? { ...declared, manifestVersion: 4, hostContractVersion: 4, destinations: [] }
-        : declared;
-    if (!isDeepStrictEqual(loaded.manifest, expected))
+    if (!isDeepStrictEqual(loaded.manifest, declared))
       throw new Error("Runtime integration definition does not match its build manifest");
 
     return await action(loaded.integration);
@@ -618,6 +612,8 @@ async function compileIntegration(sourceDirectory: string, outputDirectory: stri
     allowImportingTsExtensions: true,
     declaration: false,
     exactOptionalPropertyTypes: true,
+    // Node may resolve error stacks after the temporary runtime directory is removed.
+    inlineSourceMap: true,
     inlineSources: true,
     noEmit: false,
     noEmitOnError: true,
@@ -629,7 +625,6 @@ async function compileIntegration(sourceDirectory: string, outputDirectory: stri
     rewriteRelativeImportExtensions: true,
     rootDir: sourceDirectory,
     skipLibCheck: true,
-    sourceMap: true,
     sourceRoot: "beetl://source/",
     strict: true,
     types: ["node"],

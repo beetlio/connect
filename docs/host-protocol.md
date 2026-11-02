@@ -1,4 +1,4 @@
-# Process protocol v1
+# Process protocol v2
 
 `node node_modules/@beetlio/connect/dist/server-host.js` runs a built integration
 and exchanges NDJSON with a controller. Embedded hosts use `@beetlio/connect/host`;
@@ -15,7 +15,10 @@ reserved for protocol envelopes; integration logs go to stderr.
 
 ```json
 {
+  "protocolVersion": 2,
   "operation": "sync",
+  "mode": "append",
+  "checkpointing": true,
   "runtimePath": "/runtime/integration.tgz",
   "resultPath": "/run/result.json",
   "syncKey": "contacts",
@@ -28,15 +31,13 @@ reserved for protocol envelopes; integration logs go to stderr.
 ```
 
 `runtimePath` points to a `buildIntegration` artifact, not source. This host supports
-manifest/host contracts v3 and v4 for pull syncs. Destination execution is available
-only through the embedded `runDestinationBatch` API; this protocol has no destination
-operation. Initial requests may omit `protocolVersion` or
-specify `1`; adding it to requests sent to older strict-schema hosts requires a
-coordinated update. Unsupported versions fail before execution. See [compatibility](compatibility.md).
+manifest/host contract v5. Destination execution is embedded only. All requests and
+acknowledgments require `protocolVersion: 2`; older versions fail before execution.
 
-Checkpoints may be any JSON value, including null, or absent. A new replace generation
-starts without one. Continuation supplies the last committed checkpoint for the same
-unpublished generation. Hosted syncs do not use local `outputPath` or `statePath`.
+`mode` defaults to `append`; `checkpointing` defaults to `false`. Only append with
+checkpointing enabled consumes or emits checkpoints. Replace ignores both the supplied
+checkpoint and checkpointing setting and always starts from the beginning. Checkpoints
+can be any JSON value, including null. Hosted syncs do not use local output or state paths.
 
 ## Commit a batch
 
@@ -44,25 +45,22 @@ The process writes one envelope, then waits for an acknowledgment:
 
 ```json
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "kind": "batch",
   "batchId": "batch-uuid",
   "sequence": 0,
   "records": [{ "id": "updated", "name": "Updated" }],
-  "deletedKeys": [{ "id": "deleted" }],
   "checkpoint": { "cursor": "next" }
 }
 ```
 
-Only merge batches may include `deletedKeys`; each deletion contains exactly the
-primary-key fields. The checkpoint belongs to this batch. Limits are 10,000 changes
+Batches contain records and, when enabled, a checkpoint. Limits are 10,000 records
 and 8 MiB per batch. The controller independently bounds and validates each envelope.
-
-Acknowledge only after records, deletions, and checkpoint have been durably committed:
+Acknowledge only after records and any checkpoint have been durably committed.
 
 ```json
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "kind": "batch_committed",
   "batchId": "batch-uuid",
   "action": "continue"
@@ -85,15 +83,18 @@ After execution, the process writes `resultPath`:
   "outcome": "completed",
   "batches": 4,
   "records": 1000,
-  "deleted": 2,
   "checkpoint": { "cursor": "next" }
 }
 ```
 
-`outcome` is `completed` or `continuation_required`. A completed replace segment
-allows atomic publication of the generation. A continuation leaves it unpublished
-and schedules the next segment of the same execution. Append and merge retain their
-committed checkpoints for later refreshes.
+`outcome` is `completed` or `continuation_required`. Replace must complete in one run;
+the controller stages its records and publishes only after success. Append can request
+continuation only with checkpointing enabled and a checkpoint on the acknowledged batch.
+A stop without a checkpoint fails the run.
+
+After a successful run without checkpointing, the controller must clear saved progress.
+Failure must not clear previously saved progress. The embedded API follows the same rule;
+the SDK file sink implements it for local execution.
 
 Validate the result against observed batches and acknowledgments before finalizing.
 The controller also owns cancellation and hard deadlines: terminate the process,
@@ -103,14 +104,12 @@ A cooperative `ctx.signal` alone cannot stop blocking or uncooperative integrati
 ## Manifest and local output
 
 `syncs[].records` is JSON Schema generated from the Zod output schema: a closed,
-non-null root object, with nested objects and arrays allowed. Only merge declares
-`primaryKey`; its fields must be top-level, required, scalar, and non-null. Root-level
-`overwrite()` is forbidden for merge; field normalization applies to records and
-deletion keys alike. Checkpoint schemas cannot rewrite serialized values.
+non-null root object, with nested objects and arrays allowed. Syncs declare neither
+storage mode nor primary keys. Checkpoint schemas cannot rewrite serialized values.
 
 Each consumer owns its supported storage schema subset and rejects manifests it
 cannot map safely. The runtime does not perform destination materialization.
 
-The local CLI uses the same executor with a file sink. Append/replace produce record
-NDJSON; replace stages output until success. Merge writes batch envelopes with records
-and deletions. The file sink does not implement a destination database or merge engine.
+The local CLI uses the same executor with a file sink. Append and replace produce record
+NDJSON; replace stages output until success. Pass `--mode replace` or enable append
+checkpoints with `--checkpointing`. Successful runs without checkpointing remove saved state.

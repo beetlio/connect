@@ -73,7 +73,6 @@ export default defineIntegration({
   connection: { origin: &quot;https://api.github.com&quot; },
   syncs: (sync) =&gt; ({
     users: sync({
-      mode: &quot;replace&quot;,
       records: User,
       async *run(ctx) {
         const user = await ctx.json(&quot;/users/octocat&quot;, User);
@@ -291,19 +290,12 @@ const authentication = auth.tokenExchange({
                   <td><code>replace</code></td>
                   <td>Publish a completed generation as the new dataset.</td>
                 </tr>
-                <tr>
-                  <td><code>merge</code></td>
-                  <td>
-                    Update rows by a required <code>primaryKey</code>. Yield
-                    <code>deletedKeys</code> to remove rows.
-                  </td>
-                </tr>
               </tbody>
             </table>
           </div>
           <p>
-            Merge keys must be required, scalar, non-null fields. Each deletion contains exactly
-            those fields. Only merge syncs accept deletions.
+            The host chooses the mode. Syncs emit records without declaring primary keys or
+            deletions. Replace always fetches from the beginning and ignores checkpoints.
           </p>
           <p>
             Use <code>yield* batchRecords(records)</code> for record-only streams: it groups up to
@@ -313,8 +305,9 @@ const authentication = auth.tokenExchange({
           </p>
           <p>
             For resumable work, declare a <code>checkpoint</code> schema and yield the position to
-            resume <em>after</em> each batch. The host commits records and checkpoint before asking
-            for more data. A failed commit does not advance the checkpoint.
+            resume <em>after</em> each batch. Checkpointing is opt-in for append. When enabled, the
+            host commits records and checkpoint before asking for more data. A failed commit does
+            not advance the checkpoint.
           </p>
           <p>
             Checkpoints are opaque JSON; absent and <code>null</code> are different. Validation must
@@ -437,10 +430,11 @@ npx beetl-connect sync . users --profile demo --output users.ndjson</code></pre>
             system's user configuration directory; they are not encrypted.
           </p>
           <p>
-            <code>sync</code> saves checkpoints under <code>.beetl/state/</code> by default.
-            Override that with <code>--state</code>. Append and replace write record NDJSON; replace
-            publishes the file only after success. Merge writes batch envelopes containing records
-            and deletions.
+            Use <code>--checkpointing</code> to save append progress under
+            <code>.beetl/state/</code>, or choose a path with <code>--state</code>. Use
+            <code>--mode replace</code> to publish a complete replacement after success. Both modes
+            write record NDJSON. Successful runs without checkpointing clear saved progress; failed
+            runs preserve it.
           </p>
           <h3>Package for Beetl</h3>
           <pre><code class="language-sh">npx beetl-connect pack . --output github.tgz</code></pre>
@@ -492,8 +486,8 @@ npx beetl-connect sync . users --profile demo --output users.ndjson</code></pre>
             >.
           </p>
           <p>
-            SDK 0.4 builds manifest v4 and host contract v4, and supports existing v3 pull artifacts
-            and source. The process protocol remains v1.
+            SDK 0.5 builds manifest v5 and host contract v5. Older artifacts must be rebuilt. The
+            process protocol is v2.
           </p>
         </section>
         <footer>

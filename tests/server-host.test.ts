@@ -101,7 +101,7 @@ export default defineIntegration({
     };
   };
 
-  assert.equal(inspected.manifest.manifestVersion, 4);
+  assert.equal(inspected.manifest.manifestVersion, 5);
   assert.equal(inspected.manifest.integration.key, "fixture");
 
   const credentials = { clientId: "client-id", clientSecret: "client-secret" };
@@ -157,6 +157,8 @@ export default defineIntegration({
 
   const resultPath = join(directory, "sync.json");
   const syncRequest = {
+    protocolVersion: 2,
+    checkpointing: true,
     operation: "sync",
     runtimePath,
     resultPath,
@@ -176,13 +178,12 @@ export default defineIntegration({
     outcome: "completed",
     batches: 1,
     records: 1,
-    deleted: 0,
     checkpoint: { cursor: "next" },
     authorizationState: { accessToken: "access-token", tokenFields: {} },
   });
 
   const batch = {
-    protocolVersion: 1,
+    protocolVersion: 2,
     kind: "batch",
     batchId: completed.batches[0]?.batchId,
     sequence: 0,
@@ -193,8 +194,8 @@ export default defineIntegration({
   assert.deepEqual(completed.batches, [batch]);
 
   const yielded = await runRuntimeHost(
-    { ...syncRequest, protocolVersion: 1 },
-    { protocolVersion: 1, action: "yield" },
+    { ...syncRequest, protocolVersion: 2 },
+    { protocolVersion: 2, action: "yield" },
   );
   const continuation = JSON.parse(await readFile(resultPath, "utf8"));
 
@@ -204,7 +205,7 @@ export default defineIntegration({
 
   const resumed = await runRuntimeHost({
     ...syncRequest,
-    protocolVersion: 1,
+    protocolVersion: 2,
     checkpoint: continuation.checkpoint,
   });
 
@@ -214,14 +215,13 @@ export default defineIntegration({
     outcome: "completed",
     batches: 0,
     records: 0,
-    deleted: 0,
     checkpoint: continuation.checkpoint,
     authorizationState: { accessToken: "access-token", tokenFields: {} },
   });
 
   const checkpoint = await runRuntimeHost({
     ...syncRequest,
-    protocolVersion: 1,
+    protocolVersion: 2,
     syncConfig: { suffix: "checkpoint" },
     checkpoint: null,
   });
@@ -233,7 +233,7 @@ export default defineIntegration({
   const badAck = await runRuntimeHost(syncRequest, { protocolVersion: 999, action: "continue" });
 
   assert.equal(badAck.status, 1);
-  assert.match(badAck.stderr, /Unsupported execution protocol version 999.*supported: 1/);
+  assert.match(badAck.stderr, /Unsupported execution protocol version 999.*supported: 2/);
 
   const oversized = await runRuntimeHost({
     ...syncRequest,
@@ -274,6 +274,8 @@ test("server host rejects invalid initial requests without waiting for stdin to 
     ["not-json\n", /Host request is not valid JSON/],
     [Buffer.alloc(4 * 1024 * 1024 + 1, 0x20), /Host request is too large/],
     ['{"protocolVersion":999}\n', /Unsupported execution protocol version 999.*Upgrade/],
+    ['{"protocolVersion":1}\n', /Unsupported execution protocol version 1.*Upgrade/],
+    ["{}\n", /Unsupported execution protocol version undefined.*Upgrade/],
   ] as const) {
     const child = spawn(process.execPath, [HostPath], { stdio: ["pipe", "ignore", "pipe"] });
 
@@ -301,7 +303,7 @@ test("server host rejects invalid initial requests without waiting for stdin to 
 async function runRuntimeHost(
   request: object,
   acknowledgment: { readonly protocolVersion: number; readonly action: "continue" | "yield" } = {
-    protocolVersion: 1,
+    protocolVersion: 2,
     action: "continue",
   },
 ) {
@@ -320,7 +322,7 @@ async function runRuntimeHost(
   const output = createInterface({ input: child.stdout, crlfDelay: Infinity });
   const batches: Record<string, unknown>[] = [];
 
-  child.stdin.write(`${JSON.stringify(request)}\n`);
+  child.stdin.write(`${JSON.stringify({ protocolVersion: 2, ...request })}\n`);
 
   try {
     for await (const line of output) {
@@ -357,7 +359,7 @@ async function runHost(request: object): Promise<string> {
 
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => (stderr += chunk));
-  child.stdin.end(JSON.stringify(request));
+  child.stdin.end(JSON.stringify({ protocolVersion: 2, ...request }));
 
   const [status] = (await once(child, "close")) as [number | null];
 

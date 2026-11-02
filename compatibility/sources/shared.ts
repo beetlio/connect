@@ -1,13 +1,11 @@
 import { HttpError, batchRecords, defineIntegration, storageRecord, z } from "@beetlio/connect";
 import type { IntegrationDefinition } from "@beetlio/connect";
 
-export function defineFixture(definition: Omit<IntegrationDefinition, "syncs">) {
+export function defineFixture(definition: Omit<IntegrationDefinition, "syncs" | "destinations">) {
   return defineIntegration({
     ...definition,
     syncs: (sync) => ({
       items: sync({
-        mode: "merge",
-        primaryKey: ["id"],
         records: z.object({ id: z.string() }),
         checkpoint: z.json(),
         async *run(ctx) {
@@ -31,7 +29,6 @@ export function defineFixture(definition: Omit<IntegrationDefinition, "syncs">) 
             })) {
               yield {
                 records: page.data.records,
-                ...(page.data.next == null ? { deletedKeys: [{ id: "gone" }] } : {}),
                 checkpoint: { cursor: page.data.next ?? null, opaque: ["keep", null, false, 0] },
               };
             }
@@ -54,7 +51,6 @@ export function defineFixture(definition: Omit<IntegrationDefinition, "syncs">) 
         },
       }),
       projected: sync({
-        mode: "replace",
         records: storageRecord(
           z.object({ id: z.string(), metadata: z.record(z.string(), z.json()) }),
         ),

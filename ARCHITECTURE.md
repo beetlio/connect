@@ -36,10 +36,12 @@ The loader rejects unsupported manifest and host versions before importing code.
 The artifact's entry point checks its definition against the build manifest.
 A source package must be built before it can be used as a runtime artifact.
 
-`runSync` validates inputs, records, deletions, and checkpoints. It requests one
+`runSync` validates inputs, records, and enabled checkpoints. It requests one
 batch from the generator, awaits `host.commit`, then advances. `stop` closes the
 generator and returns `continuation_required`; that batch must carry a checkpoint.
-A failed commit never advances the checkpoint. Checkpoint validation cannot change
+Append defaults to checkpointing off. Replace ignores checkpoints and publishes only
+after the full run succeeds. Successful runs without checkpointing clear saved progress;
+failed runs leave previous progress intact. A failed commit never advances the checkpoint. Checkpoint validation cannot change
 the serialized value, including the distinction between absent and `null`.
 
 `runDestinationBatch` accepts one host-prepared batch of upserts and optional deletion
@@ -50,16 +52,16 @@ The integration must implement safe repeated upserts and deletions.
 
 Destination manifests describe the accepted record input schema for host field mapping.
 Configuration stays in `inputs`; runtime contexts expose it as `config.destination`.
-Manifest and host contract v4 add destinations; v3 artifacts retain pull support.
+Manifest and host contract v5 support syncs and destinations; older artifacts are rejected.
 
 ## Ownership
 
 - **Integration:** provider endpoints, response schemas, pagination, record mapping,
-  sync mode, checkpoint meaning, and remote upsert/deletion behavior. Credentials stay
+  checkpoint meaning, and remote upsert/deletion behavior. Credentials stay
   outside execution contexts, though package code shares the provider's process.
 - **SDK provider:** origin restrictions, credential injection, token exchange, OAuth
   refresh, retries, and response limits. Verification uses this same request path.
-- **Host:** committing records and checkpoints, destination state, execution deadlines,
+- **Host:** choosing append or replace and enabling checkpointing, committing records and checkpoints, destination state, execution deadlines,
   and isolation. Beetl also owns package admission and its SDK upgrade gate.
   For outbound delivery it owns change detection, mapping, removal policy, immutable
   pending batches, ordering, and durable acknowledgments. Beetl Core will supply CDC
