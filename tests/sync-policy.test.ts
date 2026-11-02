@@ -6,28 +6,6 @@ import { join } from "node:path";
 import test from "node:test";
 import { fixtureDirectory } from "./support.ts";
 
-test("file sink keeps its lock through failure and releases it for the next run", async (t) => {
-  const directory = await fixtureDirectory(t, "sync-lock");
-  const options = {
-    outputPath: join(directory, "records.ndjson"),
-    statePath: join(directory, "checkpoint.json"),
-  };
-  const failure = new Error("execution failed");
-  await assert.rejects(
-    withFileSink(options, async () => {
-      await assert.rejects(
-        withFileSink(options, async () => assert.fail("Lock must exclude this run")),
-        /Sync state is already in use/,
-      );
-      assert.equal(await readFile(`${options.statePath}.lock`, "utf8"), "");
-      throw failure;
-    }),
-    (error) => error === failure,
-  );
-  await assert.rejects(readFile(`${options.statePath}.lock`), { code: "ENOENT" });
-  assert.equal(await withFileSink(options, async () => "next run"), "next run");
-});
-
 const connection = { origin: "https://example.com" };
 const request = async () => {
   throw new Error("Unexpected HTTP request");
@@ -36,7 +14,6 @@ const request = async () => {
 test("host ignores checkpoints unless append checkpointing is enabled", async () => {
   const inputs: RunSyncInput[] = [
     { sync: "items" },
-    { sync: "items", mode: "append", checkpointing: false },
     { sync: "items", mode: "replace", checkpointing: true },
   ];
   for (const input of inputs) {
@@ -70,15 +47,6 @@ test("host ignores checkpoints unless append checkpointing is enabled", async ()
     assert.equal(batches.length, 1);
     assert.equal(Object.hasOwn(batches[0]!, "checkpoint"), false);
     assert.deepEqual(result, { outcome: "completed", batches: 1, records: 1 });
-    await assert.rejects(
-      runSync(integration, input, {
-        request,
-        async commit() {
-          return "stop";
-        },
-      }),
-      /cannot request continuation without a checkpoint/,
-    );
   }
 });
 

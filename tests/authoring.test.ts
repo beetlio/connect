@@ -209,6 +209,13 @@ function checkAuthoringTypes() {
           yield { records: [], checkpoint: 1 };
         },
       }),
+      deletions: sync({
+        records: z.object({ id: z.string() }),
+        // @ts-expect-error Sync batches cannot emit deletion events.
+        async *run() {
+          yield { records: [], deletedKeys: [{ id: "gone" }] };
+        },
+      }),
       good: sync({
         records: z.object({ id: z.string() }),
         inputs: z.strictObject({ limit: z.number().default(10) }),

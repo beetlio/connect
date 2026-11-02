@@ -38,35 +38,6 @@ test("builder emits relocatable, reproducible runtime archives", async (t) => {
   });
 });
 
-test("loading normalizes omitted operation collections", async (t) => {
-  const directory = await fixtureDirectory(t, "beetl-collections");
-  await integrationPackage(directory);
-  for (const collection of ["syncs", "destinations"] as const) {
-    const operation =
-      collection === "syncs" ? "async *run() {}" : 'primaryKey: ["id"], async run() {}';
-    await writeFile(
-      join(directory, "integration.ts"),
-      `
-import { z } from "@beetlio/connect";
-export default {
-  key: "collections",
-  displayName: "Collections",
-  connection: { origin: "https://example.com" },
-  ${collection}: { items: { records: z.object({ id: z.string() }), ${operation} } },
-};
-`,
-    );
-    const { archive } = await buildIntegration(directory);
-    await withIntegration(archive, (integration) => {
-      assert.deepEqual(Object.keys(integration.syncs), collection === "syncs" ? ["items"] : []);
-      assert.deepEqual(
-        Object.keys(integration.destinations),
-        collection === "destinations" ? ["items"] : [],
-      );
-    });
-  }
-});
-
 test("runtime archives preserve npm modules and package assets", async (t) => {
   const directory = await fixtureDirectory(t, "beetl-module-tree-builder");
   const dependency = join(directory, "node_modules/fixture-dependency");

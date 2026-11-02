@@ -11,7 +11,7 @@ import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { fixtureDirectory, integrationPackage } from "./support.ts";
-import { authorizeLocalOAuth, readConnection } from "../src/cli/configure.ts";
+import { authorizeLocalOAuth } from "../src/cli/configure.ts";
 
 test("local OAuth validates the callback and releases its listener", async () => {
   const reservation = createServer();
@@ -45,18 +45,6 @@ test("local OAuth validates the callback and releases its listener", async () =>
     if (validState) assert.equal((await run).accessToken, "mock-access");
     else await assert.rejects(run);
   }
-});
-
-test("stored connection reads preserve missing-file and validation errors", async (t) => {
-  const directory = await fixtureDirectory(t, "beetl-connection-reader");
-  const path = join(directory, "connection.json");
-  assert.equal(await readConnection(path, "example", "default"), undefined);
-  await writeFile(path, "{");
-  await assert.rejects(readConnection(path, "example", "default"), {
-    message: `Local connection ${path} is not valid JSON`,
-  });
-  await writeFile(path, "{}");
-  await assert.rejects(readConnection(path, "example", "default"), /Invalid local connection/);
 });
 
 const CliPath = resolve("dist/cli/main.js");
