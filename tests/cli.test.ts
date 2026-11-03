@@ -238,15 +238,7 @@ export default defineIntegration({
 
   const sourceState = join(directory, "source-state.json");
   const sync = () =>
-    runCli(workingDirectory, [
-      "sync",
-      directory,
-      "--checkpointing",
-      "--output",
-      sourceOutput,
-      "--state",
-      sourceState,
-    ]);
+    runCli(workingDirectory, ["sync", directory, "--output", sourceOutput, "--state", sourceState]);
   const sourceSync = sync();
 
   assert.equal(sourceSync.status, 0, sourceSync.stderr);
@@ -419,7 +411,7 @@ export default defineIntegration({
       process.execPath,
       ["--import", pathToFileURL(bootstrap).href, resolve("dist/server-host.js")],
       {
-        input: `${JSON.stringify({ protocolVersion: 2, ...request, credentials: storedConnection.credentials })}\n`,
+        input: `${JSON.stringify({ protocolVersion: 3, ...request, credentials: storedConnection.credentials })}\n`,
         encoding: "utf8",
         timeout: 30_000,
       },

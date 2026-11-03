@@ -1,16 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
-import { BatchSchema, SyncOptionsSchema } from "./execution-schema.ts";
+import { z } from "zod";
+import { BatchSchema } from "./execution-schema.ts";
 import type { EmittedBatch } from "./host.ts";
-import type { JsonValue, SyncMode } from "./index.ts";
+import type { JsonValue } from "./index.ts";
 import { jsonSnapshot } from "./json.ts";
 
 export interface FileSinkOptions {
   readonly outputPath: string;
   readonly statePath: string;
-  readonly mode?: SyncMode;
-  readonly checkpointing?: boolean;
+  /** Append resumes from saved state; replace starts over and publishes after success. */
+  readonly mode?: "append" | "replace";
 }
 
 export async function withFileSink<T>(
@@ -21,8 +22,7 @@ export async function withFileSink<T>(
   }) => Promise<T>,
 ): Promise<T> {
   const { outputPath, statePath } = options;
-  const { mode, checkpointing: requestedCheckpointing } = SyncOptionsSchema.parse(options);
-  const checkpointing = mode === "append" && requestedCheckpointing;
+  const mode = z.enum(["append", "replace"]).default("append").parse(options.mode);
 
   return withFileLock(
     `${statePath}.lock`,
@@ -31,6 +31,9 @@ export async function withFileSink<T>(
       const temporary = mode === "replace" ? `${outputPath}.tmp-${randomUUID()}` : undefined;
       const path = temporary ?? outputPath;
       let closed = false;
+      // Replace saves its final checkpoint with the published output, so a failed run
+      // keeps the state that matches the previous output.
+      let replacementCheckpoint: JsonValue | undefined;
 
       try {
         await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -43,7 +46,7 @@ export async function withFileSink<T>(
 
         let checkpoint: JsonValue | undefined;
 
-        if (checkpointing) {
+        if (mode === "append") {
           try {
             checkpoint = jsonSnapshot(
               JSON.parse(await readFile(statePath, "utf8")),
@@ -60,7 +63,9 @@ export async function withFileSink<T>(
           async commit(batch) {
             if (closed) throw new Error("File sink is closed");
 
-            BatchSchema.parse(jsonSnapshot(batch, "Invalid file batch"));
+            const { checkpoint: next } = BatchSchema.parse(
+              jsonSnapshot(batch, "Invalid file batch"),
+            );
 
             const data = batch.records.map((record) => JSON.stringify(record) + "\n").join("");
             const file = await open(path, "a", 0o600);
@@ -73,15 +78,21 @@ export async function withFileSink<T>(
               await file.close();
             }
 
-            if (checkpointing && batch.checkpoint !== undefined)
-              await replacePrivateFile(statePath, JSON.stringify(batch.checkpoint) + "\n");
+            if (next !== undefined) {
+              if (temporary) replacementCheckpoint = next;
+              else await replacePrivateFile(statePath, JSON.stringify(next) + "\n");
+            }
 
             return "continue";
           },
         });
 
-        if (temporary) await rename(temporary, outputPath);
-        if (!checkpointing) await rm(statePath, { force: true });
+        if (temporary) {
+          await rename(temporary, outputPath);
+
+          if (replacementCheckpoint === undefined) await rm(statePath, { force: true });
+          else await replacePrivateFile(statePath, JSON.stringify(replacementCheckpoint) + "\n");
+        }
 
         return result;
       } finally {

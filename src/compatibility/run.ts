@@ -40,8 +40,6 @@ const ScenarioSchema = z.strictObject({
     authorizationState: OAuthAuthorizationStateSchema.optional(),
     syncKey: z.string().optional(),
     checkpoint: z.json().optional(),
-    mode: z.enum(["append", "replace"]).optional(),
-    checkpointing: z.boolean().optional(),
     redirectUri: z.url().optional(),
     destinationKey: z.string().optional(),
     destinationConfig: z.record(z.string(), z.json()).optional(),
@@ -215,8 +213,6 @@ async function execute(integration: IntegrationDefinition, scenario: Scenario): 
         integration,
         {
           sync: input.syncKey!,
-          mode: input.mode ?? "append",
-          checkpointing: input.checkpointing ?? false,
           connectionConfig: input.connectionConfig,
           ...(input.checkpoint === undefined ? {} : { checkpoint: input.checkpoint }),
         },

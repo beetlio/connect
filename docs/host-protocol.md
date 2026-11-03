@@ -1,4 +1,4 @@
-# Process protocol v2
+# Process protocol v3
 
 `node node_modules/@beetlio/connect/dist/server-host.js` runs a built integration
 and exchanges NDJSON with a controller. Embedded hosts use `@beetlio/connect/host`;
@@ -15,10 +15,8 @@ reserved for protocol envelopes; integration logs go to stderr.
 
 ```json
 {
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "operation": "sync",
-  "mode": "append",
-  "checkpointing": true,
   "runtimePath": "/runtime/integration.tgz",
   "resultPath": "/run/result.json",
   "syncKey": "contacts",
@@ -32,12 +30,12 @@ reserved for protocol envelopes; integration logs go to stderr.
 
 `runtimePath` points to a `buildIntegration` artifact, not source. This host supports
 manifest/host contract v5. Destination execution is embedded only. All requests and
-acknowledgments require `protocolVersion: 2`; older versions fail before execution.
+acknowledgments require `protocolVersion: 3`; older versions fail before execution.
 
-`mode` defaults to `append`; `checkpointing` defaults to `false`. Only append with
-checkpointing enabled consumes or emits checkpoints. Replace ignores both the supplied
-checkpoint and checkpointing setting and always starts from the beginning. Checkpoints
-can be any JSON value, including null. Hosted syncs do not use local output or state paths.
+The request carries no storage mode. Supply `checkpoint` only to resume a sync that
+declares a checkpoint schema; omit it to start from the beginning, for example when
+replacing data. Checkpoints can be any JSON value, including null. Hosted syncs do not
+use local output or state paths.
 
 ## Commit a batch
 
@@ -45,7 +43,7 @@ The process writes one envelope, then waits for an acknowledgment:
 
 ```json
 {
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "kind": "batch",
   "batchId": "batch-uuid",
   "sequence": 0,
@@ -54,13 +52,13 @@ The process writes one envelope, then waits for an acknowledgment:
 }
 ```
 
-Batches contain records and, when enabled, a checkpoint. Limits are 10,000 records
+Batches contain records and, for syncs with a checkpoint schema, an optional checkpoint. Limits are 10,000 records
 and 8 MiB per batch. The controller independently bounds and validates each envelope.
 Acknowledge only after records and any checkpoint have been durably committed.
 
 ```json
 {
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "kind": "batch_committed",
   "batchId": "batch-uuid",
   "action": "continue"
@@ -87,14 +85,14 @@ After execution, the process writes `resultPath`:
 }
 ```
 
-`outcome` is `completed` or `continuation_required`. Replace must complete in one run;
-the controller stages its records and publishes only after success. Append can request
-continuation only with checkpointing enabled and a checkpoint on the acknowledged batch.
-A stop without a checkpoint fails the run.
+`outcome` is `completed` or `continuation_required`. Continuation requires a checkpoint
+on the acknowledged batch; a stop without a checkpoint fails the run.
 
-After a successful run without checkpointing, the controller must clear saved progress.
-Failure must not clear previously saved progress. The embedded API follows the same rule;
-the SDK file sink implements it for local execution.
+Append or replace is controller policy; the process behaves the same for both. When
+replacing, the controller stages records across the run and any continuations and
+publishes them, with the final checkpoint, only after the last segment completes.
+Saved progress must match published data, so failure must not change it. The SDK file
+sink implements this rule for local execution.
 
 Validate the result against observed batches and acknowledgments before finalizing.
 The controller also owns cancellation and hard deadlines: terminate the process,
@@ -111,5 +109,6 @@ Each consumer owns its supported storage schema subset and rejects manifests it
 cannot map safely. The runtime does not perform destination materialization.
 
 The local CLI uses the same executor with a file sink. Append and replace produce record
-NDJSON; replace stages output until success. Pass `--mode replace` or enable append
-checkpoints with `--checkpointing`. Successful runs without checkpointing remove saved state.
+NDJSON. Append resumes from and saves checkpoints. `--mode replace` starts from the
+beginning, stages output until success, and then saves its final checkpoint or clears
+saved state.

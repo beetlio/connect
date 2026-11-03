@@ -1,37 +1,48 @@
 # Compatibility
 
-SDK 0.5 uses manifest v5, host contract v5, and process protocol v2. Older source
-definitions and artifacts are unsupported; frozen artifacts remain unchanged rejection fixtures.
+SDK 0.6 uses manifest v5, host contract v5, and process protocol v3. Source definitions
+and artifacts from before SDK 0.5 are unsupported; frozen artifacts remain unchanged
+rejection fixtures.
 
 ## Sync contract
 
-Integrations emit records and optional schema-defined checkpoints. They do not choose
-a storage mode, declare sync primary keys, or emit deletions. Without a supplied checkpoint
-they start from the beginning; with one they resume from that position.
+Integrations emit records and, when the sync declares a checkpoint schema, checkpoints.
+They do not choose a storage mode, declare sync primary keys, or emit deletions. Without
+a supplied checkpoint they start from the beginning; with one they resume from that position.
 
-The host chooses `mode: "append" | "replace"` (default append) and `checkpointing`
-(default false). Replace always ignores checkpoints. Append consumes and emits them
-only when checkpointing is enabled. Disabled checkpoints are ignored, including their
-validation. Enabled checkpoints must be JSON-compatible and validation cannot change
-their serialized value; absent and null are distinct.
+Checkpoints follow the sync definition, not an execution option. For a sync with a
+checkpoint schema, a supplied checkpoint is validated and passed in, and emitted
+checkpoints are validated and returned on their batch. Supplying a checkpoint to a sync
+without a schema is an error. Checkpoints must be JSON-compatible and validation cannot
+change their serialized value; absent and null are distinct.
 
 The host commits each batch before the generator advances. A failed commit cannot
-advance progress. Continuation requires an enabled checkpoint on the stopping batch.
-Replace stages records and publishes the complete dataset only after success, including
-an empty dataset. Successful runs without checkpointing clear saved progress; failed
-runs preserve it. Append does not deduplicate records or update existing rows.
+advance progress. Continuation requires a checkpoint on the stopping batch.
+
+Append or replace is host storage policy; execution is identical for both. A replacing
+host starts without a checkpoint, stages records, and publishes the complete dataset
+only after the run and any continuations succeed, including an empty dataset. Saved
+progress must match published data, so failed runs preserve it. Append does not
+deduplicate records or update existing rows.
 
 Credential injection, origin restrictions, retries, OAuth refresh persistence, cancellation,
 and error precedence remain SDK responsibilities. Hosts settle authentication before
 reporting success. Integration and cleanup failures must remain visible.
 
+## Migration from 0.5
+
+Integration code and built artifacts are unchanged. Remove `mode` and `checkpointing`
+from `runSync` input and process requests, and send protocol v3. Checkpoints flow
+whenever the sync declares a schema; omit the checkpoint to start over. `SyncMode` is no
+longer exported. The CLI drops `--checkpointing`: syncs with a checkpoint save and resume
+progress, and `--mode replace` starts from the beginning.
+
 ## Migration from 0.4
 
 Remove `mode` and `primaryKey` from sync definitions and `deletedKeys` from emitted
-sync batches. Select mode at execution time and explicitly enable checkpointing where
-needed. Sync results no longer contain a deletion count. Rebuild integrations with this
-SDK; update process requests and acknowledgments to protocol v2. CLI flags are
-`--mode append|replace` and `--checkpointing`. Destination behavior is unchanged.
+sync batches; the host chooses how records are stored. Sync results no longer contain a
+deletion count. Rebuild integrations with SDK 0.5 or later, then apply the 0.5 migration
+above. Destination behavior is unchanged.
 
 Author `syncs` and `destinations` through callbacks passed to `defineIntegration`.
 Both collections are optional when authoring and always present after normalization.

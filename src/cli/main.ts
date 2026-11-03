@@ -10,14 +10,13 @@ import { object, or } from "@optique/core/constructs";
 import { message } from "@optique/core/message";
 import { optional } from "@optique/core/modifiers";
 import { argument, command, constant, option } from "@optique/core/primitives";
-import { json, string, url } from "@optique/core/valueparser";
+import { choice, json, string, url } from "@optique/core/valueparser";
 import { run } from "@optique/run";
 import { path as pathValue } from "@optique/run/valueparser";
 import { z } from "zod";
 
 import { buildIntegration, packIntegration, withIntegration } from "../artifact.ts";
 import { replacePrivateFile, withFileSink, withFileLock } from "../file-sink.ts";
-import { SyncOptionsSchema } from "../execution-schema.ts";
 import { runSync } from "../host.ts";
 import { withAuthenticationSettlement } from "../provider.ts";
 
@@ -120,13 +119,8 @@ const Cli = or(
         }),
       ),
       mode: optional(
-        option("--mode", string({ pattern: /^(append|replace)$/ }), {
+        option("--mode", choice(["append", "replace"]), {
           description: message`Storage mode: append (default) or replace.`,
-        }),
-      ),
-      checkpointing: optional(
-        option("--checkpointing", {
-          description: message`Resume and save checkpoints in append mode.`,
         }),
       ),
       statePath: optional(
@@ -262,14 +256,17 @@ async function main(args = process.argv.slice(2)): Promise<void> {
         });
 
         try {
-          const syncOptions = SyncOptionsSchema.parse(options);
-          const result = await withFileSink({ outputPath, statePath, ...syncOptions }, (sink) =>
+          const sinkOptions = {
+            outputPath,
+            statePath,
+            ...(options.mode === undefined ? {} : { mode: options.mode }),
+          };
+          const result = await withFileSink(sinkOptions, (sink) =>
             withAuthenticationSettlement(provider, () =>
               runSync(
                 integration,
                 {
                   sync: syncKey,
-                  ...syncOptions,
                   connectionConfig: connection.inputs,
                   syncConfig: configuration.inputs,
                   ...(sink.checkpoint === undefined ? {} : { checkpoint: sink.checkpoint }),

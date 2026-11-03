@@ -157,8 +157,7 @@ export default defineIntegration({
 
   const resultPath = join(directory, "sync.json");
   const syncRequest = {
-    protocolVersion: 2,
-    checkpointing: true,
+    protocolVersion: 3,
     operation: "sync",
     runtimePath,
     resultPath,
@@ -183,7 +182,7 @@ export default defineIntegration({
   });
 
   const batch = {
-    protocolVersion: 2,
+    protocolVersion: 3,
     kind: "batch",
     batchId: completed.batches[0]?.batchId,
     sequence: 0,
@@ -194,8 +193,8 @@ export default defineIntegration({
   assert.deepEqual(completed.batches, [batch]);
 
   const yielded = await runRuntimeHost(
-    { ...syncRequest, protocolVersion: 2 },
-    { protocolVersion: 2, action: "yield" },
+    { ...syncRequest, protocolVersion: 3 },
+    { protocolVersion: 3, action: "yield" },
   );
   const continuation = JSON.parse(await readFile(resultPath, "utf8"));
 
@@ -205,7 +204,7 @@ export default defineIntegration({
 
   const resumed = await runRuntimeHost({
     ...syncRequest,
-    protocolVersion: 2,
+    protocolVersion: 3,
     checkpoint: continuation.checkpoint,
   });
 
@@ -221,7 +220,7 @@ export default defineIntegration({
 
   const checkpoint = await runRuntimeHost({
     ...syncRequest,
-    protocolVersion: 2,
+    protocolVersion: 3,
     syncConfig: { suffix: "checkpoint" },
     checkpoint: null,
   });
@@ -233,7 +232,7 @@ export default defineIntegration({
   const badAck = await runRuntimeHost(syncRequest, { protocolVersion: 999, action: "continue" });
 
   assert.equal(badAck.status, 1);
-  assert.match(badAck.stderr, /Unsupported execution protocol version 999.*supported: 2/);
+  assert.match(badAck.stderr, /Unsupported execution protocol version 999.*supported: 3/);
 
   const oversized = await runRuntimeHost({
     ...syncRequest,
@@ -274,7 +273,7 @@ test("server host rejects invalid initial requests without waiting for stdin to 
     ["not-json\n", /Host request is not valid JSON/],
     [Buffer.alloc(4 * 1024 * 1024 + 1, 0x20), /Host request is too large/],
     ['{"protocolVersion":999}\n', /Unsupported execution protocol version 999.*Upgrade/],
-    ['{"protocolVersion":1}\n', /Unsupported execution protocol version 1.*Upgrade/],
+    ['{"protocolVersion":2}\n', /Unsupported execution protocol version 2.*Upgrade/],
     ["{}\n", /Unsupported execution protocol version undefined.*Upgrade/],
   ] as const) {
     const child = spawn(process.execPath, [HostPath], { stdio: ["pipe", "ignore", "pipe"] });
@@ -303,7 +302,7 @@ test("server host rejects invalid initial requests without waiting for stdin to 
 async function runRuntimeHost(
   request: object,
   acknowledgment: { readonly protocolVersion: number; readonly action: "continue" | "yield" } = {
-    protocolVersion: 2,
+    protocolVersion: 3,
     action: "continue",
   },
 ) {
@@ -322,7 +321,7 @@ async function runRuntimeHost(
   const output = createInterface({ input: child.stdout, crlfDelay: Infinity });
   const batches: Record<string, unknown>[] = [];
 
-  child.stdin.write(`${JSON.stringify({ protocolVersion: 2, ...request })}\n`);
+  child.stdin.write(`${JSON.stringify({ protocolVersion: 3, ...request })}\n`);
 
   try {
     for await (const line of output) {
@@ -359,7 +358,7 @@ async function runHost(request: object): Promise<string> {
 
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => (stderr += chunk));
-  child.stdin.end(JSON.stringify({ protocolVersion: 2, ...request }));
+  child.stdin.end(JSON.stringify({ protocolVersion: 3, ...request }));
 
   const [status] = (await once(child, "close")) as [number | null];
 

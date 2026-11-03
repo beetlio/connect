@@ -26,8 +26,6 @@ export type JsonValue = JSONType;
 
 export type JsonObject = { readonly [key: string]: JsonValue | undefined };
 
-export type SyncMode = "append" | "replace";
-
 export type SyncFetchInit = Pick<RequestInit, "body" | "headers" | "method" | "signal">;
 
 export interface RetryPolicy {

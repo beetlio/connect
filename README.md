@@ -75,9 +75,8 @@ npx beetl-connect sync . users --output users.ndjson
 
 `users.ndjson` contains one validated GitHub user record. Continue with the
 [user guide](https://beetlio.github.io/connect/) for authentication, pagination,
-checkpoints, and packaging for Beetl. The host chooses append (default) or replace;
-checkpointing is opt-in for append. Use `--mode replace` for a full replacement or
-`--checkpointing` to resume append runs.
+checkpoints, and packaging for Beetl. Syncs with a checkpoint resume from saved progress;
+use `--mode replace` to start over and publish a full replacement.
 
 ## Development
 

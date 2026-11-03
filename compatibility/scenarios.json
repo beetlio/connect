@@ -66,9 +66,7 @@
             "credentials": {
               "token": "bearer"
             },
-            "syncKey": "items",
-            "mode": "append",
-            "checkpointing": true
+            "syncKey": "items"
           },
           "provider": [
             {
@@ -171,9 +169,7 @@
             "credentials": {
               "token": "bearer"
             },
-            "syncKey": "items",
-            "mode": "append",
-            "checkpointing": true
+            "syncKey": "items"
           },
           "provider": [
             {
@@ -248,9 +244,7 @@
             "checkpoint": {
               "cursor": "two",
               "opaque": ["keep", null, false, 0]
-            },
-            "mode": "append",
-            "checkpointing": true
+            }
           },
           "provider": [
             {
@@ -309,9 +303,7 @@
             "credentials": {
               "token": "bearer"
             },
-            "syncKey": "checkpoint",
-            "mode": "append",
-            "checkpointing": true
+            "syncKey": "checkpoint"
           },
           "provider": [],
           "acknowledgments": ["continue"],
@@ -342,9 +334,7 @@
               "token": "bearer"
             },
             "syncKey": "checkpoint",
-            "checkpoint": null,
-            "mode": "append",
-            "checkpointing": true
+            "checkpoint": null
           },
           "provider": [],
           "acknowledgments": ["continue"],
@@ -382,9 +372,7 @@
                 "values": [false, 0, "", null]
               },
               "cursor": "opaque"
-            },
-            "mode": "append",
-            "checkpointing": true
+            }
           },
           "provider": [],
           "acknowledgments": ["continue"],
@@ -481,9 +469,7 @@
               "clientId": "client",
               "clientSecret": "secret"
             },
-            "syncKey": "items",
-            "mode": "append",
-            "checkpointing": true
+            "syncKey": "items"
           },
           "provider": [
             {
@@ -680,9 +666,7 @@
                 "instanceUrl": "https://tenant.example"
               }
             },
-            "syncKey": "items",
-            "mode": "append",
-            "checkpointing": true
+            "syncKey": "items"
           },
           "provider": [
             {
@@ -971,9 +955,7 @@
               "clientId": "client",
               "clientSecret": "secret"
             },
-            "syncKey": "items",
-            "mode": "append",
-            "checkpointing": true
+            "syncKey": "items"
           },
           "provider": [
             {
@@ -1133,9 +1115,7 @@
               "clientId": "client",
               "clientSecret": "secret"
             },
-            "syncKey": "projected",
-            "mode": "append",
-            "checkpointing": true
+            "syncKey": "projected"
           },
           "provider": [],
           "acknowledgments": ["continue"],
@@ -1169,9 +1149,7 @@
               "clientId": "client",
               "clientSecret": "secret"
             },
-            "syncKey": "items",
-            "mode": "append",
-            "checkpointing": true
+            "syncKey": "items"
           },
           "provider": [
             {
@@ -1281,9 +1259,7 @@
               "clientId": "client",
               "clientSecret": "secret"
             },
-            "syncKey": "items",
-            "mode": "append",
-            "checkpointing": true
+            "syncKey": "items"
           },
           "provider": [
             {
@@ -1488,9 +1464,7 @@
               "refreshToken": "refresh",
               "tokenFields": {}
             },
-            "syncKey": "items",
-            "mode": "append",
-            "checkpointing": true
+            "syncKey": "items"
           },
           "provider": [
             {
