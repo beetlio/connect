@@ -273,29 +273,9 @@ const authentication = auth.tokenExchange({
             output can be represented as JSON Schema. Provider-response schemas may transform data
             before it becomes a record.
           </p>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Mode</th>
-                  <th>Meaning</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td><code>append</code> (default)</td>
-                  <td>Add records to existing data.</td>
-                </tr>
-                <tr>
-                  <td><code>replace</code></td>
-                  <td>Publish a completed generation as the new dataset.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
           <p>
-            The host chooses the mode. Syncs emit records without declaring primary keys or
-            deletions. Replace always fetches from the beginning and ignores checkpoints.
+            Syncs emit records without declaring a storage mode, primary keys, or deletions. The
+            host decides whether a run appends to or replaces existing data.
           </p>
           <p>
             Use <code>yield* batchRecords(records)</code> for record-only streams: it groups up to
@@ -305,9 +285,9 @@ const authentication = auth.tokenExchange({
           </p>
           <p>
             For resumable work, declare a <code>checkpoint</code> schema and yield the position to
-            resume <em>after</em> each batch. Checkpointing is opt-in for append. When enabled, the
-            host commits records and checkpoint before asking for more data. A failed commit does
-            not advance the checkpoint.
+            resume <em>after</em> each batch. Without a supplied checkpoint the sync starts from the
+            beginning; with one it resumes from that position. The host commits records and
+            checkpoint before asking for more data. A failed commit does not advance the checkpoint.
           </p>
           <p>
             Checkpoints are opaque JSON; absent and <code>null</code> are different. Validation must
@@ -430,11 +410,11 @@ npx beetl-connect sync . users --profile demo --output users.ndjson</code></pre>
             system's user configuration directory; they are not encrypted.
           </p>
           <p>
-            Use <code>--checkpointing</code> to save append progress under
-            <code>.beetl/state/</code>, or choose a path with <code>--state</code>. Use
-            <code>--mode replace</code> to publish a complete replacement after success. Both modes
-            write record NDJSON. Successful runs without checkpointing clear saved progress; failed
-            runs preserve it.
+            Syncs with a checkpoint save progress under <code>.beetl/state/</code>, or at a path
+            chosen with <code>--state</code>, and the next run resumes from it. Use
+            <code>--mode replace</code> to start from the beginning and publish a complete
+            replacement after success; its final checkpoint is saved with the output. Failed runs
+            preserve saved progress.
           </p>
           <h3>Package for Beetl</h3>
           <pre><code class="language-sh">npx beetl-connect pack . --output github.tgz</code></pre>
@@ -486,8 +466,8 @@ npx beetl-connect sync . users --profile demo --output users.ndjson</code></pre>
             >.
           </p>
           <p>
-            SDK 0.5 builds manifest v5 and host contract v5. Older artifacts must be rebuilt. The
-            process protocol is v2.
+            SDK 0.6 builds manifest v5 and host contract v5. Artifacts built before SDK 0.5 must be
+            rebuilt. The process protocol is v3.
           </p>
         </section>
         <footer>

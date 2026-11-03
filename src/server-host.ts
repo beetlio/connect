@@ -11,7 +11,7 @@ import { extract } from "tar";
 import { z } from "zod";
 
 import { buildIntegration, withIntegration } from "./artifact.ts";
-import { BatchSchema, RunResultSchema, SyncOptionsSchema } from "./execution-schema.ts";
+import { BatchSchema, RunResultSchema } from "./execution-schema.ts";
 import { replacePrivateFile } from "./file-sink.ts";
 import {
   runSync,
@@ -45,17 +45,16 @@ const HostError = console.error.bind(console);
 const ExecFile = promisify(execFile);
 const MaxBatchBytes = 8 * 1024 * 1024;
 const SourceRequest = z.strictObject({
-  protocolVersion: z.literal(2),
+  protocolVersion: z.literal(3),
   integrationPath: z.string().min(1),
   resultPath: z.string().min(1),
 });
 const RuntimeSyncRequest = z.strictObject({
-  protocolVersion: z.literal(2),
+  protocolVersion: z.literal(3),
   operation: z.literal("sync"),
   runtimePath: z.string().min(1),
   resultPath: z.string().min(1),
   syncKey: z.string().min(1),
-  ...SyncOptionsSchema.shape,
   connectionConfig: JsonObject.default({}),
   syncConfig: JsonObject.default({}),
   credentials: Credentials.default({}),
@@ -66,7 +65,7 @@ const RuntimeSyncRequest = z.strictObject({
 type RuntimeSyncRequest = z.output<typeof RuntimeSyncRequest>;
 
 const BatchCommitted = z.strictObject({
-  protocolVersion: z.literal(2),
+  protocolVersion: z.literal(3),
   kind: z.literal("batch_committed"),
   batchId: z.string().min(1),
   action: z.enum(["continue", "yield"]),
@@ -272,8 +271,6 @@ async function runRuntimeSync(
       integration,
       {
         sync: request.syncKey,
-        mode: request.mode,
-        checkpointing: request.checkpointing,
         connectionConfig,
         syncConfig: request.syncConfig,
         ...(request.checkpoint === undefined ? {} : { checkpoint: request.checkpoint }),
@@ -300,8 +297,8 @@ async function exchangeBatch(
   readMessage: (label: string, maxBytes: number) => Promise<unknown>,
 ): Promise<CommitAction> {
   await writeMessage(
-    BatchSchema.extend({ protocolVersion: z.literal(2), kind: z.literal("batch") }).parse({
-      protocolVersion: 2,
+    BatchSchema.extend({ protocolVersion: z.literal(3), kind: z.literal("batch") }).parse({
+      protocolVersion: 3,
       kind: "batch",
       ...batch,
     }),
@@ -326,10 +323,10 @@ function assertProtocolVersion(message: unknown): void {
       ? message.protocolVersion
       : undefined;
 
-  if (version === 2) return;
+  if (version === 3) return;
 
   throw new Error(
-    `Unsupported execution protocol version ${JSON.stringify(version)}; supported: 2. Upgrade the execution host/controller or send protocol v2.`,
+    `Unsupported execution protocol version ${JSON.stringify(version)}; supported: 3. Upgrade the execution host/controller or send protocol v3.`,
   );
 }
 

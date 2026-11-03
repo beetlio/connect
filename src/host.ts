@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { SyncOptionsSchema, type EmittedBatch, type RunSyncResult } from "./execution-schema.ts";
+import type { EmittedBatch, RunSyncResult } from "./execution-schema.ts";
 import { paginate, parseResponse } from "./http.ts";
 import type {
   DestinationBatch,
@@ -79,8 +79,6 @@ export interface VerifyConnectionInput {
 export interface RunSyncInput extends VerifyConnectionInput {
   readonly sync: string;
   readonly syncConfig?: unknown;
-  readonly mode?: "append" | "replace";
-  readonly checkpointing?: boolean;
   readonly checkpoint?: unknown;
 }
 
@@ -168,8 +166,6 @@ export async function runSync(
   input: RunSyncInput,
   host: SyncHost,
 ): Promise<RunSyncResult> {
-  const options = SyncOptionsSchema.parse(input);
-  const checkpointing = options.mode === "append" && options.checkpointing;
   integration = parseIntegration(integration).integration;
 
   const sync = integration.syncs[input.sync];
@@ -183,7 +179,7 @@ export async function runSync(
   );
   const config = await parse(sync.inputs ?? EmptyConfig, input.syncConfig ?? {}, "sync config");
   let checkpoint =
-    !checkpointing || input.checkpoint === undefined
+    input.checkpoint === undefined
       ? undefined
       : jsonSnapshot(input.checkpoint, "Invalid checkpoint input: must be JSON-compatible");
 
@@ -217,7 +213,7 @@ export async function runSync(
         const parsedRecords = await parseRecords(sync.records, value.records);
 
         const next =
-          !checkpointing || value.checkpoint === undefined
+          value.checkpoint === undefined
             ? undefined
             : jsonSnapshot(value.checkpoint, "Invalid checkpoint input: must be JSON-compatible");
 
