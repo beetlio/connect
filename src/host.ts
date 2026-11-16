@@ -52,6 +52,17 @@ export interface ProviderResponse {
   readonly status: number;
   readonly headers: ReadonlyArray<readonly [string, string]>;
   readonly body: Uint8Array;
+  /** Redirects the provider followed to reach this response, oldest first. */
+  readonly redirects?: readonly ProviderRedirect[];
+}
+
+/** One followed redirect. Paths and queries of targets are left out: they may be signed. */
+export interface ProviderRedirect {
+  /** Origin and path of the URL that answered with the redirect. */
+  readonly from: string;
+  /** Origin of the redirect target. */
+  readonly to: string;
+  readonly status: number;
 }
 
 export type CommitAction = "continue" | "stop";
@@ -94,6 +105,9 @@ const ProviderResponseSchema = z.strictObject({
   body: z
     .instanceof(Uint8Array)
     .refine((body) => body.byteLength <= 16 * 1024 * 1024, "Provider response exceeds 16 MiB"),
+  redirects: z
+    .array(z.strictObject({ from: z.string(), to: z.string(), status: z.number().int() }))
+    .optional(),
 });
 
 const EmptyConfig = z.strictObject({});
@@ -411,6 +425,10 @@ async function hostFetch(
       signal,
     ),
   );
+
+  for (const hop of response.redirects ?? []) {
+    await host.log?.({ level: "debug", message: "Followed provider redirect", fields: { ...hop } });
+  }
 
   signal.throwIfAborted();
 

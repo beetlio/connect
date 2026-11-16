@@ -2,7 +2,14 @@ import { z } from "zod";
 
 import { AuthManifestSchema } from "./auth.ts";
 import { InputFieldSchema, type InputObjectSchema, objectManifest } from "./forms.ts";
-import { OriginSchema, RetrySchema, providerOrigin, resolveRetry } from "./http.ts";
+import {
+  OriginSchema,
+  RedirectsSchema,
+  RetrySchema,
+  providerOrigin,
+  resolveRedirects,
+  resolveRetry,
+} from "./http.ts";
 import type { AuthManifest, ConnectionDefinition, IntegrationDefinition } from "./index.ts";
 
 export type { InputField, InputObjectSchema, InputValueSchema } from "./forms.ts";
@@ -210,6 +217,7 @@ export const IntegrationManifestSchema = z
         inputs: InputObject,
         credentials: InputObject,
         retry: RetrySchema.optional(),
+        redirects: RedirectsSchema.optional(),
         canVerify: z.boolean(),
       })
       .readonly(),
@@ -258,6 +266,7 @@ const Definition = z.strictObject({
     auth: z.unknown().optional(),
     inputs: ObjectSchema.optional(),
     retry: z.unknown().optional(),
+    redirects: z.unknown().optional(),
     verify: FunctionSchema.optional(),
   }),
   syncs: z
@@ -419,6 +428,7 @@ function connectionManifest(connection: ConnectionDefinition): IntegrationManife
   }
 
   resolveRetry(connection.retry);
+  resolveRedirects(connection.redirects);
 
   return {
     origin,
@@ -426,6 +436,9 @@ function connectionManifest(connection: ConnectionDefinition): IntegrationManife
     inputs,
     credentials,
     ...(connection.retry === undefined ? {} : { retry: connection.retry }),
+    ...(connection.redirects === undefined
+      ? {}
+      : { redirects: { ...connection.redirects, origins: [...connection.redirects.origins] } }),
     canVerify: connection.verify !== undefined,
   };
 }

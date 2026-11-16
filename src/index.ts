@@ -38,6 +38,14 @@ export interface RetryPolicy {
 
 export type RetryDefinition = false | RetryPolicy;
 
+/** Redirect targets a provider request may follow, besides the connection origin. */
+export interface RedirectPolicy {
+  /** HTTPS origins, such as `https://objects.githubusercontent.com`. */
+  readonly origins: readonly string[];
+  /** Hops per request, 1 to 10 (default 3). */
+  readonly max?: number;
+}
+
 export type ProviderOriginDefinition =
   | string
   | { readonly type: "input"; readonly input: string }
@@ -159,6 +167,7 @@ export interface ConnectionDefinition<C extends z.ZodObject | undefined = z.ZodO
   readonly auth?: AuthDefinition;
   readonly inputs?: C;
   readonly retry?: RetryDefinition;
+  readonly redirects?: RedirectPolicy;
   verify?(context: ConnectionContext<Config<C>>): Promise<void>;
 }
 

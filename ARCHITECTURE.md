@@ -58,7 +58,7 @@ Manifest and host contract v5 support syncs and destinations; older artifacts ar
 - **Integration:** provider endpoints, response schemas, pagination, record mapping,
   checkpoint meaning, and remote upsert/deletion behavior. Credentials stay
   outside execution contexts, though package code shares the provider's process.
-- **SDK provider:** origin restrictions, credential injection, token exchange, OAuth
+- **SDK provider:** origin restrictions, allowlisted redirects, credential injection, token exchange, OAuth
   refresh, retries, and response limits. Verification uses this same request path.
 - **Host:** append or replace storage, which checkpoint to resume from, committing
   records and checkpoints, destination state, execution deadlines, and isolation.

@@ -2,6 +2,7 @@ import { z } from "zod";
 import type {
   JsonObject,
   ProviderOriginDefinition,
+  RedirectPolicy,
   RetryDefinition,
   RetryPolicy,
   SyncFetchInit,
@@ -255,6 +256,30 @@ export function resolveProviderOrigin(
   }
 
   return providerOrigin(value, authenticated);
+}
+
+export const RedirectsSchema = z.strictObject({
+  origins: z.array(z.string()).min(1).readonly(),
+  max: z.number().int().min(1).max(10).optional(),
+});
+
+export function resolveRedirects(redirects: RedirectPolicy | undefined) {
+  if (redirects === undefined) return undefined;
+
+  const { origins, max = 3 } = RedirectsSchema.parse(redirects);
+
+  return {
+    origins: new Set(
+      origins.map((value) => {
+        const origin = providerOrigin(value);
+
+        if (origin.protocol !== "https:") throw new Error("Redirect origins must use HTTPS");
+
+        return origin.origin;
+      }),
+    ),
+    max,
+  };
 }
 
 export const RetrySchema = z.union([

@@ -231,9 +231,18 @@ const authentication = auth.tokenExchange({
           </p>
           <p>
             Requests accept provider-relative paths or same-origin HTTP URLs. The provider enforces
-            origin boundaries and does not follow redirects. By default, transient failures on GET,
-            HEAD, and OPTIONS get up to three attempts. Set <code>connection.retry</code> to tune
-            the policy, or <code>false</code> to disable retries.
+            origin boundaries and returns redirects to the integration unless
+            <code>connection.redirects</code> allows their target. With
+            <code>redirects: { origins: ["https://objects.example.net"], max: 3 }</code>, GET and
+            HEAD requests follow 301, 302, 303, 307 and 308 to the connection origin or a listed
+            HTTPS origin, up to <code>max</code> hops (default 3). A hop to another origin keeps
+            only content headers such as <code>range</code>, <code>accept</code> and
+            <code>user-agent</code>, never credentials, and query credentials the provider copied
+            into the target are removed. Only the final response is read, so the size limit covers
+            the whole chain, and a retry starts again from the first URL. By default, transient
+            failures on GET, HEAD, and OPTIONS get up to three attempts. Set
+            <code>connection.retry</code> to tune the policy, or <code>false</code> to disable
+            retries.
           </p>
           <p>For an API returning <code>{ items, next }</code>, add a paginated sync like this:</p>
           <pre><code class="language-ts">items: sync({

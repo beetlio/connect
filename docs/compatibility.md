@@ -25,6 +25,14 @@ only after the run and any continuations succeed, including an empty dataset. Sa
 progress must match published data, so failed runs preserve it. Append does not
 deduplicate records or update existing rows.
 
+Connections may declare `redirects: { origins, max? }`. The provider then follows GET and
+HEAD redirects to the connection origin or a listed HTTPS origin, sends no credentials or
+connector headers across origins (query credentials copied into the target are removed),
+and reports followed hops on the provider response as
+`redirects` (origin and path of each source, origin of each target). Hosts log them at
+debug level. Artifacts that declare `redirects` need a host running SDK 0.7 or later;
+older hosts reject the manifest field.
+
 Credential injection, origin restrictions, retries, OAuth refresh persistence, cancellation,
 and error precedence remain SDK responsibilities. Hosts settle authentication before
 reporting success. Integration and cleanup failures must remain visible.

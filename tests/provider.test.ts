@@ -581,3 +581,160 @@ test("OAuth preparation resolves and retains the configured tenant for start and
     ),
   );
 });
+
+test("redirects are followed only to allowlisted origins, without credentials", async () => {
+  const seen: { url: string; headers: Headers; method: string }[] = [];
+  const fetch = async (input: URL | RequestInfo, init?: RequestInit) => {
+    const url = new URL(String(input));
+    seen.push({ url: url.href, headers: new Headers(init?.headers), method: init?.method ?? "" });
+
+    if (url.pathname === "/asset") {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://assets.example.net/signed?sig=secret-signature" },
+      });
+    }
+    if (url.pathname === "/moved") {
+      return new Response(null, { status: 301, headers: { location: "/asset" } });
+    }
+    if (url.pathname === "/elsewhere") {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://evil.example.org/" },
+      });
+    }
+    if (url.pathname === "/loop") {
+      return new Response(null, { status: 307, headers: { location: "/loop" } });
+    }
+
+    return new Response("ok", { status: 206, headers: { "content-range": "bytes 0-0/10" } });
+  };
+  const provider = createProvider(
+    {
+      origin: "https://api.example.com",
+      auth: auth.bearer(),
+      redirects: { origins: ["https://assets.example.net"] },
+    },
+    { credentials: { token: "secret" }, fetch },
+  );
+  const headers: [string, string][] = [
+    ["range", "bytes=0-0"],
+    ["x-tenant", "acme"],
+  ];
+
+  const followed = await provider.request({ ...Request, path: "/moved", headers });
+
+  assert.equal(followed.status, 206);
+  assert.deepEqual(followed.redirects, [
+    { from: "https://api.example.com/moved", to: "https://api.example.com", status: 301 },
+    { from: "https://api.example.com/asset", to: "https://assets.example.net", status: 302 },
+  ]);
+  assert.equal(seen[1]!.headers.get("authorization"), "Bearer secret");
+  const hop = seen[2]!;
+  assert.equal(hop.url, "https://assets.example.net/signed?sig=secret-signature");
+  assert.equal(hop.headers.get("authorization"), null);
+  assert.equal(hop.headers.get("x-tenant"), null);
+  assert.equal(hop.headers.get("range"), "bytes=0-0");
+  assert.ok(!JSON.stringify(followed.redirects).includes("secret-signature"));
+
+  // Targets outside the allowlist, other methods and extra hops return the redirect.
+  assert.equal((await provider.request({ ...Request, path: "/elsewhere" })).status, 302);
+  assert.equal(
+    (await provider.request({ ...Request, method: "POST", path: "/asset", retry: false })).status,
+    302,
+  );
+  seen.length = 0;
+  const looped = await provider.request({ ...Request, path: "/loop" });
+  assert.equal(looped.status, 307);
+  assert.equal(seen.length, 4);
+
+  // Without a policy, nothing changes.
+  const plain = createProvider({ origin: "https://api.example.com" }, { fetch });
+  const unfollowed = await plain.request({ ...Request, path: "/asset" });
+  assert.equal(unfollowed.status, 302);
+  assert.equal(unfollowed.redirects, undefined);
+});
+
+test("redirected requests keep the size limit and retry from the first URL", async () => {
+  const requested: string[] = [];
+  let failures = 1;
+  const provider = createProvider(
+    {
+      origin: "https://api.example.com",
+      redirects: { origins: ["https://assets.example.net"], max: 1 },
+      retry: { maxAttempts: 2, initialDelayMs: 0 },
+    },
+    {
+      fetch: async (input) => {
+        const url = new URL(String(input));
+        requested.push(url.href);
+
+        if (url.origin === "https://api.example.com") {
+          return new Response(null, {
+            status: 302,
+            headers: { location: `https://assets.example.net${url.pathname}` },
+          });
+        }
+        if (url.pathname === "/large") return new Response(new Uint8Array(16 * 1024 * 1024 + 1));
+        if (failures-- > 0)
+          return new Response(null, { status: 503, headers: { "retry-after": "0" } });
+
+        return new Response("ok");
+      },
+    },
+  );
+
+  await assert.rejects(provider.request({ ...Request, path: "/large" }), /exceeds 16 MiB/);
+
+  requested.length = 0;
+  assert.equal((await provider.request(Request)).status, 200);
+  assert.deepEqual(requested, [
+    "https://api.example.com/events",
+    "https://assets.example.net/events",
+    "https://api.example.com/events",
+    "https://assets.example.net/events",
+  ]);
+});
+
+test("redirects drop echoed query credentials and skip redirect bodies", async () => {
+  const requested: string[] = [];
+  const provider = createProvider(
+    {
+      origin: "https://api.example.com",
+      auth: auth.apiKey({ in: "query", name: "key" }),
+      redirects: { origins: ["https://assets.example.net"] },
+    },
+    {
+      credentials: { apiKey: "secret-key" },
+      fetch: async (input) => {
+        const url = new URL(String(input));
+        requested.push(url.href);
+
+        if (url.origin === "https://api.example.com") {
+          return new Response(new Uint8Array(16 * 1024 * 1024 + 1), {
+            status: 302,
+            headers: {
+              location: `https://assets.example.net/file?token=secret-key&sig=abc&key=secret-key`,
+            },
+          });
+        }
+
+        return new Response("ok");
+      },
+    },
+  );
+
+  assert.equal((await provider.request(Request)).status, 200);
+  assert.deepEqual(requested, [
+    "https://api.example.com/events?key=secret-key",
+    "https://assets.example.net/file?sig=abc",
+  ]);
+});
+
+test("redirect origins must be HTTPS origins", () => {
+  for (const origins of [["http://assets.example.net"], ["https://assets.example.net/path"], []]) {
+    assert.throws(() =>
+      createProvider({ origin: "https://api.example.com", redirects: { origins } }),
+    );
+  }
+});
