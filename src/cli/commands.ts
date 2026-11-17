@@ -31,7 +31,7 @@ import {
   resolveProfile,
   selectSyncKey,
 } from "./configure.ts";
-import { assertPlatformRecordSchemas, runPlatformSync } from "./platform.ts";
+import { checkPlatformRecordSchemas, runPlatformSync } from "./platform.ts";
 
 const Package = z
   .object({ version: z.string() })
@@ -171,7 +171,10 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     // Building evaluates the definition, so schemas Beetl would reject fail here.
     const { manifest } = await buildIntegration(options.integrationPath);
 
-    assertPlatformRecordSchemas(manifest);
+    for (const format of checkPlatformRecordSchemas(manifest))
+      console.warn(
+        `Warning: Beetl accepts this schema at upload but rejects some of its values at run time: ${format}`,
+      );
 
     const packed = await packIntegration(options.integrationPath);
     const outputPath = resolve(
@@ -221,7 +224,12 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     if (options.command === "sync") {
       const syncKey = selectSyncKey(integration, options.syncKey);
 
-      if (options.strict) assertPlatformRecordSchemas(manifest);
+      const formats = options.strict ? checkPlatformRecordSchemas(manifest) : [];
+
+      if (formats.length > 0)
+        throw new Error(
+          `Beetl rejects some values these record schemas accept:\n${formats.join("\n")}`,
+        );
 
       let configuration = await resolveProfile(integration, manifest, syncKey, options.profile);
       let connectionPath = join(

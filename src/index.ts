@@ -113,11 +113,12 @@ type Config<C> = C extends z.ZodType ? z.output<C> : Readonly<Record<string, nev
 type Checkpoint<K> = K extends z.ZodType ? z.output<K> : never;
 
 /**
- * How a sync run ends. Return nothing once everything available has been read. A run
- * that stops early, for example at a page or time budget, returns `{ hasMore: true }`
- * after committing a new checkpoint, and the host runs the sync again from there.
+ * How a sync run ends. Return nothing or `{ hasMore: false }` once everything available
+ * has been read. A run that stops early, for example at a page or time budget, returns
+ * `{ hasMore: true }` after committing a new checkpoint, and the host runs the sync again
+ * from there.
  */
-export type SyncEnd = void | { readonly hasMore: true };
+export type SyncEnd = void | { readonly hasMore: boolean };
 
 /** Runtime definition. Author it through the scoped sync function for inference. */
 export interface SyncDefinition {

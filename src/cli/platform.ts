@@ -13,18 +13,29 @@ const MemoryLimitBytes = 1024 ** 3;
 const RunMilliseconds = 15 * 60_000;
 const StopBeforeDeadlineMilliseconds = 5 * 60_000;
 const WatchdogMilliseconds = 100;
+// A hosted run starts each segment in a fresh process that has loaded the same SDK modules
+// as this CLI by the time this module is evaluated. The CLI process also holds its own
+// build and earlier segments, so a strict segment counts this startup footprint plus what
+// it grows by itself.
+const StartupRss = process.memoryUsage.rss();
 const StorageHint =
   "storageRecord() from @beetlio/connect stores fields that Beetl cannot type as text.";
 
 /**
- * Reject sync record schemas that Beetl cannot map to storage columns, or whose string
- * formats Beetl validates more strictly than Zod. Mirrors Core's record schema mapping.
+ * Mirror Core's record schema mapping. Throws for shapes Core rejects when the package is
+ * uploaded. Returns string formats that Core accepts at upload but validates more strictly
+ * than Zod at run time, so some records Zod accepts fail the hosted run.
  */
-export function assertPlatformRecordSchemas(manifest: IntegrationManifest): void {
-  for (const sync of manifest.syncs) assertStorageType(sync.records, `syncs[${sync.key}].records`);
+export function checkPlatformRecordSchemas(manifest: IntegrationManifest): readonly string[] {
+  const formats: string[] = [];
+
+  for (const sync of manifest.syncs)
+    checkStorageType(sync.records, `syncs[${sync.key}].records`, formats);
+
+  return formats;
 }
 
-function assertStorageType(schema: unknown, location: string): void {
+function checkStorageType(schema: unknown, location: string, formats: string[]): void {
   const invalid = (reason: string) =>
     new Error(`Invalid JSON Schema at ${location}: ${reason}. ${StorageHint}`);
 
@@ -57,7 +68,7 @@ function assertStorageType(schema: unknown, location: string): void {
     if (schema.anyOf.length !== 2 || values.length !== 1)
       throw invalid("anyOf must contain exactly one storage type and null");
 
-    return assertStorageType(values[0], location);
+    return checkStorageType(values[0], location, formats);
   }
 
   let type = schema.type;
@@ -79,12 +90,12 @@ function assertStorageType(schema: unknown, location: string): void {
     case "string":
       // Zod checks these with its own rules; Beetl's validator rejects values Zod accepts.
       if (schema.format === "uri")
-        throw invalid(
-          "z.url() accepts URLs that Beetl rejects as URIs, such as ones with spaces or non-ASCII host names; declare the field as z.string()",
+        formats.push(
+          `${location}: z.url() accepts URLs that Beetl rejects as URIs, such as ones with spaces or non-ASCII host names; declare the field as z.string() or use storageRecord()`,
         );
       if (schema.format === "duration")
-        throw invalid(
-          "z.iso.duration() accepts durations that Beetl rejects, such as PT1.5S or P1Y2D; declare the field as z.string()",
+        formats.push(
+          `${location}: z.iso.duration() accepts durations that Beetl rejects, such as PT1.5S or P1Y2D; declare the field as z.string() or use storageRecord()`,
         );
       return;
     case "integer":
@@ -111,7 +122,7 @@ function assertStorageType(schema: unknown, location: string): void {
         throw invalid(`required field ${JSON.stringify(missing)} is not declared in properties`);
 
       for (const [name, property] of Object.entries(properties))
-        assertStorageType(property, `${location}.properties.${name}`);
+        checkStorageType(property, `${location}.properties.${name}`, formats);
 
       return;
     }
@@ -120,7 +131,7 @@ function assertStorageType(schema: unknown, location: string): void {
         throw invalid("tuple arrays cannot be represented as a stable storage type");
       if (!Object.hasOwn(schema, "items")) throw invalid("arrays must declare one item schema");
 
-      return assertStorageType(schema.items, `${location}.items`);
+      return checkStorageType(schema.items, `${location}.items`, formats);
     default:
       throw invalid(`JSON Schema type ${JSON.stringify(type)} has no supported storage type`);
   }
@@ -137,6 +148,7 @@ export async function runPlatformSync(
   host: SyncHost,
 ): Promise<RunSyncResult> {
   const deadline = Date.now() + RunMilliseconds;
+  const segmentRss = process.memoryUsage.rss();
   const stopped = new AbortController();
   let rejectStopped: (reason: unknown) => void = () => undefined;
   const stoppedRun = new Promise<never>((_, reject) => (rejectStopped = reject));
@@ -150,7 +162,7 @@ export async function runPlatformSync(
     rejectStopped(reason);
   };
   const watchdog = setInterval(() => {
-    if (process.memoryUsage.rss() > MemoryLimitBytes)
+    if (StartupRss + process.memoryUsage.rss() - segmentRss > MemoryLimitBytes)
       stop(
         `the integration ran out of memory: it used more than its ${MemoryLimitBytes / 1024 ** 3} GiB limit and was stopped`,
       );

@@ -41,8 +41,19 @@ export class HttpError extends Error {
   readonly status: number;
   readonly detail: string;
   readonly requestId: string | undefined;
+  /**
+   * True when the provider followed a redirect and another origin than the connection's
+   * answered, such as signed storage. Only a 401 from the connection origin means the
+   * connection's credentials were rejected.
+   */
+  readonly crossOrigin: boolean;
 
-  constructor(status: number, detail: string, requestId?: string) {
+  constructor(
+    status: number,
+    detail: string,
+    requestId?: string,
+    options: { readonly crossOrigin?: boolean } = {},
+  ) {
     super(
       `Provider returned ${status}${requestId ? ` [${requestId}]` : ""}${detail ? ` (${detail})` : ""}`,
     );
@@ -51,8 +62,12 @@ export class HttpError extends Error {
     this.status = status;
     this.detail = detail;
     this.requestId = requestId;
+    this.crossOrigin = options.crossOrigin ?? false;
   }
 }
+
+/** Responses the host received from a redirect origin other than the connection's. */
+export const CrossOriginResponses = new WeakSet<Response>();
 
 export async function parseResponse<S extends z.ZodType>(
   response: Response,
@@ -65,6 +80,7 @@ export async function parseResponse<S extends z.ZodType>(
       response.status,
       detail,
       response.headers.get("x-request-id") ?? response.headers.get("request-id") ?? undefined,
+      { crossOrigin: CrossOriginResponses.has(response) },
     );
   }
 

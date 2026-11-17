@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { EmittedBatch, RunSyncResult } from "./execution-schema.ts";
-import { paginate, parseResponse } from "./http.ts";
+import { CrossOriginResponses, paginate, parseResponse } from "./http.ts";
 import type {
   DestinationBatch,
   DestinationDefinition,
@@ -115,8 +115,9 @@ const YieldedBatch = z.strictObject({
   records: z.array(z.unknown()),
   checkpoint: z.unknown().optional(),
 });
-// Anything else, such as `{ hasMore: false }`, fails the run instead of reading as caught up.
-const YieldedEnd = z.union([z.undefined(), z.strictObject({ hasMore: z.literal(true) })]);
+// Anything else, such as a misspelled key, a non-boolean value, or extra fields, fails the
+// run instead of reading as caught up.
+const YieldedEnd = z.union([z.undefined(), z.strictObject({ hasMore: z.boolean() })]);
 const DestinationBatchInput = YieldedBatch.omit({ checkpoint: true }).extend({
   batchId: z.string().min(1),
   deletedKeys: z.array(z.unknown()).optional(),
@@ -223,7 +224,7 @@ export async function runSync(
         const step = await iterator.next();
 
         if (step.done) {
-          hasMore = YieldedEnd.parse(step.value) !== undefined;
+          hasMore = YieldedEnd.parse(step.value)?.hasMore ?? false;
 
           break;
         }
@@ -451,10 +452,16 @@ async function hostFetch(
     ? Uint8Array.from(response.body).buffer
     : null;
 
-  return new Response(responseBody, {
+  const result = new Response(responseBody, {
     status: response.status,
     headers: response.headers.map(([name, value]): [string, string] => [name, value]),
   });
+  const [first, last] = [response.redirects?.at(0), response.redirects?.at(-1)];
+
+  if (first !== undefined && last !== undefined && new URL(first.from).origin !== last.to)
+    CrossOriginResponses.add(result);
+
+  return result;
 }
 
 async function parse<T>(

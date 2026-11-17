@@ -1,9 +1,10 @@
-import { auth, secret, z } from "@beetlio/connect";
+import { HttpError, auth, defineIntegration, secret, z } from "@beetlio/connect";
 import {
   beginOAuthAuthorization,
   completeOAuthAuthorization,
   createProvider,
   prepareOAuthAuthorization,
+  runSync,
   type ProviderRequest,
 } from "@beetlio/connect/host";
 import assert from "node:assert/strict";
@@ -653,6 +654,64 @@ test("redirects are followed only to allowlisted origins, without credentials", 
   const unfollowed = await plain.request({ ...Request, path: "/asset" });
   assert.equal(unfollowed.status, 302);
   assert.equal(unfollowed.redirects, undefined);
+});
+
+test("HttpError tells a 401 from a redirect origin apart from the connection origin", async () => {
+  const connection = {
+    origin: "https://api.example.com",
+    redirects: { origins: ["https://storage.example.net"] },
+  };
+  const provider = createProvider(connection, {
+    fetch: async (input) => {
+      const url = new URL(String(input));
+
+      if (url.pathname === "/export")
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://storage.example.net/expired?sig=old" },
+        });
+      if (url.pathname === "/round-trip")
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location:
+              url.origin === "https://api.example.com"
+                ? "https://storage.example.net/round-trip"
+                : "https://api.example.com/me",
+          },
+        });
+
+      return new Response("unauthorized", { status: 401 });
+    },
+  });
+  const failures: unknown[] = [];
+  const integration = defineIntegration({
+    key: "redirected",
+    displayName: "Redirected",
+    connection,
+    syncs: (sync) => ({
+      items: sync({
+        records: z.object({ id: z.string() }),
+        async *run(ctx) {
+          for (const path of ["/export", "/me", "/round-trip"]) {
+            await ctx.json(path, z.object({})).catch((error: unknown) => failures.push(error));
+          }
+        },
+      }),
+    }),
+  });
+
+  await runSync(integration, { sync: "items" }, { ...provider, commit: async () => "continue" });
+
+  assert.deepEqual(
+    failures.map((error) => error instanceof HttpError && [error.status, error.crossOrigin]),
+    [
+      [401, true],
+      [401, false],
+      [401, false],
+    ],
+  );
+  assert.equal(new HttpError(401, "").crossOrigin, false);
 });
 
 test("redirected requests keep the size limit and retry from the first URL", async () => {

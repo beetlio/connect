@@ -87,7 +87,10 @@ const PackageLockSchema = z.object({
 const LockedPackageSchema = z.object({
   version: z.string().optional(),
   optional: z.boolean().optional(),
+  devOptional: z.boolean().optional(),
   link: z.boolean().optional(),
+  os: z.array(z.string()).optional(),
+  cpu: z.array(z.string()).optional(),
 });
 const DependencyFields = [
   "dependencies",
@@ -350,11 +353,25 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
     JSON.parse(await readFile(join(directory, "package-lock.json"), "utf8")),
   );
   const notInstalled: string[] = [];
+  // npm's platform rule: "!value" excludes a platform; other values list the only ones allowed.
+  const supports = (allowed: readonly string[] | undefined, value: string) =>
+    allowed === undefined ||
+    (!allowed.includes(`!${value}`) &&
+      (allowed.every((entry) => entry.startsWith("!")) || allowed.includes(value)));
 
   for (const [path, value] of Object.entries(lock.packages)) {
     const locked = LockedPackageSchema.parse(value);
 
-    if (!path.startsWith("node_modules/") || locked.optional || locked.link) continue;
+    // npm does not install these, so their absence is expected.
+    if (
+      !path.startsWith("node_modules/") ||
+      locked.optional ||
+      locked.devOptional ||
+      locked.link ||
+      !supports(locked.os, process.platform) ||
+      !supports(locked.cpu, process.arch)
+    )
+      continue;
 
     let installed: string | undefined;
 

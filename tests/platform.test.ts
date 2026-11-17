@@ -2,15 +2,15 @@ import { defineIntegration, storageRecord, z } from "@beetlio/connect";
 import { createIntegrationManifest } from "@beetlio/connect/builder";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertPlatformRecordSchemas, runPlatformSync } from "../src/cli/platform.ts";
-import type { IntegrationDefinition } from "../src/index.ts";
+import { checkPlatformRecordSchemas, runPlatformSync } from "../src/cli/platform.ts";
+import type { IntegrationDefinition, SyncEnd } from "../src/index.ts";
 import { syncHost } from "./support.ts";
 
 function integration(
   records: z.ZodObject,
   run: () => AsyncGenerator<
     { records: Record<string, unknown>[]; checkpoint?: number },
-    { hasMore: true } | void,
+    SyncEnd,
     unknown
   >,
 ): IntegrationDefinition {
@@ -25,22 +25,12 @@ function integration(
 }
 
 const checkSchema = (records: z.ZodObject) =>
-  assertPlatformRecordSchemas(
+  checkPlatformRecordSchemas(
     createIntegrationManifest(integration(records, async function* () {})),
   );
 
-test("record schemas that Beetl cannot store or validate like Zod fail before upload", () => {
+test("record schemas that Beetl cannot store fail before upload", () => {
   for (const [records, location, reason] of [
-    [
-      z.object({ website: z.url() }),
-      "properties.website",
-      /z\.url\(\) accepts URLs that Beetl rejects/,
-    ],
-    [
-      z.object({ timeout: z.iso.duration().nullable() }),
-      "properties.timeout",
-      /durations that Beetl rejects, such as PT1\.5S or P1Y2D/,
-    ],
     [
       z.object({ metadata: z.record(z.string(), z.string()) }),
       "properties.metadata",
@@ -79,25 +69,49 @@ test("record schemas that Beetl cannot store or validate like Zod fail before up
     );
   }
 
-  checkSchema(
-    z.object({
-      id: z.string(),
-      count: z.number().int(),
-      note: z.string().nullable().optional(),
-      created: z.iso.datetime(),
-      email: z.email(),
-      tags: z.array(z.object({ name: z.string() })),
-    }),
-  );
-  checkSchema(
-    storageRecord(
+  // Beetl accepts these formats at upload but rejects some values that Zod accepts.
+  assert.deepEqual(
+    checkSchema(
       z.object({
         website: z.url(),
-        timeout: z.iso.duration(),
-        metadata: z.record(z.string(), z.json()),
-        id: z.union([z.string(), z.number()]),
+        timeout: z.object({ value: z.iso.duration().nullable() }),
+      }),
+    ).map((format) => format.split(": ")[0]),
+    [
+      "syncs[items].records.properties.website",
+      "syncs[items].records.properties.timeout.properties.value",
+    ],
+  );
+  assert.match(
+    checkSchema(z.object({ timeout: z.iso.duration() }))[0]!,
+    /z\.iso\.duration\(\) accepts durations that Beetl rejects, such as PT1\.5S or P1Y2D/,
+  );
+
+  assert.deepEqual(
+    checkSchema(
+      z.object({
+        id: z.string(),
+        count: z.number().int(),
+        note: z.string().nullable().optional(),
+        created: z.iso.datetime(),
+        email: z.email(),
+        tags: z.array(z.object({ name: z.string() })),
       }),
     ),
+    [],
+  );
+  assert.deepEqual(
+    checkSchema(
+      storageRecord(
+        z.object({
+          website: z.url(),
+          timeout: z.iso.duration(),
+          metadata: z.record(z.string(), z.json()),
+          id: z.union([z.string(), z.number()]),
+        }),
+      ),
+    ),
+    [],
   );
 });
 
@@ -219,11 +233,41 @@ test("a strict run ends like the hosted runtime at its memory limit and deadline
     // Ignores cancellation, as the runtime cannot rely on it either.
     await new Promise((resolve) => setTimeout(resolve, 60_000).unref());
   };
-  const rss = t.mock.method(process.memoryUsage, "rss", () => 1024 ** 3 + 1);
+  // The CLI process may already be large from its build and earlier segments; only
+  // what a segment adds counts against the limit.
+  const CliRss = 3 * 1024 ** 3;
+  let growth = 64 * 1024 ** 2;
+  const rss = t.mock.method(process.memoryUsage, "rss", () => CliRss);
 
-  await assert.rejects(runPlatformSync(integration(Records, hang), { sync: "items" }, syncHost()), {
-    message: "the integration ran out of memory: it used more than its 1 GiB limit and was stopped",
-  });
+  const small = runPlatformSync(
+    integration(Records, async function* () {
+      rss.mock.mockImplementation(() => CliRss + growth);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      yield { records: [{ id: "one" }], checkpoint: 1 };
+    }),
+    { sync: "items" },
+    syncHost(),
+  );
+
+  assert.equal((await small).outcome, "completed");
+
+  rss.mock.mockImplementation(() => CliRss);
+  growth = 1024 ** 3;
+
+  await assert.rejects(
+    runPlatformSync(
+      integration(Records, async function* () {
+        rss.mock.mockImplementation(() => CliRss + growth);
+        yield* hang();
+      }),
+      { sync: "items" },
+      syncHost(),
+    ),
+    {
+      message:
+        "the integration ran out of memory: it used more than its 1 GiB limit and was stopped",
+    },
+  );
 
   rss.mock.restore();
 

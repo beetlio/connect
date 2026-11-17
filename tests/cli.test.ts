@@ -361,7 +361,13 @@ export default defineIntegration({
   await integrationPackage(directory);
   await writeFile(
     largeMemory,
-    "process.memoryUsage.rss = () => 2 * 1024 ** 3;\nprocess.env.SLOW_SYNC = '1';\n",
+    [
+      // The strict module and the segment take the first two readings; the sync then grows.
+      "const rss = process.memoryUsage.rss;",
+      "let readings = 0;",
+      "process.memoryUsage.rss = () => rss() + (readings++ < 2 ? 0 : 2 * 1024 ** 3);",
+      "process.env.SLOW_SYNC = '1';",
+    ].join("\n"),
   );
   await writeFile(
     join(directory, "integration.ts"),
@@ -383,6 +389,34 @@ export default defineIntegration({
     assert.equal(result.status, 1);
     assert.ok(result.stderr.includes(rejected), result.stderr);
   }
+
+  // Beetl accepts z.url() at upload but rejects some URLs that Zod accepts at run time.
+  await writeFile(
+    join(directory, "integration.ts"),
+    source(
+      "z.object({ id: z.string(), metadata: z.object({ team: z.string() }), site: z.url().optional() })",
+    ),
+  );
+
+  const warned = runCli(workspace, ["pack", directory]);
+
+  assert.equal(warned.status, 0, warned.stderr);
+  assert.ok(
+    warned.stderr.includes(
+      "Warning: Beetl accepts this schema at upload but rejects some of its values at run time: syncs[items].records.properties.site: z.url() accepts URLs",
+    ),
+    warned.stderr,
+  );
+
+  const strictFormat = runCli(workspace, ["sync", directory, "--strict", "--output", output]);
+
+  assert.equal(strictFormat.status, 1);
+  assert.ok(
+    strictFormat.stderr.includes(
+      "Beetl rejects some values these record schemas accept:\nsyncs[items].records.properties.site: z.url()",
+    ),
+    strictFormat.stderr,
+  );
 
   await writeFile(
     join(directory, "integration.ts"),

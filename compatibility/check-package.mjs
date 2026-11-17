@@ -230,18 +230,26 @@ export default defineIntegration({
     strictSource("z.object({ id: z.string(), website: z.url().optional() })"),
   );
 
-  const rejected = spawnSync(process.execPath, [cli, "pack", strict], {
+  // Beetl accepts z.url() at upload, so pack only warns; a strict run fails on it.
+  const warned = await exec(process.execPath, [cli, "pack", strict], {
     ...options,
     cwd: consumer,
-    encoding: "utf8",
     env: cliEnvironment,
   });
 
-  assert.equal(rejected.status, 1, rejected.stderr);
   assert.match(
-    rejected.stderr,
-    /Invalid JSON Schema at syncs\[items\]\.records\.properties\.website/,
+    warned.stderr,
+    /Warning: .*syncs\[items\]\.records\.properties\.website: z\.url\(\)/,
   );
+
+  const rejected = spawnSync(
+    process.execPath,
+    [cli, "sync", strict, "--strict", "--output", join(consumer, "strict.ndjson")],
+    { ...options, cwd: consumer, encoding: "utf8", env: cliEnvironment },
+  );
+
+  assert.equal(rejected.status, 1, rejected.stderr);
+  assert.match(rejected.stderr, /Beetl rejects some values these record schemas accept/);
 
   const result = await exec(
     process.execPath,

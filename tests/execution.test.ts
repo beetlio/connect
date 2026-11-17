@@ -125,13 +125,31 @@ test("a sync that stops early asks for another run from its new checkpoint", asy
     /must first commit a new checkpoint/,
   );
 
-  const misspelled = integration(async function* () {
-    yield { records: [{ id: 1 }], checkpoint: 2 };
+  // hasMore: false reads as caught up, like returning nothing; it needs no new checkpoint.
+  const caughtUp = await runSync(
+    integration(async function* () {
+      yield { records: [{ id: 1 }], checkpoint: 1 };
 
-    return { hasMore: false } as unknown as SyncEnd;
-  });
+      return { hasMore: false };
+    }),
+    { sync: "items", checkpoint: 1 },
+    syncHost(),
+  );
 
-  await assert.rejects(runSync(misspelled, { sync: "items" }, syncHost()));
+  assert.deepEqual(
+    { outcome: caughtUp.outcome, checkpoint: caughtUp.checkpoint },
+    { outcome: "completed", checkpoint: 1 },
+  );
+
+  for (const end of [{ hasmore: true }, { hasMore: "true" }, { hasMore: true, extra: 1 }, {}]) {
+    const malformed = integration(async function* () {
+      yield { records: [{ id: 1 }], checkpoint: 2 };
+
+      return end as unknown as SyncEnd;
+    });
+
+    await assert.rejects(runSync(malformed, { sync: "items" }, syncHost()));
+  }
 });
 
 test("commit, generator cleanup, and log failures retain their order", async () => {

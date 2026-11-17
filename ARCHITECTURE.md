@@ -40,7 +40,8 @@ A source package must be built before it can be used as a runtime artifact.
 generator, awaits `host.commit`, then advances. `stop` closes the generator and returns
 `continuation_required`; that batch must carry a checkpoint. A generator that returns
 `{ hasMore: true }` also produces `continuation_required`, and only after committing a
-checkpoint different from the one the run started with. Checkpoints flow only for
+checkpoint different from the one the run started with; returning nothing or
+`{ hasMore: false }` completes the run, and any other value fails it. Checkpoints flow only for
 syncs that declare a checkpoint schema; execution has no storage mode. A failed commit
 never advances the checkpoint. Checkpoint validation cannot change the serialized value,
 including the distinction between absent and `null`.
@@ -77,8 +78,10 @@ pending authentication before releasing resources.
 The CLI composes the pull provider and executor with `withFileSink`. The process adapter
 uses the same executor and exchanges acknowledgments with an external controller.
 `sync --strict` and `pack` add Beetl's own checks from `cli/platform.ts`: record schemas
-must map to Core's storage types, and a strict run plays Core's controller role around
-`runSync`. It enforces Core's batch, byte, memory, and deadline limits with Core's messages,
+must map to Core's storage types (`pack` only warns about URL and duration formats, which
+Core accepts at upload), and a strict run plays Core's controller role around
+`runSync`. It enforces Core's batch, byte, memory, and deadline limits with Core's messages
+(memory as each segment's growth plus the CLI's startup size, approximating a fresh process),
 and requests `stop` at the next changed checkpoint near a limit. These checks mirror Beetl
 Core and stay out of the executor and manifest, which other hosts and existing artifacts use.
 The CLI entry point checks the Node.js version before loading its commands; builds check that

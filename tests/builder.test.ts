@@ -64,6 +64,15 @@ test("runtime archives preserve npm modules and package assets", async (t) => {
         packages: {
           "": { dependencies: { "fixture-dependency": "1.0.0" } },
           "node_modules/fixture-dependency": { version: "1.0.0" },
+          // npm does not install these, so the dependency check must not require them.
+          "node_modules/optional-tool": { version: "1.0.0", optional: true },
+          "node_modules/dev-optional-tool": { version: "1.0.0", devOptional: true },
+          "node_modules/other-os": {
+            version: "1.0.0",
+            os: [process.platform === "win32" ? "linux" : "win32"],
+          },
+          "node_modules/not-this-os": { version: "1.0.0", os: [`!${process.platform}`] },
+          "node_modules/other-cpu": { version: "1.0.0", cpu: [`!${process.arch}`] },
         },
       }),
     ),

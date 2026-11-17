@@ -227,7 +227,9 @@ const authentication = auth.tokenExchange({
             <code>ctx.fetch(path, init?)</code> returns a Response.
             <code>ctx.json(path, schema, init?)</code> parses successful JSON with Zod and throws
             <code>HttpError</code> for HTTP failures. The error includes <code>status</code>,
-            bounded <code>detail</code>, and an optional <code>requestId</code>.
+            bounded <code>detail</code>, an optional <code>requestId</code>, and
+            <code>crossOrigin</code>, which is true when a followed redirect led to another origin
+            that answered, such as signed storage.
           </p>
           <p>
             Requests accept provider-relative paths or same-origin HTTP URLs. The provider enforces
@@ -297,11 +299,12 @@ const authentication = auth.tokenExchange({
             closed object, or array of one item type, each optionally nullable.
             <code>pack</code> and <code>sync --strict</code> reject fields Beetl cannot type, such
             as <code>z.record()</code>, <code>z.looseObject()</code>, <code>z.json()</code>, tuples,
-            and unions of several types. They also reject <code>z.url()</code> and
-            <code>z.iso.duration()</code>, which accept values that Beetl's validator rejects, such
-            as URLs with spaces or durations like <code>PT1.5S</code>. Declare those fields as
-            <code>z.string()</code>, or wrap the record schema in <code>storageRecord()</code> to
-            store them as text.
+            and unions of several types. Beetl accepts <code>z.url()</code> and
+            <code>z.iso.duration()</code> fields, but its validator rejects some values Zod accepts,
+            such as URLs with spaces or durations like <code>PT1.5S</code>, and the run then fails.
+            <code>pack</code> warns about these fields and <code>sync --strict</code> fails on them.
+            Declare such fields as <code>z.string()</code>, or wrap the record schema in
+            <code>storageRecord()</code> to store them as text.
           </p>
           <p>
             For resumable work, declare a <code>checkpoint</code> schema and yield the position to
@@ -317,8 +320,9 @@ const authentication = auth.tokenExchange({
           <p>
             A sync that limits its own runs, for example to a number of pages or minutes, returns
             <code>{ hasMore: true }</code> when it stops before reading everything available. The
-            host then runs it again from the last checkpoint. Return nothing once the sync is caught
-            up. A replacing host publishes the data only after a run that returns nothing, so a
+            host then runs it again from the last checkpoint. Return nothing or
+            <code>{ hasMore: false }</code> once the sync is caught up; any other return value fails
+            the run. A replacing host publishes the data only after a run that returns nothing, so a
             reload never shows a partial dataset. The run must have committed a new checkpoint
             first, otherwise it fails. Hosts running SDK 0.6 or earlier treat the run as caught up.
           </p>
@@ -330,7 +334,7 @@ const authentication = auth.tokenExchange({
 
     yield { records: items, checkpoint: { cursor: next } };
 
-    if (next === null) return;
+    if (next === null) return { hasMore: false };
     cursor = next;
   }
 
@@ -481,9 +485,9 @@ npx beetl-connect sync . users --profile demo --output users.ndjson</code></pre>
             Like Beetl, the CLI asks a run to stop at its next new checkpoint once it has used half
             of its batch or byte limit or has less than five minutes left, then continues from that
             checkpoint in a new run. A sync without a checkpoint cannot be stopped this way and
-            fails at the limit instead. Memory is the CLI process's resident size, which also holds
-            the compiler, so the local check is slightly stricter. A sync that blocks the event loop
-            cannot be stopped locally.
+            fails at the limit instead. Memory is an estimate: each run counts what the CLI process
+            grew by since the run started, plus the size of a freshly started process. A sync that
+            blocks the event loop cannot be stopped locally.
           </p>
           <h3>Package for Beetl</h3>
           <pre><code class="language-sh">npm ci
@@ -541,7 +545,7 @@ npx beetl-connect pack .</code></pre>
             >.
           </p>
           <p>
-            SDK 0.6 builds manifest v5 and host contract v5. Artifacts built before SDK 0.5 must be
+            SDK 0.7 builds manifest v5 and host contract v5. Artifacts built before SDK 0.5 must be
             rebuilt. The process protocol is v3.
           </p>
         </section>
