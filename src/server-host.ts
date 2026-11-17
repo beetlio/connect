@@ -415,7 +415,9 @@ async function prepareIntegrationPath(path: string, workingDirectory: string): P
     throw new Error("Integration package must contain a package directory");
   }
 
-  await ExecFile("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], {
+  // Builds type-check with dev dependencies, as Beetl's hosted build does, even when
+  // NODE_ENV=production would make npm omit them.
+  await ExecFile("npm", ["ci", "--include=dev", "--ignore-scripts", "--no-audit", "--no-fund"], {
     cwd: packagePath,
     maxBuffer: 5 * 1024 * 1024,
     windowsHide: true,

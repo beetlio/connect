@@ -54,15 +54,16 @@ reporting success. Integration and cleanup failures must remain visible.
 ## Beetl platform checks
 
 `beetl-connect pack` and `beetl-connect sync --strict` apply checks that Beetl Core applies
-after upload or during a hosted run, with Core's messages. They belong to the CLI, not to
-the executor or the manifest: `runSync`, `buildIntegration`, and the process adapter behave
-as before, and built manifests are unchanged, so existing artifacts still load.
+after upload or during a hosted run, with the messages Beetl reports. They belong to the
+CLI, not to the executor or the manifest: `runSync` and the manifest format are unchanged,
+so existing artifacts still load.
 
 - Record schemas must map to Core's storage types: string, integer, number, boolean, closed
   objects, and arrays of one item type, each optionally nullable. `$ref`, `allOf`, `oneOf`,
   open or property-less objects (`z.record()`, `z.looseObject()`, `z.json()`), tuples, and
   unions of several types are rejected at any depth. Core rejects these at upload, so
-  `pack` fails on them.
+  `pack` fails on them and lists every such field at once. `sync --strict` checks only the
+  sync it runs.
 - Core accepts `format: "uri"` (`z.url()`) and `format: "duration"` (`z.iso.duration()`) at
   upload but validates values by RFC 3986 and RFC 3339, which rejects values Zod accepts,
   such as URLs with spaces or non-ASCII hosts and durations like `PT1.5S` or `P1Y2D`. A run
@@ -101,7 +102,9 @@ stays v3. Artifacts that declare `redirects` need a 0.7 host. Other changes:
   `<key>.beetl.tgz` into the integration directory instead of npm's file name in the working
   directory. `--output` still chooses the path.
 - `configure` and `sync` also check installed dependencies. Optional, dev-optional, and
-  other-platform lockfile entries are not required.
+  other-platform lockfile entries (by `os`, `cpu`, or `libc`) are not required. The process
+  adapter installs dev dependencies when it builds an uploaded package, as Beetl's hosted
+  build does, so the check also passes under `NODE_ENV=production`.
 - `sync --strict` applies the checks above. `sync` prints the state file it resumes from,
   input errors show the expected `--inputs` shape, and the CLI exits with a message on
   Node.js older than 24.2.

@@ -711,6 +711,10 @@ test("HttpError tells a 401 from a redirect origin apart from the connection ori
       [401, false],
     ],
   );
+  assert.match(
+    String(failures[0]),
+    /Provider returned 401 from a redirect origin \(unauthorized\)/,
+  );
   assert.equal(new HttpError(401, "").crossOrigin, false);
 });
 

@@ -73,6 +73,12 @@ test("runtime archives preserve npm modules and package assets", async (t) => {
           },
           "node_modules/not-this-os": { version: "1.0.0", os: [`!${process.platform}`] },
           "node_modules/other-cpu": { version: "1.0.0", cpu: [`!${process.arch}`] },
+          // Excluded by os elsewhere and by libc on any Linux.
+          "node_modules/other-libc": {
+            version: "1.0.0",
+            os: ["linux"],
+            libc: ["!glibc", "!musl"],
+          },
         },
       }),
     ),

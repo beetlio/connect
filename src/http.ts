@@ -52,17 +52,17 @@ export class HttpError extends Error {
     status: number,
     detail: string,
     requestId?: string,
-    options: { readonly crossOrigin?: boolean } = {},
+    { crossOrigin = false }: { readonly crossOrigin?: boolean } = {},
   ) {
     super(
-      `Provider returned ${status}${requestId ? ` [${requestId}]` : ""}${detail ? ` (${detail})` : ""}`,
+      `Provider returned ${status}${crossOrigin ? " from a redirect origin" : ""}${requestId ? ` [${requestId}]` : ""}${detail ? ` (${detail})` : ""}`,
     );
     this.name = "HttpError";
     Object.defineProperty(this, HttpErrorTag, { value: true });
     this.status = status;
     this.detail = detail;
     this.requestId = requestId;
-    this.crossOrigin = options.crossOrigin ?? false;
+    this.crossOrigin = crossOrigin;
   }
 }
 

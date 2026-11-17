@@ -171,7 +171,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     // Building evaluates the definition, so schemas Beetl would reject fail here.
     const { manifest } = await buildIntegration(options.integrationPath);
 
-    for (const format of checkPlatformRecordSchemas(manifest))
+    for (const format of checkPlatformRecordSchemas(manifest.syncs))
       console.warn(
         `Warning: Beetl accepts this schema at upload but rejects some of its values at run time: ${format}`,
       );
@@ -224,7 +224,10 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     if (options.command === "sync") {
       const syncKey = selectSyncKey(integration, options.syncKey);
 
-      const formats = options.strict ? checkPlatformRecordSchemas(manifest) : [];
+      // Only the selected sync runs, so other syncs' schemas cannot fail it.
+      const formats = options.strict
+        ? checkPlatformRecordSchemas(manifest.syncs.filter((sync) => sync.key === syncKey))
+        : [];
 
       if (formats.length > 0)
         throw new Error(

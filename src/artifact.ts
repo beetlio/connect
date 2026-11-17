@@ -91,6 +91,7 @@ const LockedPackageSchema = z.object({
   link: z.boolean().optional(),
   os: z.array(z.string()).optional(),
   cpu: z.array(z.string()).optional(),
+  libc: z.array(z.string()).optional(),
 });
 const DependencyFields = [
   "dependencies",
@@ -358,6 +359,15 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
     allowed === undefined ||
     (!allowed.includes(`!${value}`) &&
       (allowed.every((entry) => entry.startsWith("!")) || allowed.includes(value)));
+  // npm checks libc only on Linux, where Node reports a glibc version unless it runs on musl.
+  const libc =
+    process.platform !== "linux"
+      ? undefined
+      : z
+            .object({ header: z.object({ glibcVersionRuntime: z.string().optional() }) })
+            .parse(process.report.getReport()).header.glibcVersionRuntime === undefined
+        ? "musl"
+        : "glibc";
 
   for (const [path, value] of Object.entries(lock.packages)) {
     const locked = LockedPackageSchema.parse(value);
@@ -369,7 +379,8 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
       locked.devOptional ||
       locked.link ||
       !supports(locked.os, process.platform) ||
-      !supports(locked.cpu, process.arch)
+      !supports(locked.cpu, process.arch) ||
+      (libc !== undefined && !supports(locked.libc, libc))
     )
       continue;
 

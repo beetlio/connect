@@ -26,7 +26,7 @@ function integration(
 
 const checkSchema = (records: z.ZodObject) =>
   checkPlatformRecordSchemas(
-    createIntegrationManifest(integration(records, async function* () {})),
+    createIntegrationManifest(integration(records, async function* () {})).syncs,
   );
 
 test("record schemas that Beetl cannot store fail before upload", () => {
@@ -68,6 +68,18 @@ test("record schemas that Beetl cannot store fail before upload", () => {
         ),
     );
   }
+
+  // Every shape Beetl rejects is listed, so one pack run shows all fields to fix.
+  assert.throws(
+    () =>
+      checkSchema(
+        z.object({ metadata: z.record(z.string(), z.string()), pair: z.tuple([z.string()]) }),
+      ),
+    (error: Error) =>
+      error.message.split("\n").length === 3 &&
+      error.message.includes("records.properties.metadata: objects must declare properties") &&
+      error.message.includes("records.properties.pair: tuple arrays"),
+  );
 
   // Beetl accepts these formats at upload but rejects some values that Zod accepts.
   assert.deepEqual(
@@ -186,7 +198,7 @@ test("a strict run fails with Beetl's message past its batch and envelope limits
       { sync: "items" },
       syncHost(),
     ),
-    { message: "Emitted batch exceeds 8388608 bytes" },
+    { message: "Sync batch exceeds its limit" },
   );
 });
 

@@ -22,24 +22,31 @@ const StorageHint =
   "storageRecord() from @beetlio/connect stores fields that Beetl cannot type as text.";
 
 /**
- * Mirror Core's record schema mapping. Throws for shapes Core rejects when the package is
- * uploaded. Returns string formats that Core accepts at upload but validates more strictly
- * than Zod at run time, so some records Zod accepts fail the hosted run.
+ * Mirror Core's record schema mapping for the given syncs. Throws one error listing every
+ * shape Core rejects when the package is uploaded. Returns string formats that Core accepts
+ * at upload but validates more strictly than Zod at run time, so some records Zod accepts
+ * fail the hosted run.
  */
-export function checkPlatformRecordSchemas(manifest: IntegrationManifest): readonly string[] {
-  const formats: string[] = [];
+export function checkPlatformRecordSchemas(syncs: IntegrationManifest["syncs"]): readonly string[] {
+  const issues = { rejected: [] as string[], formats: [] as string[] };
 
-  for (const sync of manifest.syncs)
-    checkStorageType(sync.records, `syncs[${sync.key}].records`, formats);
+  for (const sync of syncs) checkStorageType(sync.records, `syncs[${sync.key}].records`, issues);
 
-  return formats;
+  if (issues.rejected.length > 0) throw new Error(`${issues.rejected.join("\n")}\n${StorageHint}`);
+
+  return issues.formats;
 }
 
-function checkStorageType(schema: unknown, location: string, formats: string[]): void {
-  const invalid = (reason: string) =>
-    new Error(`Invalid JSON Schema at ${location}: ${reason}. ${StorageHint}`);
+function checkStorageType(
+  schema: unknown,
+  location: string,
+  issues: { rejected: string[]; formats: string[] },
+): void {
+  const reject = (reason: string) => {
+    issues.rejected.push(`Invalid JSON Schema at ${location}: ${reason}`);
+  };
 
-  if (!isJsonSchema(schema)) throw invalid("storage fields must be object-form JSON Schemas");
+  if (!isJsonSchema(schema)) return reject("storage fields must be object-form JSON Schemas");
 
   for (const keyword of [
     "$ref",
@@ -53,22 +60,22 @@ function checkStorageType(schema: unknown, location: string, formats: string[]):
     "unevaluatedProperties",
   ]) {
     if (Object.hasOwn(schema, keyword))
-      throw invalid(
+      return reject(
         `JSON Schema keyword ${keyword} cannot be represented as a stable storage type`,
       );
   }
 
   if (Object.hasOwn(schema, "anyOf")) {
     if (Object.hasOwn(schema, "type"))
-      throw invalid("anyOf cannot be combined with type in a record storage schema");
-    if (!Array.isArray(schema.anyOf)) throw invalid("anyOf must be an array");
+      return reject("anyOf cannot be combined with type in a record storage schema");
+    if (!Array.isArray(schema.anyOf)) return reject("anyOf must be an array");
 
     const values = schema.anyOf.filter((branch) => !isJsonSchema(branch) || branch.type !== "null");
 
     if (schema.anyOf.length !== 2 || values.length !== 1)
-      throw invalid("anyOf must contain exactly one storage type and null");
+      return reject("anyOf must contain exactly one storage type and null");
 
-    return checkStorageType(values[0], location, formats);
+    return checkStorageType(values[0], location, issues);
   }
 
   let type = schema.type;
@@ -77,24 +84,24 @@ function checkStorageType(schema: unknown, location: string, formats: string[]):
     const values = type.filter((value) => typeof value === "string" && value !== "null");
 
     if (type.length !== 2 || values.length !== 1 || !type.includes("null"))
-      throw invalid("type arrays must contain exactly one storage type and null");
+      return reject("type arrays must contain exactly one storage type and null");
 
     type = values[0];
   } else if (type === undefined) {
-    throw invalid("record fields must declare a storage type");
+    return reject("record fields must declare a storage type");
   } else if (typeof type !== "string") {
-    throw invalid("type must be a string or a nullable type array");
+    return reject("type must be a string or a nullable type array");
   }
 
   switch (type) {
     case "string":
       // Zod checks these with its own rules; Beetl's validator rejects values Zod accepts.
       if (schema.format === "uri")
-        formats.push(
+        issues.formats.push(
           `${location}: z.url() accepts URLs that Beetl rejects as URIs, such as ones with spaces or non-ASCII host names; declare the field as z.string() or use storageRecord()`,
         );
       if (schema.format === "duration")
-        formats.push(
+        issues.formats.push(
           `${location}: z.iso.duration() accepts durations that Beetl rejects, such as PT1.5S or P1Y2D; declare the field as z.string() or use storageRecord()`,
         );
       return;
@@ -103,12 +110,12 @@ function checkStorageType(schema: unknown, location: string, formats: string[]):
     case "boolean":
       return;
     case "null":
-      throw invalid("null-only fields have no storage type");
+      return reject("null-only fields have no storage type");
     case "object": {
       if (!isJsonSchema(schema.properties))
-        throw invalid("objects must declare properties; z.record() fields have no fixed columns");
+        return reject("objects must declare properties; z.record() fields have no fixed columns");
       if (schema.additionalProperties !== false)
-        throw invalid(
+        return reject(
           "objects must set additionalProperties to false; z.looseObject() and .catchall() fields have no fixed columns",
         );
 
@@ -119,21 +126,21 @@ function checkStorageType(schema: unknown, location: string, formats: string[]):
       );
 
       if (missing !== undefined)
-        throw invalid(`required field ${JSON.stringify(missing)} is not declared in properties`);
+        return reject(`required field ${JSON.stringify(missing)} is not declared in properties`);
 
       for (const [name, property] of Object.entries(properties))
-        checkStorageType(property, `${location}.properties.${name}`, formats);
+        checkStorageType(property, `${location}.properties.${name}`, issues);
 
       return;
     }
     case "array":
       if (Object.hasOwn(schema, "prefixItems"))
-        throw invalid("tuple arrays cannot be represented as a stable storage type");
-      if (!Object.hasOwn(schema, "items")) throw invalid("arrays must declare one item schema");
+        return reject("tuple arrays cannot be represented as a stable storage type");
+      if (!Object.hasOwn(schema, "items")) return reject("arrays must declare one item schema");
 
-      return checkStorageType(schema.items, `${location}.items`, formats);
+      return checkStorageType(schema.items, `${location}.items`, issues);
     default:
-      throw invalid(`JSON Schema type ${JSON.stringify(type)} has no supported storage type`);
+      return reject(`JSON Schema type ${JSON.stringify(type)} has no supported storage type`);
   }
 }
 
@@ -186,10 +193,11 @@ export async function runPlatformSync(
       async commit(batch) {
         stopped.signal.throwIfAborted();
 
-        const envelope = JSON.stringify({ protocolVersion: 3, kind: "batch", ...batch });
+        // Beetl's process host frames each batch like this and rejects frames over 8 MiB.
+        const envelope = JSON.stringify({ kind: "batch", ...batch });
 
         if (Buffer.byteLength(envelope) > MaxBatchEnvelopeBytes)
-          throw new Error(`Emitted batch exceeds ${MaxBatchEnvelopeBytes} bytes`);
+          throw new Error("Sync batch exceeds its limit");
         if (batches >= MaxBatchesPerRun)
           throw new Error(`run emitted more than ${MaxBatchesPerRun} batches`);
 
