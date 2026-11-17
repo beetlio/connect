@@ -4,6 +4,7 @@ import {
   z,
   type RequestContext,
   type SyncContext,
+  type SyncEnd,
 } from "@beetlio/connect";
 import {
   createProvider,
@@ -18,7 +19,7 @@ import { syncHost } from "./support.ts";
 function integration(
   run: (
     ctx: SyncContext,
-  ) => AsyncGenerator<{ records: { id: number }[]; checkpoint?: number }, void, unknown>,
+  ) => AsyncGenerator<{ records: { id: number }[]; checkpoint?: number }, SyncEnd, unknown>,
 ) {
   return defineIntegration({
     key: "execution",
@@ -85,6 +86,52 @@ test("commits apply backpressure and continuation closes the generator", async (
   assert.equal(result.checkpoint, 1);
   assert.equal(result.outcome, "continuation_required");
   await assert.rejects(logger!.info("late"), /Execution context is closed/);
+});
+
+test("a sync that stops early asks for another run from its new checkpoint", async () => {
+  const stopsEarly = integration(async function* () {
+    yield { records: [{ id: 1 }], checkpoint: 2 };
+
+    return { hasMore: true };
+  });
+  const result = await runSync(stopsEarly, { sync: "items", checkpoint: 1 }, syncHost());
+
+  assert.equal(result.outcome, "continuation_required");
+  assert.equal(result.checkpoint, 2);
+
+  const firstRun = await runSync(stopsEarly, { sync: "items" }, syncHost());
+
+  assert.equal(firstRun.outcome, "continuation_required");
+
+  // The next run would start where this one did and read the same records again.
+  const stuck = integration(async function* (ctx) {
+    yield { records: [{ id: 1 }], checkpoint: ctx.checkpoint as number };
+
+    return { hasMore: true };
+  });
+
+  await assert.rejects(
+    runSync(stuck, { sync: "items", checkpoint: 1 }, syncHost()),
+    /must first commit a new checkpoint/,
+  );
+  await assert.rejects(
+    runSync(
+      integration(async function* () {
+        return { hasMore: true };
+      }),
+      { sync: "items" },
+      syncHost(),
+    ),
+    /must first commit a new checkpoint/,
+  );
+
+  const misspelled = integration(async function* () {
+    yield { records: [{ id: 1 }], checkpoint: 2 };
+
+    return { hasMore: false } as unknown as SyncEnd;
+  });
+
+  await assert.rejects(runSync(misspelled, { sync: "items" }, syncHost()));
 });
 
 test("commit, generator cleanup, and log failures retain their order", async () => {

@@ -19,6 +19,11 @@ change their serialized value; absent and null are distinct.
 The host commits each batch before the generator advances. A failed commit cannot
 advance progress. Continuation requires a checkpoint on the stopping batch.
 
+A sync that stops on its own before reading everything available returns
+`{ hasMore: true }` from its generator, after committing a checkpoint that differs from the
+one it started with. The run then ends with `continuation_required`, as when the host stops
+it. Hosts running SDK 0.6 or earlier ignore the returned value and report `completed`.
+
 Append or replace is host storage policy; execution is identical for both. A replacing
 host starts without a checkpoint, stages records, and publishes the complete dataset
 only after the run and any continuations succeed, including an empty dataset. Saved

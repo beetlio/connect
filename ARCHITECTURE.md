@@ -38,7 +38,9 @@ A source package must be built before it can be used as a runtime artifact.
 
 `runSync` validates inputs, records, and checkpoints. It requests one batch from the
 generator, awaits `host.commit`, then advances. `stop` closes the generator and returns
-`continuation_required`; that batch must carry a checkpoint. Checkpoints flow only for
+`continuation_required`; that batch must carry a checkpoint. A generator that returns
+`{ hasMore: true }` also produces `continuation_required`, and only after committing a
+checkpoint different from the one the run started with. Checkpoints flow only for
 syncs that declare a checkpoint schema; execution has no storage mode. A failed commit
 never advances the checkpoint. Checkpoint validation cannot change the serialized value,
 including the distinction between absent and `null`.

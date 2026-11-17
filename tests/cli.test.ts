@@ -197,16 +197,22 @@ export default defineIntegration({
         label: z.string().regex(new RegExp("^ x $")),
       }),
       async *run(ctx) {
-        if (ctx.checkpoint !== undefined) return;
+        if (ctx.checkpoint === 2) return;
+
+        const next = (ctx.checkpoint ?? 0) + 1;
 
         yield {
           records: [
             {
-              id: \`\${ctx.config.connection.prefix}-\${ctx.config.sync.label}\`,
+              id: \`\${ctx.config.connection.prefix}-\${ctx.config.sync.label}-\${next}\`,
             },
           ],
-          checkpoint: 1,
+          checkpoint: next,
         };
+
+        if (next < 2) return { hasMore: true };
+
+        return;
       },
     }),
   }),
@@ -242,17 +248,23 @@ export default defineIntegration({
   const sourceSync = sync();
 
   assert.equal(sourceSync.status, 0, sourceSync.stderr);
+  // The first run returns hasMore, and the CLI continues until the sync is caught up.
+  assert.match(sourceSync.stdout, /Emitted 2 records in 2 batches/);
 
   await assert.rejects(access(`${sourceState}.lock`));
 
-  assert.equal(JSON.parse(await readFile(sourceState, "utf8")), 1);
+  assert.equal(JSON.parse(await readFile(sourceState, "utf8")), 2);
 
   const resumed = sync();
 
   assert.equal(resumed.status, 0, resumed.stderr);
-  assert.deepEqual(JSON.parse((await readFile(sourceOutput, "utf8")).trim()), {
-    id: "configured- x ",
-  });
+  assert.deepEqual(
+    (await readFile(sourceOutput, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line)),
+    [{ id: "configured- x -1" }, { id: "configured- x -2" }],
+  );
 });
 
 test("CLI requires a sync key only when the choice is ambiguous", async (t) => {

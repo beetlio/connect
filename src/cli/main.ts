@@ -261,25 +261,39 @@ async function main(args = process.argv.slice(2)): Promise<void> {
             statePath,
             ...(options.mode === undefined ? {} : { mode: options.mode }),
           };
-          const result = await withFileSink(sinkOptions, (sink) =>
-            withAuthenticationSettlement(provider, () =>
-              runSync(
-                integration,
-                {
-                  sync: syncKey,
-                  connectionConfig: connection.inputs,
-                  syncConfig: configuration.inputs,
-                  ...(sink.checkpoint === undefined ? {} : { checkpoint: sink.checkpoint }),
-                  signal: controller.signal,
-                },
-                { ...provider, commit: sink.commit },
-              ),
-            ),
+          // A run that returns hasMore continues from its checkpoint, as the platform
+          // would, so a replace run publishes the complete output.
+          const { records, batches } = await withFileSink(sinkOptions, (sink) =>
+            withAuthenticationSettlement(provider, async () => {
+              let checkpoint = sink.checkpoint;
+              let records = 0,
+                batches = 0;
+
+              while (true) {
+                const result = await runSync(
+                  integration,
+                  {
+                    sync: syncKey,
+                    connectionConfig: connection.inputs,
+                    syncConfig: configuration.inputs,
+                    ...(checkpoint === undefined ? {} : { checkpoint }),
+                    signal: controller.signal,
+                  },
+                  { ...provider, commit: sink.commit },
+                );
+
+                records += result.records;
+                batches += result.batches;
+                checkpoint = result.checkpoint;
+
+                if (result.outcome === "completed") return { records, batches };
+
+                console.log(`Read ${records} records so far; continuing from the new checkpoint`);
+              }
+            }),
           );
 
-          console.log(
-            `Emitted ${result.records} records in ${result.batches} batches to ${outputPath}`,
-          );
+          console.log(`Emitted ${records} records in ${batches} batches to ${outputPath}`);
         } finally {
           process.removeListener("SIGINT", abort);
         }

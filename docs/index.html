@@ -303,6 +303,28 @@ const authentication = auth.tokenExchange({
             preserve their exact value. A host can stop after a checkpoint-bearing batch; the
             generator's <code>finally</code> runs before execution returns.
           </p>
+          <p>
+            A sync that limits its own runs, for example to a number of pages or minutes, returns
+            <code>{ hasMore: true }</code> when it stops before reading everything available. The
+            host then runs it again from the last checkpoint. Return nothing once the sync is caught
+            up. A replacing host publishes the data only after a run that returns nothing, so a
+            reload never shows a partial dataset. The run must have committed a new checkpoint
+            first, otherwise it fails. Hosts running SDK 0.6 or earlier treat the run as caught up.
+          </p>
+          <pre><code class="language-ts">async *run(ctx) {
+  let cursor = ctx.checkpoint?.cursor;
+
+  for (let page = 0; page &lt; 100; page++) {
+    const { items, next } = await fetchPage(ctx, cursor);
+
+    yield { records: items, checkpoint: { cursor: next } };
+
+    if (next === null) return;
+    cursor = next;
+  }
+
+  return { hasMore: true };
+},</code></pre>
         </section>
         <section id="destinations">
           <h2>Destinations</h2>
@@ -423,7 +445,8 @@ npx beetl-connect sync . users --profile demo --output users.ndjson</code></pre>
             chosen with <code>--state</code>, and the next run resumes from it. Use
             <code>--mode replace</code> to start from the beginning and publish a complete
             replacement after success; its final checkpoint is saved with the output. Failed runs
-            preserve saved progress.
+            preserve saved progress. A run that returns <code>{ hasMore: true }</code> continues
+            from its checkpoint until the sync is caught up.
           </p>
           <h3>Package for Beetl</h3>
           <pre><code class="language-sh">npx beetl-connect pack . --output github.tgz</code></pre>

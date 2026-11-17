@@ -86,7 +86,11 @@ After execution, the process writes `resultPath`:
 ```
 
 `outcome` is `completed` or `continuation_required`. Continuation requires a checkpoint
-on the acknowledged batch; a stop without a checkpoint fails the run.
+on the acknowledged batch; a stop without a checkpoint fails the run. A run also ends with
+`continuation_required` when the sync returns `{ hasMore: true }` without being asked to
+stop, which means it stopped before reading everything available. Its final checkpoint then
+differs from the one it started with. The controller decides whether and when to run it
+again, and should reject the outcome when the checkpoint did not change.
 
 Append or replace is controller policy; the process behaves the same for both. When
 replacing, the controller stages records across the run and any continuations and

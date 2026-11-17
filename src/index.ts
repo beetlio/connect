@@ -112,13 +112,20 @@ type Config<C> = C extends z.ZodType ? z.output<C> : Readonly<Record<string, nev
 
 type Checkpoint<K> = K extends z.ZodType ? z.output<K> : never;
 
+/**
+ * How a sync run ends. Return nothing once everything available has been read. A run
+ * that stops early, for example at a page or time budget, returns `{ hasMore: true }`
+ * after committing a new checkpoint, and the host runs the sync again from there.
+ */
+export type SyncEnd = void | { readonly hasMore: true };
+
 /** Runtime definition. Author it through the scoped sync function for inference. */
 export interface SyncDefinition {
   readonly displayName?: string;
   readonly records: z.ZodObject;
   readonly inputs?: z.ZodObject;
   readonly checkpoint?: z.ZodType;
-  run(context: SyncContext): AsyncGenerator<Batch, void, unknown>;
+  run(context: SyncContext): AsyncGenerator<Batch, SyncEnd, unknown>;
 }
 
 type DefineSync<Connection extends object> = <
@@ -132,7 +139,7 @@ type DefineSync<Connection extends object> = <
   readonly checkpoint?: K;
   run(
     context: SyncContext<Config<C>, Checkpoint<K>, Connection>,
-  ): AsyncGenerator<Batch<z.input<R>, Checkpoint<K>>, void, unknown>;
+  ): AsyncGenerator<Batch<z.input<R>, Checkpoint<K>>, SyncEnd, unknown>;
 }) => SyncDefinition;
 
 /** Runtime definition. Author it through the scoped destination function for inference. */

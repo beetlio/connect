@@ -115,6 +115,8 @@ const YieldedBatch = z.strictObject({
   records: z.array(z.unknown()),
   checkpoint: z.unknown().optional(),
 });
+// Anything else, such as `{ hasMore: false }`, fails the run instead of reading as caught up.
+const YieldedEnd = z.union([z.undefined(), z.strictObject({ hasMore: z.literal(true) })]);
 const DestinationBatchInput = YieldedBatch.omit({ checkpoint: true }).extend({
   batchId: z.string().min(1),
   deletedKeys: z.array(z.unknown()).optional(),
@@ -203,6 +205,8 @@ export async function runSync(
   let batches = 0,
     records = 0;
   let stopped = false;
+  let hasMore = false;
+  let advanced = false;
   await withExecution(
     host,
     { signal: input.signal, retry: integration.connection.retry },
@@ -218,7 +222,11 @@ export async function runSync(
 
         const step = await iterator.next();
 
-        if (step.done) break;
+        if (step.done) {
+          hasMore = YieldedEnd.parse(step.value) !== undefined;
+
+          break;
+        }
 
         const value = YieldedBatch.parse(step.value);
 
@@ -251,7 +259,10 @@ export async function runSync(
         batches++;
         records += parsedRecords.length;
 
-        if (next !== undefined) checkpoint = next;
+        if (next !== undefined) {
+          advanced ||= !isDeepStrictEqual(next, checkpoint);
+          checkpoint = next;
+        }
 
         if (action === "stop") {
           stopped = true;
@@ -263,8 +274,12 @@ export async function runSync(
     () => iterator?.return(),
   );
 
+  // Another run from an unchanged checkpoint would read the same data again.
+  if (hasMore && !advanced)
+    throw new Error("A sync that returns hasMore must first commit a new checkpoint");
+
   return {
-    outcome: stopped ? "continuation_required" : "completed",
+    outcome: stopped || hasMore ? "continuation_required" : "completed",
     batches,
     records,
     ...(checkpoint === undefined ? {} : { checkpoint }),
