@@ -42,6 +42,41 @@ Credential injection, origin restrictions, retries, OAuth refresh persistence, c
 and error precedence remain SDK responsibilities. Hosts settle authentication before
 reporting success. Integration and cleanup failures must remain visible.
 
+## Beetl platform checks
+
+`beetl-connect sync --strict` and `beetl-connect pack` apply checks that Beetl Core applies
+after upload or during a hosted run, with Core's messages. They belong to the CLI, not to
+the executor or the manifest: `runSync`, `buildIntegration`, and the process adapter behave
+as before, and built manifests are unchanged, so existing artifacts still load.
+
+- Record schemas must map to Core's storage types: string, integer, number, boolean, closed
+  objects, and arrays of one item type, each optionally nullable. `$ref`, `allOf`, `oneOf`,
+  open or property-less objects (`z.record()`, `z.looseObject()`), tuples, and unions of
+  several types are rejected, at any depth.
+- `format: "uri"` (`z.url()`) and `format: "duration"` (`z.iso.duration()`) are rejected:
+  Core validates them by RFC 3986 and RFC 3339 and rejects values Zod accepts, such as URLs
+  with spaces or non-ASCII hosts and durations like `PT1.5S` or `P1Y2D`. Core's own `url`
+  format uses WHATWG parsing like Zod, but rewriting the manifest would make artifacts built
+  by older SDKs fail their manifest check, so the CLI asks for `z.string()` or
+  `storageRecord()` instead.
+- A strict run fails past 10,000 batches, 1 GiB of records as NDJSON, an 8 MiB batch
+  envelope, 1 GiB of process memory, or 15 minutes, and requests `stop` at the next changed
+  checkpoint once half of a run limit is used or less than five minutes remain. The CLI then
+  starts a new run from that checkpoint. The 10,000-record batch limit and 16 MiB provider
+  response limit apply in every mode.
+
+## Migration from 0.6
+
+Integration code, artifacts, and the process protocol are unchanged. CLI changes:
+
+- `pack` builds the integration before packaging and writes `<key>.beetl.tgz` into the
+  integration directory instead of npm's file name in the working directory.
+- `pack`, `configure`, and `sync` fail when installed dependencies are missing or differ
+  from `package-lock.json`; run `npm ci` first.
+- The CLI exits with a message on Node.js older than 24.2 instead of failing to load.
+- `sync` prints the state file it resumes from, and input errors show the expected
+  `--inputs` shape.
+
 ## Migration from 0.5
 
 Integration code and built artifacts are unchanged. Remove `mode` and `checkpointing`

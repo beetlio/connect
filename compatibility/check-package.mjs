@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -162,6 +162,86 @@ assert.deepEqual(built.manifest, fixture.manifest);
   assert.equal(host.status, 1, host.stderr);
   assert.equal(host.stdout, "");
   assert.match(host.stderr, /Unsupported execution protocol version 999.*supported: 3.*Upgrade/);
+
+  // Strict runs and pack-time schema checks must work from the compiled CLI.
+  const cli = join(installed, definition.bin["beetl-connect"]);
+  const strict = join(consumer, "strict-integration");
+  const cliEnvironment = {
+    ...process.env,
+    HOME: join(consumer, "home"),
+    USERPROFILE: join(consumer, "home"),
+    XDG_CONFIG_HOME: join(consumer, "config"),
+    APPDATA: join(consumer, "config"),
+    LOCALAPPDATA: join(consumer, "config"),
+  };
+  const strictSource = (records) => `import { defineIntegration, z } from "@beetlio/connect";
+export default defineIntegration({
+  key: "strict",
+  displayName: "Strict",
+  connection: { origin: "https://api.example.com" },
+  syncs: (sync) => ({
+    items: sync({
+      records: ${records},
+      async *run() {
+        yield { records: [{ id: "one" }] };
+      },
+    }),
+  }),
+});
+`;
+  const lock = {
+    name: "strict",
+    version: "0.0.0",
+    lockfileVersion: 3,
+    packages: { "": { name: "strict", version: "0.0.0" } },
+  };
+
+  await mkdir(strict);
+  await Promise.all([
+    writeFile(
+      join(strict, "package.json"),
+      JSON.stringify({
+        name: "strict",
+        version: "0.0.0",
+        private: true,
+        type: "module",
+        files: ["integration.ts"],
+      }),
+    ),
+    writeFile(join(strict, "package-lock.json"), JSON.stringify(lock)),
+    writeFile(join(strict, "integration.ts"), strictSource("z.object({ id: z.string() })")),
+  ]);
+
+  const synced = await exec(
+    process.execPath,
+    [cli, "sync", strict, "--strict", "--output", join(consumer, "strict.ndjson")],
+    { ...options, cwd: consumer, env: cliEnvironment },
+  );
+
+  assert.match(synced.stdout, /Emitted 1 records in 1 batches/);
+  await exec(process.execPath, [cli, "pack", strict], {
+    ...options,
+    cwd: consumer,
+    env: cliEnvironment,
+  });
+  await readFile(join(strict, "strict.beetl.tgz"));
+  await writeFile(
+    join(strict, "integration.ts"),
+    strictSource("z.object({ id: z.string(), website: z.url().optional() })"),
+  );
+
+  const rejected = spawnSync(process.execPath, [cli, "pack", strict], {
+    ...options,
+    cwd: consumer,
+    encoding: "utf8",
+    env: cliEnvironment,
+  });
+
+  assert.equal(rejected.status, 1, rejected.stderr);
+  assert.match(
+    rejected.stderr,
+    /Invalid JSON Schema at syncs\[items\]\.records\.properties\.website/,
+  );
 
   const result = await exec(
     process.execPath,

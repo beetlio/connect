@@ -184,7 +184,7 @@ function isScalarSchema(schema: JsonSchema): boolean {
   );
 }
 
-function isJsonSchema(value: unknown): value is JsonSchema {
+export function isJsonSchema(value: unknown): value is JsonSchema {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 

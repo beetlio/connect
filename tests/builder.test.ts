@@ -1,6 +1,6 @@
 import { buildIntegration, packIntegration, withIntegration } from "@beetlio/connect/builder";
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { extract } from "tar";
@@ -106,6 +106,22 @@ export default defineIntegration({
 `,
     ),
   ]);
+
+  const installed = await readFile(join(dependency, "package.json"), "utf8");
+
+  for (const replacement of [installed.replace('"version":"1.0.0"', '"version":"0.9.0"'), null]) {
+    if (replacement === null) await rm(join(dependency, "package.json"));
+    else await writeFile(join(dependency, "package.json"), replacement);
+
+    await assert.rejects(
+      buildIntegration(directory),
+      new RegExp(
+        "Integration dependencies are missing or differ from package-lock.json: fixture-dependency. Run `npm ci` in ",
+      ),
+    );
+  }
+
+  await writeFile(join(dependency, "package.json"), installed);
 
   const built = await buildIntegration(directory);
 

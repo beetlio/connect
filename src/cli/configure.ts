@@ -13,7 +13,7 @@ import { replacePrivateFile, withFileLock } from "../file-sink.ts";
 import { verifyConnection } from "../host.ts";
 import { resolveProviderOrigin } from "../http.ts";
 import type { IntegrationDefinition, JsonObject } from "../index.ts";
-import type { InputObjectSchema, IntegrationManifest } from "../manifest.ts";
+import type { InputField, InputObjectSchema, IntegrationManifest } from "../manifest.ts";
 import {
   OAuthAuthorizationStateSchema,
   beginOAuthAuthorization,
@@ -194,7 +194,7 @@ export async function configureIntegration(
           ? Object.keys(manifest.connection.inputs.properties).length === 0 &&
             Object.keys(syncManifest.inputs.properties).length === 0
             ? currentInputs
-            : await promptConfigurationInputs(currentInputs)
+            : await promptConfigurationInputs(currentInputs, inputShape(manifest, syncKey))
           : {
               connection: requestedInputs.connection ?? currentInputs.connection,
               sync: requestedInputs.sync ?? currentInputs.sync,
@@ -205,14 +205,16 @@ export async function configureIntegration(
 
       if (!parsedConnectionInputs.success) {
         throw new Error(
-          `Invalid connection inputs: ${z.prettifyError(parsedConnectionInputs.error)}`,
+          `Invalid connection inputs: ${z.prettifyError(parsedConnectionInputs.error)}\nExpected inputs: ${inputShape(manifest, syncKey)}`,
         );
       }
 
       const parsedSyncInputs = (sync.inputs ?? EmptyInputs).safeParse(inputs.sync);
 
       if (!parsedSyncInputs.success) {
-        throw new Error(`Invalid sync inputs: ${z.prettifyError(parsedSyncInputs.error)}`);
+        throw new Error(
+          `Invalid sync inputs: ${z.prettifyError(parsedSyncInputs.error)}\nExpected inputs: ${inputShape(manifest, syncKey)}`,
+        );
       }
 
       if (existingConnection !== undefined) {
@@ -361,10 +363,36 @@ export async function configureIntegration(
   );
 }
 
-async function promptConfigurationInputs(current: {
-  connection: JsonObject;
-  sync: JsonObject;
-}): Promise<{ connection: JsonObject; sync: JsonObject }> {
+/** Describe the `--inputs` object a sync accepts, for example `{"sync": {"label": string}}`. */
+export function inputShape(manifest: IntegrationManifest, syncKey: string): string {
+  const describe = (field: InputField): string => {
+    if (field.type === "object") {
+      const required = new Set(field.required ?? []);
+
+      return `{${Object.entries(field.properties)
+        .map(
+          ([name, child]) =>
+            `${JSON.stringify(name)}${required.has(name) ? "" : "?"}: ${describe(child)}`,
+        )
+        .join(", ")}}`;
+    }
+
+    if (field.enum !== undefined)
+      return field.enum.map((value) => JSON.stringify(value)).join(" | ");
+    if (field.type === "array")
+      return `${field.items === undefined ? "JSON" : describe(field.items)}[]`;
+
+    return field.type ?? "JSON";
+  };
+  const sync = manifest.syncs.find((candidate) => candidate.key === syncKey);
+
+  return `{"connection": ${describe(manifest.connection.inputs)}, "sync": ${sync === undefined ? "{}" : describe(sync.inputs)}}`;
+}
+
+async function promptConfigurationInputs(
+  current: { connection: JsonObject; sync: JsonObject },
+  shape: string,
+): Promise<{ connection: JsonObject; sync: JsonObject }> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error("configuration inputs require an interactive terminal or --inputs");
   }
@@ -388,7 +416,7 @@ async function promptConfigurationInputs(current: {
         }
       } catch {}
 
-      console.error("Inputs must contain connection and sync JSON objects");
+      console.error(`Inputs must be a JSON object shaped like ${shape}`);
     }
   } finally {
     lines.close();

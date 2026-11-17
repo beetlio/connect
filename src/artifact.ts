@@ -84,6 +84,11 @@ const PackageLockSchema = z.object({
     error: "root package is missing",
   }),
 });
+const LockedPackageSchema = z.object({
+  version: z.string().optional(),
+  optional: z.boolean().optional(),
+  link: z.boolean().optional(),
+});
 const DependencyFields = [
   "dependencies",
   "devDependencies",
@@ -339,6 +344,37 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
   }
 
   const packed = await packIntegration(directory);
+  // Without this, a missing or outdated node_modules surfaces as unrelated TypeScript
+  // or import errors.
+  const lock = PackageLockSchema.parse(
+    JSON.parse(await readFile(join(directory, "package-lock.json"), "utf8")),
+  );
+  const notInstalled: string[] = [];
+
+  for (const [path, value] of Object.entries(lock.packages)) {
+    const locked = LockedPackageSchema.parse(value);
+
+    if (!path.startsWith("node_modules/") || locked.optional || locked.link) continue;
+
+    let installed: string | undefined;
+
+    try {
+      installed = LockedPackageSchema.parse(
+        JSON.parse(await readFile(join(directory, path, "package.json"), "utf8")),
+      ).version;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+
+    if (installed !== locked.version)
+      notInstalled.push(path.slice(path.lastIndexOf("node_modules/") + "node_modules/".length));
+  }
+
+  if (notInstalled.length > 0)
+    throw new Error(
+      `Integration dependencies are missing or differ from package-lock.json: ${notInstalled.join(", ")}. Run \`npm ci\` in ${directory} and retry.`,
+    );
+
   const temporary = await mkdtemp(join(tmpdir(), "beetl-connect-build-"));
 
   try {

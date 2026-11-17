@@ -76,6 +76,13 @@ pending authentication before releasing resources.
 
 The CLI composes the pull provider and executor with `withFileSink`. The process adapter
 uses the same executor and exchanges acknowledgments with an external controller.
+`sync --strict` and `pack` add Beetl's own checks from `cli/platform.ts`: record schemas
+must map to Core's storage types, and a strict run plays Core's controller role around
+`runSync`. It enforces Core's batch, byte, memory, and deadline limits with Core's messages,
+and requests `stop` at the next changed checkpoint near a limit. These checks mirror Beetl
+Core and stay out of the executor and manifest, which other hosts and existing artifacts use.
+The CLI entry point checks the Node.js version before loading its commands; builds check that
+installed dependencies match the lockfile before compiling.
 Its [protocol reference](docs/host-protocol.md) defines the wire format and limits.
 Destination execution is initially available only through the embedded host API.
 
@@ -95,7 +102,7 @@ executions receive only the selected connection's provider access and prepared i
 | `records.ts`, `json.ts`              | Record projection, batching, JSON snapshots              |
 | `artifact.ts`                        | Source packages and executable artifacts                 |
 | `file-sink.ts`                       | Local locks, output, and checkpoint persistence          |
-| `cli/`, `server-host.ts`             | Local commands and process adapter                       |
+| `cli/`, `server-host.ts`             | Local commands, Beetl checks, and process adapter        |
 | `compatibility/`                     | SDK fixture runner and mocked provider HTTP              |
 
 The root `compatibility/` directory contains reusable fixture sources, scenarios,
