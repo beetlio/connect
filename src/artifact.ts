@@ -84,6 +84,15 @@ const PackageLockSchema = z.object({
     error: "root package is missing",
   }),
 });
+const LockedPackageSchema = z.object({
+  version: z.string().optional(),
+  optional: z.boolean().optional(),
+  devOptional: z.boolean().optional(),
+  link: z.boolean().optional(),
+  os: z.array(z.string()).optional(),
+  cpu: z.array(z.string()).optional(),
+  libc: z.array(z.string()).optional(),
+});
 const DependencyFields = [
   "dependencies",
   "devDependencies",
@@ -339,6 +348,61 @@ export async function buildIntegration(inputPath: string): Promise<BuiltIntegrat
   }
 
   const packed = await packIntegration(directory);
+  // Without this, a missing or outdated node_modules surfaces as unrelated TypeScript
+  // or import errors.
+  const lock = PackageLockSchema.parse(
+    JSON.parse(await readFile(join(directory, "package-lock.json"), "utf8")),
+  );
+  const notInstalled: string[] = [];
+  // npm's platform rule: "!value" excludes a platform; other values list the only ones allowed.
+  const supports = (allowed: readonly string[] | undefined, value: string) =>
+    allowed === undefined ||
+    (!allowed.includes(`!${value}`) &&
+      (allowed.every((entry) => entry.startsWith("!")) || allowed.includes(value)));
+  // npm checks libc only on Linux, where Node reports a glibc version unless it runs on musl.
+  const libc =
+    process.platform !== "linux"
+      ? undefined
+      : z
+            .object({ header: z.object({ glibcVersionRuntime: z.string().optional() }) })
+            .parse(process.report.getReport()).header.glibcVersionRuntime === undefined
+        ? "musl"
+        : "glibc";
+
+  for (const [path, value] of Object.entries(lock.packages)) {
+    const locked = LockedPackageSchema.parse(value);
+
+    // npm does not install these, so their absence is expected.
+    if (
+      !path.startsWith("node_modules/") ||
+      locked.optional ||
+      locked.devOptional ||
+      locked.link ||
+      !supports(locked.os, process.platform) ||
+      !supports(locked.cpu, process.arch) ||
+      (libc !== undefined && !supports(locked.libc, libc))
+    )
+      continue;
+
+    let installed: string | undefined;
+
+    try {
+      installed = LockedPackageSchema.parse(
+        JSON.parse(await readFile(join(directory, path, "package.json"), "utf8")),
+      ).version;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+
+    if (installed !== locked.version)
+      notInstalled.push(path.slice(path.lastIndexOf("node_modules/") + "node_modules/".length));
+  }
+
+  if (notInstalled.length > 0)
+    throw new Error(
+      `Integration dependencies are missing or differ from package-lock.json: ${notInstalled.join(", ")}. Run \`npm ci\` in ${directory} and retry.`,
+    );
+
   const temporary = await mkdtemp(join(tmpdir(), "beetl-connect-build-"));
 
   try {

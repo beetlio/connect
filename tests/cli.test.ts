@@ -197,16 +197,22 @@ export default defineIntegration({
         label: z.string().regex(new RegExp("^ x $")),
       }),
       async *run(ctx) {
-        if (ctx.checkpoint !== undefined) return;
+        if (ctx.checkpoint === 2) return;
+
+        const next = (ctx.checkpoint ?? 0) + 1;
 
         yield {
           records: [
             {
-              id: \`\${ctx.config.connection.prefix}-\${ctx.config.sync.label}\`,
+              id: \`\${ctx.config.connection.prefix}-\${ctx.config.sync.label}-\${next}\`,
             },
           ],
-          checkpoint: 1,
+          checkpoint: next,
         };
+
+        if (next < 2) return { hasMore: true };
+
+        return;
       },
     }),
   }),
@@ -242,17 +248,218 @@ export default defineIntegration({
   const sourceSync = sync();
 
   assert.equal(sourceSync.status, 0, sourceSync.stderr);
+  // The first run returns hasMore, and the CLI continues until the sync is caught up.
+  assert.match(sourceSync.stdout, /Emitted 2 records in 2 batches/);
+  assert.doesNotMatch(sourceSync.stdout, /Resuming/);
 
   await assert.rejects(access(`${sourceState}.lock`));
 
-  assert.equal(JSON.parse(await readFile(sourceState, "utf8")), 1);
+  assert.equal(JSON.parse(await readFile(sourceState, "utf8")), 2);
 
   const resumed = sync();
 
   assert.equal(resumed.status, 0, resumed.stderr);
-  assert.deepEqual(JSON.parse((await readFile(sourceOutput, "utf8")).trim()), {
-    id: "configured- x ",
+  assert.ok(
+    resumed.stdout.includes(
+      `Resuming from the checkpoint saved in ${sourceState}; use --mode replace to read everything again`,
+    ),
+    resumed.stdout,
+  );
+  assert.match(resumed.stdout, /Emitted 0 records in 0 batches/);
+  assert.deepEqual(
+    (await readFile(sourceOutput, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line)),
+    [{ id: "configured- x -1" }, { id: "configured- x -2" }],
+  );
+});
+
+test("CLI names the expected input shape and the required Node.js version", async (t) => {
+  const directory = await fixtureDirectory(t, "beetl-cli-inputs");
+  const oldNode = join(directory, "old-node.mjs");
+
+  await integrationPackage(directory);
+  await writeFile(
+    oldNode,
+    'Object.defineProperty(process.versions, "node", { value: "22.1.0" });\n',
+  );
+  await writeFile(
+    join(directory, "integration.ts"),
+    `import { defineIntegration, z } from "@beetlio/connect";
+export default defineIntegration({
+  key: "shaped",
+  displayName: "Shaped",
+  connection: { origin: "https://api.example.com", inputs: z.strictObject({ prefix: z.string() }) },
+  syncs: (sync) => ({
+    items: sync({
+      records: z.object({ id: z.string() }),
+      inputs: z.strictObject({ region: z.enum(["eu", "us"]), limit: z.number().int().optional() }),
+      async *run() {},
+    }),
+  }),
+});
+`,
+  );
+
+  const shape =
+    '{"connection": {"prefix": string}, "sync": {"region": "eu" | "us", "limit"?: integer}}';
+  const flat = runCli(directory, ["configure", directory, "--inputs", '{"prefix":"x"}']);
+
+  assert.equal(flat.status, 1);
+  assert.ok(
+    flat.stderr.includes(`--inputs must be a JSON object shaped like ${shape}`),
+    flat.stderr,
+  );
+
+  const invalid = runCli(directory, [
+    "configure",
+    directory,
+    "--inputs",
+    '{"connection":{"prefix":1},"sync":{"region":"eu"}}',
+  ]);
+
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /Invalid connection inputs: /);
+  assert.ok(invalid.stderr.includes(`Expected inputs: ${shape}`), invalid.stderr);
+
+  const old = runCli(directory, ["--help"], oldNode);
+
+  assert.equal(old.status, 1);
+  assert.equal(
+    old.stderr.trim(),
+    "beetl-connect requires Node.js 24.2 or later; this is Node.js 22.1.0.",
+  );
+});
+
+test("strict sync and pack apply Beetl's record schema checks and run limits", async (t) => {
+  const directory = await fixtureDirectory(t, "beetl-cli-strict");
+  const workspace = join(directory, "workspace");
+  const output = join(directory, "items.ndjson");
+  const largeMemory = join(directory, "large-memory.mjs");
+  const source = (
+    records: string,
+  ) => `import { defineIntegration, storageRecord, z } from "@beetlio/connect";
+export default defineIntegration({
+  key: "strict",
+  displayName: "Strict",
+  connection: { origin: "https://api.example.com" },
+  syncs: (sync) => ({
+    items: sync({
+      records: ${records},
+      checkpoint: z.number(),
+      async *run(ctx) {
+        if (process.env.SLOW_SYNC) await new Promise((resolve) => setTimeout(resolve, 2_000));
+        yield { records: [{ id: "one", metadata: { team: "core" } }], checkpoint: 1 };
+      },
+    }),
+  }),
+});
+`;
+
+  await mkdir(workspace);
+  await integrationPackage(directory);
+  await writeFile(
+    largeMemory,
+    [
+      // The strict module and the segment take the first two readings; the sync then grows.
+      "const rss = process.memoryUsage.rss;",
+      "let readings = 0;",
+      "process.memoryUsage.rss = () => rss() + (readings++ < 2 ? 0 : 2 * 1024 ** 3);",
+      "process.env.SLOW_SYNC = '1';",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(directory, "integration.ts"),
+    source("z.object({ id: z.string(), metadata: z.record(z.string(), z.string()) })"),
+  );
+
+  const rejected =
+    "Invalid JSON Schema at syncs[items].records.properties.metadata: objects must declare properties";
+  const lenient = runCli(workspace, ["sync", directory, "--output", output]);
+
+  assert.equal(lenient.status, 0, lenient.stderr);
+
+  for (const args of [
+    ["sync", directory, "--strict", "--output", output],
+    ["pack", directory],
+  ]) {
+    const result = runCli(workspace, args);
+
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes(rejected), result.stderr);
+  }
+
+  // Beetl accepts z.url() at upload but rejects some URLs that Zod accepts at run time.
+  await writeFile(
+    join(directory, "integration.ts"),
+    source(
+      "z.object({ id: z.string(), metadata: z.object({ team: z.string() }), site: z.url().optional() })",
+    ),
+  );
+
+  const warned = runCli(workspace, ["pack", directory]);
+
+  assert.equal(warned.status, 0, warned.stderr);
+  assert.ok(
+    warned.stderr.includes(
+      "Warning: Beetl accepts this schema at upload but rejects some of its values at run time: syncs[items].records.properties.site: z.url() accepts URLs",
+    ),
+    warned.stderr,
+  );
+
+  const strictFormat = runCli(workspace, ["sync", directory, "--strict", "--output", output]);
+
+  assert.equal(strictFormat.status, 1);
+  assert.ok(
+    strictFormat.stderr.includes(
+      "Beetl rejects some values these record schemas accept:\nsyncs[items].records.properties.site: z.url()",
+    ),
+    strictFormat.stderr,
+  );
+
+  await writeFile(
+    join(directory, "integration.ts"),
+    source(
+      "storageRecord(z.object({ id: z.string(), metadata: z.record(z.string(), z.string()) }))",
+    ),
+  );
+
+  const packed = runCli(workspace, ["pack", directory]);
+
+  assert.equal(packed.status, 0, packed.stderr);
+  assert.match(packed.stdout, new RegExp(`Packed integration to .*strict\\.beetl\\.tgz`));
+  await access(join(directory, "strict.beetl.tgz"));
+
+  const strict = runCli(workspace, [
+    "sync",
+    directory,
+    "--strict",
+    "--mode",
+    "replace",
+    "--output",
+    output,
+  ]);
+
+  assert.equal(strict.status, 0, strict.stderr);
+  assert.deepEqual(JSON.parse(await readFile(output, "utf8")), {
+    id: "one",
+    metadata: '{"team":"core"}',
   });
+
+  const outOfMemory = runCli(
+    workspace,
+    ["sync", directory, "--strict", "--mode", "replace", "--output", output],
+    largeMemory,
+  );
+
+  assert.equal(outOfMemory.status, 1);
+  assert.ok(
+    outOfMemory.stderr.includes(
+      "the integration ran out of memory: it used more than its 1 GiB limit and was stopped",
+    ),
+    outOfMemory.stderr,
+  );
 });
 
 test("CLI requires a sync key only when the choice is ambiguous", async (t) => {

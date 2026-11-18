@@ -227,13 +227,24 @@ const authentication = auth.tokenExchange({
             <code>ctx.fetch(path, init?)</code> returns a Response.
             <code>ctx.json(path, schema, init?)</code> parses successful JSON with Zod and throws
             <code>HttpError</code> for HTTP failures. The error includes <code>status</code>,
-            bounded <code>detail</code>, and an optional <code>requestId</code>.
+            bounded <code>detail</code>, an optional <code>requestId</code>, and
+            <code>crossOrigin</code>, which is true when a followed redirect led to another origin
+            that answered, such as signed storage.
           </p>
           <p>
             Requests accept provider-relative paths or same-origin HTTP URLs. The provider enforces
-            origin boundaries and does not follow redirects. By default, transient failures on GET,
-            HEAD, and OPTIONS get up to three attempts. Set <code>connection.retry</code> to tune
-            the policy, or <code>false</code> to disable retries.
+            origin boundaries and returns redirects to the integration unless
+            <code>connection.redirects</code> allows their target. With
+            <code>redirects: { origins: ["https://objects.example.net"], max: 3 }</code>, GET and
+            HEAD requests follow 301, 302, 303, 307 and 308 to the connection origin or a listed
+            HTTPS origin, up to <code>max</code> hops (default 3). A hop to another origin keeps
+            only content headers such as <code>range</code>, <code>accept</code> and
+            <code>user-agent</code>, never credentials, and query credentials the provider copied
+            into the target are removed. Only the final response is read, so the size limit covers
+            the whole chain, and a retry starts again from the first URL. By default, transient
+            failures on GET, HEAD, and OPTIONS get up to three attempts. Set
+            <code>connection.retry</code> to tune the policy, or <code>false</code> to disable
+            retries.
           </p>
           <p>For an API returning <code>{ items, next }</code>, add a paginated sync like this:</p>
           <pre><code class="language-ts">items: sync({
@@ -284,6 +295,18 @@ const authentication = auth.tokenExchange({
             columns.
           </p>
           <p>
+            Beetl stores each record field in a typed column: a string, integer, number, boolean,
+            closed object, or array of one item type, each optionally nullable.
+            <code>pack</code> and <code>sync --strict</code> reject fields Beetl cannot type, such
+            as <code>z.record()</code>, <code>z.looseObject()</code>, <code>z.json()</code>, tuples,
+            and unions of several types. Beetl accepts <code>z.url()</code> and
+            <code>z.iso.duration()</code> fields, but its validator rejects some values Zod accepts,
+            such as URLs with spaces or durations like <code>PT1.5S</code>, and the run then fails.
+            <code>pack</code> warns about these fields and <code>sync --strict</code> fails on them.
+            Declare such fields as <code>z.string()</code>, or wrap the record schema in
+            <code>storageRecord()</code> to store them as text.
+          </p>
+          <p>
             For resumable work, declare a <code>checkpoint</code> schema and yield the position to
             resume <em>after</em> each batch. Without a supplied checkpoint the sync starts from the
             beginning; with one it resumes from that position. The host commits records and
@@ -294,6 +317,29 @@ const authentication = auth.tokenExchange({
             preserve their exact value. A host can stop after a checkpoint-bearing batch; the
             generator's <code>finally</code> runs before execution returns.
           </p>
+          <p>
+            A sync that limits its own runs, for example to a number of pages or minutes, returns
+            <code>{ hasMore: true }</code> when it stops before reading everything available. The
+            host then runs it again from the last checkpoint. Return nothing or
+            <code>{ hasMore: false }</code> once the sync is caught up; any other return value fails
+            the run. A replacing host publishes the data only after a run that returns nothing, so a
+            reload never shows a partial dataset. The run must have committed a new checkpoint
+            first, otherwise it fails. Hosts running SDK 0.6 or earlier treat the run as caught up.
+          </p>
+          <pre><code class="language-ts">async *run(ctx) {
+  let cursor = ctx.checkpoint?.cursor;
+
+  for (let page = 0; page &lt; 100; page++) {
+    const { items, next } = await fetchPage(ctx, cursor);
+
+    yield { records: items, checkpoint: { cursor: next } };
+
+    if (next === null) return { hasMore: false };
+    cursor = next;
+  }
+
+  return { hasMore: true };
+},</code></pre>
         </section>
         <section id="destinations">
           <h2>Destinations</h2>
@@ -414,20 +460,53 @@ npx beetl-connect sync . users --profile demo --output users.ndjson</code></pre>
             chosen with <code>--state</code>, and the next run resumes from it. Use
             <code>--mode replace</code> to start from the beginning and publish a complete
             replacement after success; its final checkpoint is saved with the output. Failed runs
-            preserve saved progress.
+            preserve saved progress. A run that returns <code>{ hasMore: true }</code> continues
+            from its checkpoint until the sync is caught up. When a run resumes, the CLI prints the
+            state file it resumed from, so a rerun that finds no new records says why.
+          </p>
+          <h3>Check against Beetl's limits</h3>
+          <pre><code class="language-sh">npx beetl-connect sync . users --strict --output users.ndjson</code></pre>
+          <p>
+            <code>--strict</code> runs the sync as Beetl would and fails with the message Beetl
+            writes to the run log:
+          </p>
+          <ul>
+            <li>record schemas must map to Beetl's storage types (see above);</li>
+            <li>
+              a batch has at most 10,000 records and 8 MiB; a run has at most 10,000 batches and 1
+              GiB of records, measured as NDJSON;
+            </li>
+            <li>
+              a run ends after 15 minutes or when the process uses more than 1 GiB of memory;
+              provider responses are limited to 16 MiB in every mode.
+            </li>
+          </ul>
+          <p>
+            Like Beetl, the CLI asks a run to stop at its next new checkpoint once it has used half
+            of its batch or byte limit or has less than five minutes left, then continues from that
+            checkpoint in a new run. A sync without a checkpoint cannot be stopped this way and
+            fails at the limit instead. Memory is an estimate: each run counts what the CLI process
+            grew by since the run started, plus the size of a freshly started process. A sync that
+            blocks the event loop cannot be stopped locally.
           </p>
           <h3>Package for Beetl</h3>
-          <pre><code class="language-sh">npx beetl-connect pack . --output github.tgz</code></pre>
+          <pre><code class="language-sh">npm ci
+npx beetl-connect pack .</code></pre>
           <p>
-            Keep <code>integration.ts</code>, <code>package.json</code>, and the lockfile in the
-            project. List source and assets in <code>package.json</code>'s
-            <code>files</code> allowlist. Registry dependencies are supported; local paths,
-            workspaces, Git dependencies, and remote tarballs are not.
+            <code>pack</code> writes <code>&lt;key&gt;.beetl.tgz</code> into the integration
+            directory, wherever you run it from; <code>--output</code> chooses another path. Keep
+            <code>integration.ts</code>, <code>package.json</code>, and the lockfile in the project.
+            List source and assets in <code>package.json</code>'s <code>files</code> allowlist.
+            Registry dependencies are supported; local paths, workspaces, Git dependencies, and
+            remote tarballs are not.
           </p>
           <p>
-            The archive contains source for a hosted build. Packing does not execute the
-            integration. Check the printed file list before sharing it. Run
-            <code>npx beetl-connect &lt;command&gt; --help</code> for all options.
+            The archive contains source for a hosted build. Packing builds the integration and loads
+            its definition to check record schemas, but runs no sync. <code>pack</code>,
+            <code>configure</code>, and <code>sync</code> first check that installed dependencies
+            match the lockfile; the CLI also requires Node.js 24.2 or later. Check the printed file
+            list before sharing it. Run <code>npx beetl-connect &lt;command&gt; --help</code> for
+            all options.
           </p>
         </section>
         <section id="examples">
@@ -466,7 +545,7 @@ npx beetl-connect sync . users --profile demo --output users.ndjson</code></pre>
             >.
           </p>
           <p>
-            SDK 0.6 builds manifest v5 and host contract v5. Artifacts built before SDK 0.5 must be
+            SDK 0.7 builds manifest v5 and host contract v5. Artifacts built before SDK 0.5 must be
             rebuilt. The process protocol is v3.
           </p>
         </section>

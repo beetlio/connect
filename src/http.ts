@@ -2,6 +2,7 @@ import { z } from "zod";
 import type {
   JsonObject,
   ProviderOriginDefinition,
+  RedirectPolicy,
   RetryDefinition,
   RetryPolicy,
   SyncFetchInit,
@@ -40,18 +41,33 @@ export class HttpError extends Error {
   readonly status: number;
   readonly detail: string;
   readonly requestId: string | undefined;
+  /**
+   * True when the provider followed a redirect and another origin than the connection's
+   * answered, such as signed storage. Only a 401 from the connection origin means the
+   * connection's credentials were rejected.
+   */
+  readonly crossOrigin: boolean;
 
-  constructor(status: number, detail: string, requestId?: string) {
+  constructor(
+    status: number,
+    detail: string,
+    requestId?: string,
+    { crossOrigin = false }: { readonly crossOrigin?: boolean } = {},
+  ) {
     super(
-      `Provider returned ${status}${requestId ? ` [${requestId}]` : ""}${detail ? ` (${detail})` : ""}`,
+      `Provider returned ${status}${crossOrigin ? " from a redirect origin" : ""}${requestId ? ` [${requestId}]` : ""}${detail ? ` (${detail})` : ""}`,
     );
     this.name = "HttpError";
     Object.defineProperty(this, HttpErrorTag, { value: true });
     this.status = status;
     this.detail = detail;
     this.requestId = requestId;
+    this.crossOrigin = crossOrigin;
   }
 }
+
+/** Responses the host received from a redirect origin other than the connection's. */
+export const CrossOriginResponses = new WeakSet<Response>();
 
 export async function parseResponse<S extends z.ZodType>(
   response: Response,
@@ -64,6 +80,7 @@ export async function parseResponse<S extends z.ZodType>(
       response.status,
       detail,
       response.headers.get("x-request-id") ?? response.headers.get("request-id") ?? undefined,
+      { crossOrigin: CrossOriginResponses.has(response) },
     );
   }
 
@@ -255,6 +272,30 @@ export function resolveProviderOrigin(
   }
 
   return providerOrigin(value, authenticated);
+}
+
+export const RedirectsSchema = z.strictObject({
+  origins: z.array(z.string()).min(1).readonly(),
+  max: z.number().int().min(1).max(10).optional(),
+});
+
+export function resolveRedirects(redirects: RedirectPolicy | undefined) {
+  if (redirects === undefined) return undefined;
+
+  const { origins, max = 3 } = RedirectsSchema.parse(redirects);
+
+  return {
+    origins: new Set(
+      origins.map((value) => {
+        const origin = providerOrigin(value);
+
+        if (origin.protocol !== "https:") throw new Error("Redirect origins must use HTTPS");
+
+        return origin.origin;
+      }),
+    ),
+    max,
+  };
 }
 
 export const RetrySchema = z.union([

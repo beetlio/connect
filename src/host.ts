@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { EmittedBatch, RunSyncResult } from "./execution-schema.ts";
-import { paginate, parseResponse } from "./http.ts";
+import { CrossOriginResponses, paginate, parseResponse } from "./http.ts";
 import type {
   DestinationBatch,
   DestinationDefinition,
@@ -52,6 +52,17 @@ export interface ProviderResponse {
   readonly status: number;
   readonly headers: ReadonlyArray<readonly [string, string]>;
   readonly body: Uint8Array;
+  /** Redirects the provider followed to reach this response, oldest first. */
+  readonly redirects?: readonly ProviderRedirect[];
+}
+
+/** One followed redirect. Paths and queries of targets are left out: they may be signed. */
+export interface ProviderRedirect {
+  /** Origin and path of the URL that answered with the redirect. */
+  readonly from: string;
+  /** Origin of the redirect target. */
+  readonly to: string;
+  readonly status: number;
 }
 
 export type CommitAction = "continue" | "stop";
@@ -94,6 +105,9 @@ const ProviderResponseSchema = z.strictObject({
   body: z
     .instanceof(Uint8Array)
     .refine((body) => body.byteLength <= 16 * 1024 * 1024, "Provider response exceeds 16 MiB"),
+  redirects: z
+    .array(z.strictObject({ from: z.string(), to: z.string(), status: z.number().int() }))
+    .optional(),
 });
 
 const EmptyConfig = z.strictObject({});
@@ -101,6 +115,9 @@ const YieldedBatch = z.strictObject({
   records: z.array(z.unknown()),
   checkpoint: z.unknown().optional(),
 });
+// Anything else, such as a misspelled key, a non-boolean value, or extra fields, fails the
+// run instead of reading as caught up.
+const YieldedEnd = z.union([z.undefined(), z.strictObject({ hasMore: z.boolean() })]);
 const DestinationBatchInput = YieldedBatch.omit({ checkpoint: true }).extend({
   batchId: z.string().min(1),
   deletedKeys: z.array(z.unknown()).optional(),
@@ -189,6 +206,8 @@ export async function runSync(
   let batches = 0,
     records = 0;
   let stopped = false;
+  let hasMore = false;
+  let advanced = false;
   await withExecution(
     host,
     { signal: input.signal, retry: integration.connection.retry },
@@ -204,7 +223,11 @@ export async function runSync(
 
         const step = await iterator.next();
 
-        if (step.done) break;
+        if (step.done) {
+          hasMore = YieldedEnd.parse(step.value)?.hasMore ?? false;
+
+          break;
+        }
 
         const value = YieldedBatch.parse(step.value);
 
@@ -237,7 +260,10 @@ export async function runSync(
         batches++;
         records += parsedRecords.length;
 
-        if (next !== undefined) checkpoint = next;
+        if (next !== undefined) {
+          advanced ||= !isDeepStrictEqual(next, checkpoint);
+          checkpoint = next;
+        }
 
         if (action === "stop") {
           stopped = true;
@@ -249,8 +275,12 @@ export async function runSync(
     () => iterator?.return(),
   );
 
+  // Another run from an unchanged checkpoint would read the same data again.
+  if (hasMore && !advanced)
+    throw new Error("A sync that returns hasMore must first commit a new checkpoint");
+
   return {
-    outcome: stopped ? "continuation_required" : "completed",
+    outcome: stopped || hasMore ? "continuation_required" : "completed",
     batches,
     records,
     ...(checkpoint === undefined ? {} : { checkpoint }),
@@ -412,16 +442,26 @@ async function hostFetch(
     ),
   );
 
+  for (const hop of response.redirects ?? []) {
+    await host.log?.({ level: "debug", message: "Followed provider redirect", fields: { ...hop } });
+  }
+
   signal.throwIfAborted();
 
   const responseBody = ![101, 204, 205, 304].includes(response.status)
     ? Uint8Array.from(response.body).buffer
     : null;
 
-  return new Response(responseBody, {
+  const result = new Response(responseBody, {
     status: response.status,
     headers: response.headers.map(([name, value]): [string, string] => [name, value]),
   });
+  const [first, last] = [response.redirects?.at(0), response.redirects?.at(-1)];
+
+  if (first !== undefined && last !== undefined && new URL(first.from).origin !== last.to)
+    CrossOriginResponses.add(result);
+
+  return result;
 }
 
 async function parse<T>(

@@ -38,7 +38,10 @@ A source package must be built before it can be used as a runtime artifact.
 
 `runSync` validates inputs, records, and checkpoints. It requests one batch from the
 generator, awaits `host.commit`, then advances. `stop` closes the generator and returns
-`continuation_required`; that batch must carry a checkpoint. Checkpoints flow only for
+`continuation_required`; that batch must carry a checkpoint. A generator that returns
+`{ hasMore: true }` also produces `continuation_required`, and only after committing a
+checkpoint different from the one the run started with; returning nothing or
+`{ hasMore: false }` completes the run, and any other value fails it. Checkpoints flow only for
 syncs that declare a checkpoint schema; execution has no storage mode. A failed commit
 never advances the checkpoint. Checkpoint validation cannot change the serialized value,
 including the distinction between absent and `null`.
@@ -58,7 +61,7 @@ Manifest and host contract v5 support syncs and destinations; older artifacts ar
 - **Integration:** provider endpoints, response schemas, pagination, record mapping,
   checkpoint meaning, and remote upsert/deletion behavior. Credentials stay
   outside execution contexts, though package code shares the provider's process.
-- **SDK provider:** origin restrictions, credential injection, token exchange, OAuth
+- **SDK provider:** origin restrictions, allowlisted redirects, credential injection, token exchange, OAuth
   refresh, retries, and response limits. Verification uses this same request path.
 - **Host:** append or replace storage, which checkpoint to resume from, committing
   records and checkpoints, destination state, execution deadlines, and isolation.
@@ -74,6 +77,15 @@ pending authentication before releasing resources.
 
 The CLI composes the pull provider and executor with `withFileSink`. The process adapter
 uses the same executor and exchanges acknowledgments with an external controller.
+`sync --strict` and `pack` add Beetl's own checks from `cli/platform.ts`: record schemas
+must map to Core's storage types (`pack` only warns about URL and duration formats, which
+Core accepts at upload), and a strict run plays Core's controller role around
+`runSync`. It enforces Core's batch, byte, memory, and deadline limits with Core's messages
+(memory as each segment's growth plus the CLI's startup size, approximating a fresh process),
+and requests `stop` at the next changed checkpoint near a limit. These checks mirror Beetl
+Core and stay out of the executor and manifest, which other hosts and existing artifacts use.
+The CLI entry point checks the Node.js version before loading its commands; builds check that
+installed dependencies match the lockfile before compiling.
 Its [protocol reference](docs/host-protocol.md) defines the wire format and limits.
 Destination execution is initially available only through the embedded host API.
 
@@ -93,7 +105,7 @@ executions receive only the selected connection's provider access and prepared i
 | `records.ts`, `json.ts`              | Record projection, batching, JSON snapshots              |
 | `artifact.ts`                        | Source packages and executable artifacts                 |
 | `file-sink.ts`                       | Local locks, output, and checkpoint persistence          |
-| `cli/`, `server-host.ts`             | Local commands and process adapter                       |
+| `cli/`, `server-host.ts`             | Local commands, Beetl checks, and process adapter        |
 | `compatibility/`                     | SDK fixture runner and mocked provider HTTP              |
 
 The root `compatibility/` directory contains reusable fixture sources, scenarios,

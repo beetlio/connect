@@ -1,11 +1,12 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { parseToken, resolveFields, type AuthDefinition } from "./auth.ts";
-import type { ProviderRequest, ProviderResponse } from "./host.ts";
+import type { ProviderRedirect, ProviderRequest, ProviderResponse } from "./host.ts";
 import {
   OriginSchema,
   providerOrigin,
   resolveProviderOrigin,
+  resolveRedirects,
   resolveRetry,
   type ResolvedRetry,
 } from "./http.ts";
@@ -17,6 +18,21 @@ import {
 } from "./oauth.ts";
 
 const MaxProviderResponseBytes = 16 * 1024 * 1024;
+const RedirectStatuses = [301, 302, 303, 307, 308];
+// A hop to another origin carries only headers that describe the content wanted,
+// never credentials, cookies or connector-specific headers.
+const CrossOriginHeaders = new Set([
+  "accept",
+  "accept-encoding",
+  "accept-language",
+  "if-match",
+  "if-modified-since",
+  "if-none-match",
+  "if-range",
+  "if-unmodified-since",
+  "range",
+  "user-agent",
+]);
 
 export interface ProviderOptions {
   readonly connectionConfig?: unknown;
@@ -40,6 +56,7 @@ export function createProvider(connection: ConnectionDefinition, options: Provid
     .record(z.string(), z.json())
     .parse((connection.inputs ?? z.strictObject({})).parse(options.connectionConfig ?? {}));
   const originDefinition = OriginSchema.parse(connection.origin);
+  const redirects = resolveRedirects(connection.redirects);
   let currentAuthorization =
     options.authorizationState === undefined
       ? undefined
@@ -103,16 +120,71 @@ export function createProvider(connection: ConnectionDefinition, options: Provid
 
       let response: Response;
       let responseBody: Uint8Array;
+      // Followed hops restart with every attempt: signed redirect targets expire.
+      let target = url;
+      const hops: ProviderRedirect[] = [];
 
       try {
-        response = await transport(url, {
-          method: request.method,
-          headers,
-          redirect: "manual",
-          ...(requestSignal === undefined ? {} : { signal: requestSignal }),
-          ...(request.body === undefined ? {} : { body: Uint8Array.from(request.body).buffer }),
-        });
-        responseBody = await readResponseBody(response);
+        for (let hopHeaders = headers; ;) {
+          response = await transport(target, {
+            method: request.method,
+            headers: hopHeaders,
+            redirect: "manual",
+            ...(requestSignal === undefined ? {} : { signal: requestSignal }),
+            ...(request.body === undefined ? {} : { body: Uint8Array.from(request.body).buffer }),
+          });
+
+          const location = response.headers.get("location");
+          const next = location === null ? null : URL.parse(location, target);
+
+          if (
+            redirects === undefined ||
+            hops.length >= redirects.max ||
+            !RedirectStatuses.includes(response.status) ||
+            !["GET", "HEAD"].includes(request.method.toUpperCase()) ||
+            next === null ||
+            next.username !== "" ||
+            next.password !== "" ||
+            (next.origin !== origin.origin && !redirects.origins.has(next.origin))
+          ) {
+            responseBody = await readResponseBody(response);
+            break;
+          }
+
+          // Only the last response's body is read, so a chain stays within one response limit.
+          await response.body?.cancel();
+          hops.push({
+            from: `${target.origin}${target.pathname}`,
+            to: next.origin,
+            status: response.status,
+          });
+
+          if (next.origin === origin.origin) {
+            hopHeaders = new Headers(
+              request.headers.map(([name, value]): [string, string] => [name, value]),
+            );
+            applyAuthentication(next, hopHeaders);
+          } else {
+            // Providers may echo query credentials into the target; they stay with the provider.
+            const queryCredentials = new Set(
+              authentication.type === "api_key" && authentication.in === "query"
+                ? [credential("apiKey")]
+                : authentication.type === "custom"
+                  ? Object.values(resolveFields(authentication.query, credentials))
+                  : [],
+            );
+
+            for (const [name, value] of [...next.searchParams]) {
+              if (queryCredentials.has(value)) next.searchParams.delete(name, value);
+            }
+
+            hopHeaders = new Headers(
+              [...headers].filter(([name]) => CrossOriginHeaders.has(name.toLowerCase())),
+            );
+          }
+
+          target = next;
+        }
       } catch (error) {
         if (
           error instanceof ResponseTooLargeError ||
@@ -131,6 +203,7 @@ export function createProvider(connection: ConnectionDefinition, options: Provid
 
       if (
         response.status === 401 &&
+        target.origin === origin.origin &&
         !refreshed &&
         (authorizationVersion !== version || (await refreshAuthentication(requestSignal)))
       ) {
@@ -145,6 +218,7 @@ export function createProvider(connection: ConnectionDefinition, options: Provid
           status: response.status,
           headers: [...response.headers.entries()],
           body: responseBody,
+          ...(hops.length === 0 ? {} : { redirects: hops }),
         };
       }
 

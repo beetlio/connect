@@ -1,6 +1,6 @@
 import { buildIntegration, packIntegration, withIntegration } from "@beetlio/connect/builder";
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { extract } from "tar";
@@ -64,6 +64,21 @@ test("runtime archives preserve npm modules and package assets", async (t) => {
         packages: {
           "": { dependencies: { "fixture-dependency": "1.0.0" } },
           "node_modules/fixture-dependency": { version: "1.0.0" },
+          // npm does not install these, so the dependency check must not require them.
+          "node_modules/optional-tool": { version: "1.0.0", optional: true },
+          "node_modules/dev-optional-tool": { version: "1.0.0", devOptional: true },
+          "node_modules/other-os": {
+            version: "1.0.0",
+            os: [process.platform === "win32" ? "linux" : "win32"],
+          },
+          "node_modules/not-this-os": { version: "1.0.0", os: [`!${process.platform}`] },
+          "node_modules/other-cpu": { version: "1.0.0", cpu: [`!${process.arch}`] },
+          // Excluded by os elsewhere and by libc on any Linux.
+          "node_modules/other-libc": {
+            version: "1.0.0",
+            os: ["linux"],
+            libc: ["!glibc", "!musl"],
+          },
         },
       }),
     ),
@@ -106,6 +121,22 @@ export default defineIntegration({
 `,
     ),
   ]);
+
+  const installed = await readFile(join(dependency, "package.json"), "utf8");
+
+  for (const replacement of [installed.replace('"version":"1.0.0"', '"version":"0.9.0"'), null]) {
+    if (replacement === null) await rm(join(dependency, "package.json"));
+    else await writeFile(join(dependency, "package.json"), replacement);
+
+    await assert.rejects(
+      buildIntegration(directory),
+      new RegExp(
+        "Integration dependencies are missing or differ from package-lock.json: fixture-dependency. Run `npm ci` in ",
+      ),
+    );
+  }
+
+  await writeFile(join(dependency, "package.json"), installed);
 
   const built = await buildIntegration(directory);
 

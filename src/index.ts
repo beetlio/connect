@@ -38,6 +38,14 @@ export interface RetryPolicy {
 
 export type RetryDefinition = false | RetryPolicy;
 
+/** Redirect targets a provider request may follow, besides the connection origin. */
+export interface RedirectPolicy {
+  /** HTTPS origins, such as `https://objects.githubusercontent.com`. */
+  readonly origins: readonly string[];
+  /** Hops per request, 1 to 10 (default 3). */
+  readonly max?: number;
+}
+
 export type ProviderOriginDefinition =
   | string
   | { readonly type: "input"; readonly input: string }
@@ -104,13 +112,21 @@ type Config<C> = C extends z.ZodType ? z.output<C> : Readonly<Record<string, nev
 
 type Checkpoint<K> = K extends z.ZodType ? z.output<K> : never;
 
+/**
+ * How a sync run ends. Return nothing or `{ hasMore: false }` once everything available
+ * has been read. A run that stops early, for example at a page or time budget, returns
+ * `{ hasMore: true }` after committing a new checkpoint, and the host runs the sync again
+ * from there.
+ */
+export type SyncEnd = void | { readonly hasMore: boolean };
+
 /** Runtime definition. Author it through the scoped sync function for inference. */
 export interface SyncDefinition {
   readonly displayName?: string;
   readonly records: z.ZodObject;
   readonly inputs?: z.ZodObject;
   readonly checkpoint?: z.ZodType;
-  run(context: SyncContext): AsyncGenerator<Batch, void, unknown>;
+  run(context: SyncContext): AsyncGenerator<Batch, SyncEnd, unknown>;
 }
 
 type DefineSync<Connection extends object> = <
@@ -124,7 +140,7 @@ type DefineSync<Connection extends object> = <
   readonly checkpoint?: K;
   run(
     context: SyncContext<Config<C>, Checkpoint<K>, Connection>,
-  ): AsyncGenerator<Batch<z.input<R>, Checkpoint<K>>, void, unknown>;
+  ): AsyncGenerator<Batch<z.input<R>, Checkpoint<K>>, SyncEnd, unknown>;
 }) => SyncDefinition;
 
 /** Runtime definition. Author it through the scoped destination function for inference. */
@@ -159,6 +175,7 @@ export interface ConnectionDefinition<C extends z.ZodObject | undefined = z.ZodO
   readonly auth?: AuthDefinition;
   readonly inputs?: C;
   readonly retry?: RetryDefinition;
+  readonly redirects?: RedirectPolicy;
   verify?(context: ConnectionContext<Config<C>>): Promise<void>;
 }
 
